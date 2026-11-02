@@ -238,6 +238,28 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
 
 ## Audio
 
+- [ ] Voice Memos can stop a recording (patch `ci/engine-patches/0012-engine-voice-memos-aac.patch`): iOS
+  encodes AAC on the AMC and the model only decoded, so on the iPod touch 4G's 6.1.6 neither Stop nor
+  Pause ever took effect and the guest sat at 100% CPU from the moment a recording started — AudioCodecs'
+  ACTransformerEncoder polled the transformer for packets forever. The patch adds the encoder program
+  (libavcodec's `aac`: AAC-LC at the parameter block's channels, rate and bit rate), the port's PCM input
+  (CDMA 0x17 writes TO the port, and `port_sink` -> `s5l8930_cdma_sink_done` completes the chain), the
+  packets out through bank 5's list and the slot status the driver reads. It also names a slot by the
+  larger of its job and the program's capacity, so the LC program's 2 KiB mono frame in 4 KiB slots plays
+  back to the end instead of stopping after the first frame until the driver restarts the stream. FFmpeg
+  builds gain `--enable-encoder=aac` (the engine's `contrib/portable/build-deps.py` here, and
+  `Windows/tools/build-engine.sh` for the Windows engine): without it libavcodec has the decoder only, the
+  encoder warns and fails the stream, and Voice Memos behaves exactly as it does today. Ported from the
+  engine's upstream, `blake-lucas/qemu-ios` `34761c9b0` and `dad27392d`, and checked there on a Poco F3:
+  a 5 s memo records from the phone's microphone, stops, lists as 0:05 and plays back to the end, at ~50%
+  guest CPU while recording instead of 100%. **Not re-run on a Un1box build.** To check, in order: the
+  same recording on the 4G (needs the microphone switch on, `0009`); a pause and a resume mid-recording; a
+  second recording straight after the first; a ringtone still playing, since 32-bit stereo jobs share the
+  slot arithmetic; and a snapshot taken mid-recording, where the encoder's codec state is not migrated (it
+  re-primes) but its position in the output is. The engine's own slice test (`tests/slice/ipod-amc-aac.c`)
+  encodes a tone through the same path and decodes the packets back. Upstream's later "AMC: decode without
+  the BQL" rework is not in this engine and the encoder needs none of it, so the patch carries the
+  encoder's fields only.
 - [ ] Microphone on the phone (patch `ci/engine-patches/0009-engine-microphone-input.patch`): the phone's
   engine runs its audio backend as `driver=none`, and a first build of this patch put the frontend's ring
   *behind* the port's input voice as a fallback — which is why the first device test still heard silence
