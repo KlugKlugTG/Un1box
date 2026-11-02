@@ -260,7 +260,8 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   encodes a tone through the same path and decodes the packets back. Upstream's later "AMC: decode without
   the BQL" rework is not in this engine and the encoder needs none of it, so the patch carries the
   encoder's fields only.
-- [ ] Microphone on the phone (patch `ci/engine-patches/0009-engine-microphone-input.patch`): the phone's
+- [ ] Microphone on the phone (patches `ci/engine-patches/0009-engine-microphone-input.patch` and
+  `ci/engine-patches/0013-engine-microphone-a4-boards.patch`): the phone's
   engine runs its audio backend as `driver=none`, and a first build of this patch put the frontend's ring
   *behind* the port's input voice as a fallback — which is why the first device test still heard silence
   in Voice Memos and Talking Tom. `audio/noaudio.c` does open an input voice (`max_voices_in`,
@@ -275,9 +276,14 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   job runs it before the engine build. The frontend pushes what `AudioRecord` captured into a bounded ring that the same RX FIFO
   reads (`hw/arm/host-mic.c`), and the guest side is unchanged: CDMA 0x1b, the same pacing, the same
   FIFO, all of which the iPad's `mic-check` and Shazam already exercised with a host voice and with
-  `tone-hz`. **Not measured and not yet heard on a device**, and only the S5L8920/S5L8930
-  boards have this path — the iPhone 3GS, the iPhone 4 and the iPad 1 are the targets (the iPod touches
-  have no microphone; their own I2S model still hands out silence). The switch is read when the guest
+  `tone-hz`. **Not measured and not yet heard on a device by us.** The boards that have it are the A4
+  ones — the iPad 1, the iPhone 4 and the iPod touch 4G, which `hw/arm/ipad1.c` builds and gives a
+  `host-mic` property (`0013`). The S5L8920 boards share the same port model (`hw/arm/s5l8920.c` creates
+  the same `TYPE_S5L8930_I2S`) but set no property, so the iPhone 3GS and the iPod touch 2G read the
+  voice's ring and hand out silence, exactly as they did before `0009`; upstream's engine measured the
+  3GS recording silence with the ring wired to it, which is why this is a property rather than a fix.
+  This paragraph said the opposite — the 3GS a target, the iPod touches without a microphone — before
+  that measurement was accounted for. The switch is read when the guest
   starts, so turn it on before starting (or restart the guest afterwards), and grant Android's
   microphone permission when it asks. To check, in order: the guest's
   Voice Memos recording of a known sound at 44.1 kHz; `Native.microphoneInfo` (`capturing` 1 and

@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
 MIC_PATCH = PATCHES / "0009-engine-microphone-input.patch"
+BOARDS_PATCH = PATCHES / "0013-engine-microphone-a4-boards.patch"
 
 ENGINE_SYMBOLS = ("qemu_ios_microphone_write", "qemu_ios_microphone_flush", "qemu_ios_microphone_state")
 PORTABLE_SYMBOLS = ("lt_runtime_mic_write", "lt_runtime_mic_info", "lt_runtime_mic_flush")
@@ -87,6 +88,23 @@ def engine_patch_exports_the_api():
 def engine_patch_flushes_on_stop():
     body = added_lines(MIC_PATCH)
     require("host_mic_flush();" in body, "a stopped capture does not flush the ring")
+
+
+def engine_patch_gives_the_microphone_to_the_a4_boards_only():
+    """The S5L8920 boards share the port model and record silence."""
+    body = added_lines(BOARDS_PATCH)
+    require('DEFINE_PROP_BOOL("host-mic"' in body,
+            "the port has no host-mic property, so every board sharing the model asks the frontend's "
+            "ring -- including the iPhone 3GS and the iPod touch 2G, which record silence")
+    require("if (s->host_mic && host_mic_read_frame(s->rx_frame))" in body,
+            "i2s_next_frame() reads the ring on a board that has no microphone")
+    require("if (!s->tone_hz && s->host_mic)" in body,
+            "i2s_set_in_rate() resamples for a board that has no microphone")
+    require("if (s->host_mic) {" in body, "a stopped capture flushes the ring on every board")
+    board = file_body(BOARDS_PATCH, "hw/arm/ipad1.c")
+    require('qdev_prop_set_bit(dev, "host-mic", i == 0);' in board,
+            "the A4 board file does not set host-mic, so the iPad, the iPhone 4 and the iPod touch 4G "
+            "would record silence too")
 
 
 # --- portable ---------------------------------------------------------------
@@ -223,6 +241,8 @@ CHECKS = [
     ("engine patch: the microphone is asked before the silent voice", engine_patch_asks_the_microphone_first),
     ("engine patch: the three entry points and API 2.4", engine_patch_exports_the_api),
     ("engine patch: a stopped capture flushes the ring", engine_patch_flushes_on_stop),
+    ("engine patch: the A4 boards have the microphone, the S5L8920 ones do not",
+     engine_patch_gives_the_microphone_to_the_a4_boards_only),
     ("portable: the API is declared and typed", portable_declares_the_api),
     ("portable: the engine's entry points are resolved, and optional", portable_resolves_exactly_the_exported_names),
     ("portable: one caller reads the ring, the capture port", portable_pushes_from_the_capture_port),
