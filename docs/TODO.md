@@ -350,6 +350,16 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   above the guest view and the view jumped down on wake. It is now an overlay on the guest view.
   (Harness note: the guest re-sleeps ~5 s after a Power wake; a second Power tap before the wake
   shows puts it back to sleep.)
+- [ ] The camera path is dark and its Settings row is out: the guest's ISP fills the serial with
+  `AppleH3CamIn::ispInterruptHandler error: Frame metadata index did not toggle from previous frame.
+  0x00000000/0x01041000` and the Camera app stays black, so the phone's frames reach a guest that
+  never draws them. Not yet narrowed down: it is not known whether the frames arrive in a shape the
+  ISP does not expect, or whether its metadata handshake needs something the bridge does not do.
+  The plumbing stays -- `CameraCapture`, the worker's start and stop, the frames' sensor tag, the
+  CAMERA permission and `Shell.camera`/`useCamera`/`cameraStatus` -- and `EngineService` is the one
+  place that decides, now hardcoded off, so a preference stored while the row existed cannot leave a
+  capture running that nothing can stop. `python3 tests/camera/run.py --engine qemu-ios` still checks
+  the whole path, engine side included.
 - [ ] Stop was seen disabled once after Store use; not reproduced.
 - [ ] The Store's install queue keeps the guest running with Un1box off screen (then pauses it when the
   queue is empty); not yet tried on a phone. Guest audio is not muted meanwhile, and Android 14+ ends a
