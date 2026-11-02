@@ -15,8 +15,8 @@ android {
         applicationId = "org.un1box.android"
         minSdk = 29
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.0.11"
+        versionCode = 13
+        versionName = "0.0.13"
         buildConfigField("long", "SHUTDOWN_GRACE_MS", "${shutdownGraceMs}L")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += providers.gradleProperty("targetAbis").orElse("arm64-v8a,x86_64").get().split(",") }
