@@ -70,7 +70,12 @@ Tests that need no build, no device and no CI run:
 python3 tests/branding/run.py    # the name: label, package, sources, JNI
 python3 tests/idle/run.py        # the app's idle loops
 python3 tests/mic/run.py         # the microphone path
+python3 tests/camera/run.py      # the camera path
+python3 tests/gles/run.py        # the guest's GL bridge
 ```
+
+The last three also take `--engine PATH` to a `qemu-ios` checkout, which is where their engine-side
+checks slice the code they test out of; without it those are skipped and the rest still runs.
 
 ## License and credits
 

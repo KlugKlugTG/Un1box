@@ -409,6 +409,16 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
 
 ## Guest graphics
 
+- [ ] `[gles] UNHANDLED glBindVertexArrayOES (id 837) argc=1 -- returning 0; the guest will render
+  wrong` (engine patch 0014): an app that keeps its arrays in a vertex array object was handed 0 by
+  `glGenVertexArraysOES`, so the object it bound was the default state and every pointer it had set
+  through its VAO belonged to nothing -- the draw ran with the arrays off. The bridge now keeps a
+  VAO as a name for the array state its context already holds (the ES1 client arrays, the texture
+  coordinate ones, the generic attributes with their normalized flags, and the element-array
+  binding), in the OES and the EXT spellings alike, and asks the host for no VAO of its own: the
+  host may be an ES 1.1 context, and both draw paths re-apply the arrays anyway. Which apps this
+  fixes is not yet measured; verify a patched build on a phone.
+  `python3 tests/gles/run.py --engine qemu-ios` drives the state machine the engine implements.
 - [x] Untextured white or grey geometry on Android (engine 4ae00eaca8): Jetpack Joyride's lab
   background, Battle Bears' zombies and menu art, Real Racing's opponent cars and scenery. Cause:
   ES `glTexImage2D` does not convert between formats, and the bridge uploaded opaque PVRTC (decoded

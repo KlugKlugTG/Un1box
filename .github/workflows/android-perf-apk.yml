@@ -697,6 +697,13 @@ jobs:
         continue-on-error: true
         run: python3 tests/camera/run.py --engine qemu-ios
 
+      # The GL bridge the same way: the vertex array object state the engine keeps for the guest's
+      # OES and EXT calls (sliced out of hw/arm/gles-host.c), the ids and argument counts in the
+      # engine's own name table, and the contract around the patch that implements them.
+      - name: Self-check the GL bridge
+        continue-on-error: true
+        run: python3 tests/gles/run.py --engine qemu-ios
+
       - name: Self-check the name and the idle loops
         continue-on-error: true
         run: |
