@@ -20,6 +20,8 @@ Later: the iPhone 4 on 4.2.1/4.3.5 and the 3GS on 5.1.1 (Tested, slow), the iPod
 iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 7 (skipped for now).
 
 - [ ] Bring up the iPhone 4 on 6.1.3: prepare on Linux and the Poco, `compat.py` and `services.py` to `clean`.
+- [ ] iPod touch 1G / original iPhone white screen: the S5L8900's iBoot never boots the kernel after preparation
+  (upstream rechecked 2026-11-01). They now show **Doesn't start yet** in the app's device and version lists.
 - [ ] A validation run per target that a person doesn't have to watch, extending LT Bench and the
   compat harness (`tools/compat/`):
   1. Machine-readable results: LT Bench writes its results as JSON to its Documents folder, and the

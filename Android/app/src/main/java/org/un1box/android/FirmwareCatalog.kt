@@ -23,6 +23,7 @@ internal data class CatalogFirmware(
     val label get() = if (prerelease.isEmpty()) version else "$version $prerelease"
     val fileName get() = "${productType}_${version}_${build}_Restore.ipsw"
     val support get() = when {
+        board in doesntStartBoards -> Support.DOESNT_START
         id in slowFirmwares -> Support.TESTED_SLOW
         id in testedFirmwares -> Support.TESTED
         status == "available" || status == "experimental" -> Support.EXPERIMENTAL
@@ -36,6 +37,7 @@ internal enum class Support(val label: String, val detail: String) {
     TESTED_SLOW("Tested, slow", "Checked on Un1box for Android, but slower than the iPod touch 2G on iOS 3.1.3."),
     EXPERIMENTAL("Experimental", "Starts in Light Touch for Mac's checks; not yet checked on Un1box for Android."),
     UNTESTED("Untested", "Nobody has tried these yet. They may not start."),
+    DOESNT_START("Doesn't start yet", "Stops at a white screen after it's set up. Not fixed yet."),
     ;
     val tested get() = this == TESTED || this == TESTED_SLOW
 }
@@ -48,6 +50,12 @@ internal val testedFirmwares = setOf(
     "n88ap-9B206",  // iPhone 3GS 5.1.1
     "n90ap-8C148", "n90ap-8L1",  // iPhone 4 4.2.1, 4.3.5
 )
+
+/**
+ * Boards that stop at a white screen after preparation, whatever the catalog calls them: the S5L8900's iBoot never
+ * boots the kernel. Upstream LightTouch rechecked this on 2026-11-01; Un1box has not run them itself.
+ */
+internal val doesntStartBoards = setOf("n45ap", "m68ap")  // iPod touch 1G, original iPhone
 
 /** The firmware to pick first: the fastest and most complete on phones. */
 internal const val recommendedFirmware = "n72ap-7E18"

@@ -22,6 +22,10 @@ A firmware is **Tested** in the Android app (`testedFirmwares` in `FirmwareCatal
 4.2.1/4.3.5); one that runs noticeably slower than the iPod touch 2G on iOS 3.1.3 is also in
 `slowFirmwares` and shows **Tested, slow**, so the 2G stays the obvious first pick.
 
+The iPod touch 1G and the original iPhone (`n45ap`, `m68ap`) show **Doesn't start yet** whatever the catalog calls
+them (`doesntStartBoards` in `FirmwareCatalog.kt`): after preparation the S5L8900's iBoot never boots the kernel and
+the screen stays white. That is upstream LightTouch's finding, rechecked on 2026-11-01; Un1box has not run them itself.
+
 ## Running
 
 ```sh
