@@ -14,8 +14,8 @@ Every layer is exercised where it can be, and read where it cannot:
                  cannot be converted are refused
   model          real hw/arm/s5l8930_isp.c compiled whole against stub/, so the
                  device build's own errors are caught here first
-  wiring         the connections: the patch, the JNI names, the permission, the
-                 switch and the settings line
+  wiring         the connections: the patch, the JNI names, the permission and the
+                 worker's wiring, and that Settings no longer offers the switch
   engine stack   the patches apply to a clean checkout and commit to it (needs
                  --engine; skipped otherwise)
 

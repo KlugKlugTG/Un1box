@@ -477,10 +477,34 @@ jobs:
           ninja --version
           meson/bin/meson --version
 
+      # The patches carry changes to the engine's own build scripts (0012 adds
+      # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for
+      # this engine), so they go on before the recipes are fingerprinted and the dependencies are
+      # built. Fingerprinted and built unpatched, a patch that changes a dependency recipe does
+      # not change its cache key: a prefix without the AAC encoder is restored, the build that
+      # would add it is skipped, and 0012's encoder program finds no encoder at runtime.
+      #
+      # build-engine.py refuses a dirty source tree ("Commit source changes before a
+      # reproducible engine build"), so the patch is committed here; fixed dates keep that
+      # commit, and with it the recorded revision and the engine cache key, stable. `git add -A`
+      # matters as much as the commit: a patch that *adds* a file (the microphone's
+      # hw/arm/host-mic.c and its header) leaves it untracked, and `commit -a` alone leaves it
+      # behind, which is a dirty tree to the guard even after the commit.
+      - name: Patch the engine for Android
+        run: |
+          git -C qemu-ios apply "$GITHUB_WORKSPACE"/ci/engine-patches/*.patch
+          git -C qemu-ios add -A
+          GIT_AUTHOR_DATE=2001-01-01T00:00:00Z GIT_COMMITTER_DATE=2001-01-01T00:00:00Z \
+            git -C qemu-ios -c user.name=ci -c user.email=ci@localhost \
+            commit -q -m "ci: engine patches (slirp DNS, GLES, TCG fast paths, microphone, buffer mapping, Voice Memos AAC)"
+          git -C qemu-ios log --oneline -1
+          git -C qemu-ios status --porcelain
+
       # Everything the dependency and engine scripts record in their recipes, as two strings: a cache
       # keyed by them holds a tree those scripts accept, so the build can be skipped instead of run
       # again over a complete tree. A file a recipe records but this engine ref does not carry is
       # written into the string as absent, so such a ref still gets a key (and never a stale hit).
+      # Both are read from the patched tree, so a patch that changes a recipe changes its key.
       - name: Fingerprint the dependency and engine recipes
         id: recipes
         run: |
@@ -655,22 +679,6 @@ jobs:
           ninja -C ci/libslirp-build install
           ls -l ci/deps/prefix/lib/libslirp.a
 
-      # build-engine.py refuses a dirty source tree ("Commit source changes before a
-      # reproducible engine build"), so the patch is committed here; fixed dates keep that
-      # commit, and with it the recorded revision and the engine cache key, stable. `git add -A`
-      # matters as much as the commit: a patch that *adds* a file (the microphone's
-      # hw/arm/host-mic.c and its header) leaves it untracked, and `commit -a` alone leaves it
-      # behind, which is a dirty tree to the guard even after the commit.
-      - name: Patch the engine for Android
-        run: |
-          git -C qemu-ios apply "$GITHUB_WORKSPACE"/ci/engine-patches/*.patch
-          git -C qemu-ios add -A
-          GIT_AUTHOR_DATE=2001-01-01T00:00:00Z GIT_COMMITTER_DATE=2001-01-01T00:00:00Z \
-            git -C qemu-ios -c user.name=ci -c user.email=ci@localhost \
-            commit -q -m "ci: engine patches (slirp DNS, GLES, TCG fast paths, microphone, buffer mapping)"
-          git -C qemu-ios log --oneline -1
-          git -C qemu-ios status --porcelain
-
       # Every layer of the microphone path, checked against the code that ships: the device's capture
       # FIFO (i2s_next_frame/i2s_rx_read sliced out of hw/arm/s5l8930_i2s.c with the `none` backend's
       # silent voice in front of it), the portable API, the JNI glue, and the wiring between them.
@@ -688,6 +696,13 @@ jobs:
       - name: Self-check the camera path
         continue-on-error: true
         run: python3 tests/camera/run.py --engine qemu-ios
+
+      # The GL bridge the same way: the vertex array object state the engine keeps for the guest's
+      # OES and EXT calls (sliced out of hw/arm/gles-host.c), the ids and argument counts in the
+      # engine's own name table, and the contract around the patch that implements them.
+      - name: Self-check the GL bridge
+        continue-on-error: true
+        run: python3 tests/gles/run.py --engine qemu-ios
 
       - name: Self-check the name and the idle loops
         continue-on-error: true

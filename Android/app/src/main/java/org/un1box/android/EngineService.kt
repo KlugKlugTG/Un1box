@@ -28,7 +28,7 @@ class EngineService : Service() {
     private val audioGuard = AudioPacketEpoch()
     private val audioObservations = AudioObservations()
     @Volatile private var audioError = ""
-    /** The Settings switch: this phone's cameras into the guest, read at the next guest start. */
+    /** This phone's cameras into the guest. Settings has no switch for it; see the start path. */
     @Volatile private var cameraWanted = false
     @Volatile private var cameraOn = false
     @Volatile private var cameraError = ""
@@ -188,7 +188,13 @@ class EngineService : Service() {
             // device tree's isp node and the guest has no camera at all. IT_CAMERA is the engine's switch for a
             // session the app starts, and it has to be set before the machine is created, which is what the
             // start below does.
-            cameraWanted = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("camera", false)
+            // Settings no longer offers the camera: the guest's ISP reports frame metadata that did not
+            // toggle from the previous frame (AppleH3CamIn::ispInterruptHandler) and no picture reaches the
+            // Camera app, so the path stays dark until that is understood. The capture, the frames and the
+            // summary below are all intact and this is the one place that decides -- which is also why the
+            // preference stored while the switch existed is not read: with no switch, nothing could turn it
+            // off again, and a camera that cannot deliver a picture is not something to leave running.
+            cameraWanted = false
             cameraError = ""
             android.system.Os.setenv("IT_CAMERA", if (cameraWanted) "1" else "0", true)
             error = if (coldRecovery) Native.recoverStart(libraryRoot, recordId, headphones) else Native.start(libraryRoot, recordId, headphones)
@@ -214,7 +220,7 @@ class EngineService : Service() {
             val s = Native.status()
             s.getOrNull(2)?.takeIf { it.isNotEmpty() }?.let { error = it }
             if (s.firstOrNull() == "failed" && started.isConsumed() && failureRecorded.compareAndSet(false, true)) {
-                val retainedError = error.ifEmpty { "Guest worker failed; writable state and diagnostics retained. Start a fresh worker." }
+                val retainedError = error.ifEmpty { "The emulator stopped. The device's data is kept; press Start to run it again." }
                 Thread({ persistStopError(retainedError); persistObservations("unexpected-engine-exit") }, "guest-failure-record").start()
             }
             return Bundle().apply {
@@ -720,13 +726,14 @@ class EngineService : Service() {
         camera = null
     }
     /**
-     * What the camera is doing, in one line for Settings. It is the only view of the path that needs no adb: the
+     * What the camera is doing, in one line for the status bundle (Settings showed it while it had a camera
+     * switch). It is the only view of the path that needs no adb: the
      * camera the guest's driver named, the frames the phone handed over, the ones the ISP drew, the ones it
      * replaced before anything drew them, and the size of the picture it holds. Frames sent but never drawn means
      * the phone is capturing and the guest is not; nothing sent means the capture never started.
      */
     private fun cameraSummary(): String {
-        if (!cameraWanted) return "Camera off in Settings"
+        if (!cameraWanted) return "Camera off"
         if (camera == null) return cameraError.ifEmpty { "Camera not started yet" }
         val where = when (Native.cameraSensor()) {
             Native.CAMERA_FRONT -> "the guest is on the front camera"

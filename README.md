@@ -15,7 +15,7 @@ Telegram channel: https://t.me/hyperhle
 
 ## Download
 
-[Un1box builds](https://github.com/KlugKlugTG/Un1box/releases) — CI builds every commit. The plain LightTouch release, including the desktop builds, is on [upstream](https://github.com/blake-lucas/LightTouch/releases/latest), v0.0.11.
+[Un1box builds](https://github.com/KlugKlugTG/Un1box/releases) — CI builds every commit. The plain LightTouch release, including the desktop builds, is on [upstream](https://github.com/blake-lucas/LightTouch/releases/latest), v0.0.13.
 
 Un1box is still early and things can change between versions.
 
@@ -38,6 +38,7 @@ Un1box is still early and things can change between versions.
 | iPod touch 4G | 6.1.6 | **Tested**: on a Pixel 10, Infinity Blade and Infinity Blade II run at full speed and Epic Citadel at 60 fps. Most other games, such as Jetpack Joyride, Doodle Jump and Real Racing, run at or near 60 fps on recent phones. |
 | iPhone 3GS | 5.1.1 | **Tested, slow** |
 | iPhone 4 | 4.2.1, 4.3.5 | **Tested, slow** |
+| iPod touch 1G, original iPhone | iPhone OS 1 | **Doesn't start yet**: they stop at a white screen after they are set up. Upstream's finding, rechecked 2026-11-01; not run on Un1box. |
 | Others in the [firmware catalog](Portable/firmware/firmware-catalog.json) | iPhone OS 1 to iOS 7 | Can be prepared and tried; not yet checked on Un1box. [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) records what has been run. |
 
 ## Getting started on Android
@@ -69,7 +70,12 @@ Tests that need no build, no device and no CI run:
 python3 tests/branding/run.py    # the name: label, package, sources, JNI
 python3 tests/idle/run.py        # the app's idle loops
 python3 tests/mic/run.py         # the microphone path
+python3 tests/camera/run.py      # the camera path
+python3 tests/gles/run.py        # the guest's GL bridge
 ```
+
+The last three also take `--engine PATH` to a `qemu-ios` checkout, which is where their engine-side
+checks slice the code they test out of; without it those are skipped and the rest still runs.
 
 ## License and credits
 

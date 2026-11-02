@@ -20,6 +20,8 @@ Later: the iPhone 4 on 4.2.1/4.3.5 and the 3GS on 5.1.1 (Tested, slow), the iPod
 iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 7 (skipped for now).
 
 - [ ] Bring up the iPhone 4 on 6.1.3: prepare on Linux and the Poco, `compat.py` and `services.py` to `clean`.
+- [ ] iPod touch 1G / original iPhone white screen: the S5L8900's iBoot never boots the kernel after preparation
+  (upstream rechecked 2026-11-01). They now show **Doesn't start yet** in the app's device and version lists.
 - [ ] A validation run per target that a person doesn't have to watch, extending LT Bench and the
   compat harness (`tools/compat/`):
   1. Machine-readable results: LT Bench writes its results as JSON to its Documents folder, and the
@@ -236,7 +238,30 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
 
 ## Audio
 
-- [ ] Microphone on the phone (patch `ci/engine-patches/0009-engine-microphone-input.patch`): the phone's
+- [ ] Voice Memos can stop a recording (patch `ci/engine-patches/0012-engine-voice-memos-aac.patch`): iOS
+  encodes AAC on the AMC and the model only decoded, so on the iPod touch 4G's 6.1.6 neither Stop nor
+  Pause ever took effect and the guest sat at 100% CPU from the moment a recording started — AudioCodecs'
+  ACTransformerEncoder polled the transformer for packets forever. The patch adds the encoder program
+  (libavcodec's `aac`: AAC-LC at the parameter block's channels, rate and bit rate), the port's PCM input
+  (CDMA 0x17 writes TO the port, and `port_sink` -> `s5l8930_cdma_sink_done` completes the chain), the
+  packets out through bank 5's list and the slot status the driver reads. It also names a slot by the
+  larger of its job and the program's capacity, so the LC program's 2 KiB mono frame in 4 KiB slots plays
+  back to the end instead of stopping after the first frame until the driver restarts the stream. FFmpeg
+  builds gain `--enable-encoder=aac` (the engine's `contrib/portable/build-deps.py` here, and
+  `Windows/tools/build-engine.sh` for the Windows engine): without it libavcodec has the decoder only, the
+  encoder warns and fails the stream, and Voice Memos behaves exactly as it does today. Ported from the
+  engine's upstream, `blake-lucas/qemu-ios` `34761c9b0` and `dad27392d`, and checked there on a Poco F3:
+  a 5 s memo records from the phone's microphone, stops, lists as 0:05 and plays back to the end, at ~50%
+  guest CPU while recording instead of 100%. **Not re-run on a Un1box build.** To check, in order: the
+  same recording on the 4G (needs the microphone switch on, `0009`); a pause and a resume mid-recording; a
+  second recording straight after the first; a ringtone still playing, since 32-bit stereo jobs share the
+  slot arithmetic; and a snapshot taken mid-recording, where the encoder's codec state is not migrated (it
+  re-primes) but its position in the output is. The engine's own slice test (`tests/slice/ipod-amc-aac.c`)
+  encodes a tone through the same path and decodes the packets back. Upstream's later "AMC: decode without
+  the BQL" rework is not in this engine and the encoder needs none of it, so the patch carries the
+  encoder's fields only.
+- [ ] Microphone on the phone (patches `ci/engine-patches/0009-engine-microphone-input.patch` and
+  `ci/engine-patches/0013-engine-microphone-a4-boards.patch`): the phone's
   engine runs its audio backend as `driver=none`, and a first build of this patch put the frontend's ring
   *behind* the port's input voice as a fallback — which is why the first device test still heard silence
   in Voice Memos and Talking Tom. `audio/noaudio.c` does open an input voice (`max_voices_in`,
@@ -251,9 +276,14 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   job runs it before the engine build. The frontend pushes what `AudioRecord` captured into a bounded ring that the same RX FIFO
   reads (`hw/arm/host-mic.c`), and the guest side is unchanged: CDMA 0x1b, the same pacing, the same
   FIFO, all of which the iPad's `mic-check` and Shazam already exercised with a host voice and with
-  `tone-hz`. **Not measured and not yet heard on a device**, and only the S5L8920/S5L8930
-  boards have this path — the iPhone 3GS, the iPhone 4 and the iPad 1 are the targets (the iPod touches
-  have no microphone; their own I2S model still hands out silence). The switch is read when the guest
+  `tone-hz`. **Not measured and not yet heard on a device by us.** The boards that have it are the A4
+  ones — the iPad 1, the iPhone 4 and the iPod touch 4G, which `hw/arm/ipad1.c` builds and gives a
+  `host-mic` property (`0013`). The S5L8920 boards share the same port model (`hw/arm/s5l8920.c` creates
+  the same `TYPE_S5L8930_I2S`) but set no property, so the iPhone 3GS and the iPod touch 2G read the
+  voice's ring and hand out silence, exactly as they did before `0009`; upstream's engine measured the
+  3GS recording silence with the ring wired to it, which is why this is a property rather than a fix.
+  This paragraph said the opposite — the 3GS a target, the iPod touches without a microphone — before
+  that measurement was accounted for. The switch is read when the guest
   starts, so turn it on before starting (or restart the guest afterwards), and grant Android's
   microphone permission when it asks. To check, in order: the guest's
   Voice Memos recording of a known sound at 44.1 kHz; `Native.microphoneInfo` (`capturing` 1 and
@@ -320,6 +350,16 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   above the guest view and the view jumped down on wake. It is now an overlay on the guest view.
   (Harness note: the guest re-sleeps ~5 s after a Power wake; a second Power tap before the wake
   shows puts it back to sleep.)
+- [ ] The camera path is dark and its Settings row is out: the guest's ISP fills the serial with
+  `AppleH3CamIn::ispInterruptHandler error: Frame metadata index did not toggle from previous frame.
+  0x00000000/0x01041000` and the Camera app stays black, so the phone's frames reach a guest that
+  never draws them. Not yet narrowed down: it is not known whether the frames arrive in a shape the
+  ISP does not expect, or whether its metadata handshake needs something the bridge does not do.
+  The plumbing stays -- `CameraCapture`, the worker's start and stop, the frames' sensor tag, the
+  CAMERA permission and `Shell.camera`/`useCamera`/`cameraStatus` -- and `EngineService` is the one
+  place that decides, now hardcoded off, so a preference stored while the row existed cannot leave a
+  capture running that nothing can stop. `python3 tests/camera/run.py --engine qemu-ios` still checks
+  the whole path, engine side included.
 - [ ] Stop was seen disabled once after Store use; not reproduced.
 - [ ] The Store's install queue keeps the guest running with Un1box off screen (then pauses it when the
   queue is empty); not yet tried on a phone. Guest audio is not muted meanwhile, and Android 14+ ends a
@@ -379,6 +419,16 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
 
 ## Guest graphics
 
+- [ ] `[gles] UNHANDLED glBindVertexArrayOES (id 837) argc=1 -- returning 0; the guest will render
+  wrong` (engine patch 0014): an app that keeps its arrays in a vertex array object was handed 0 by
+  `glGenVertexArraysOES`, so the object it bound was the default state and every pointer it had set
+  through its VAO belonged to nothing -- the draw ran with the arrays off. The bridge now keeps a
+  VAO as a name for the array state its context already holds (the ES1 client arrays, the texture
+  coordinate ones, the generic attributes with their normalized flags, and the element-array
+  binding), in the OES and the EXT spellings alike, and asks the host for no VAO of its own: the
+  host may be an ES 1.1 context, and both draw paths re-apply the arrays anyway. Which apps this
+  fixes is not yet measured; verify a patched build on a phone.
+  `python3 tests/gles/run.py --engine qemu-ios` drives the state machine the engine implements.
 - [x] Untextured white or grey geometry on Android (engine 4ae00eaca8): Jetpack Joyride's lab
   background, Battle Bears' zombies and menu art, Real Racing's opponent cars and scenery. Cause:
   ES `glTexImage2D` does not convert between formats, and the bridge uploaded opaque PVRTC (decoded

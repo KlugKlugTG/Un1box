@@ -1,0 +1,97 @@
+From 19ca07e95e698b80559d40159c793897d104419d Mon Sep 17 00:00:00 2001
+From: Un1box <un1box@localhost>
+Date: Mon, 2 Nov 2026 16:22:16 +0000
+Subject: [PATCH] s5l8930 i2s: the frontend's microphone only on the A4 boards
+
+The S5L8920 boards share this port model: hw/arm/s5l8920.c creates the same
+TYPE_S5L8930_I2S, so the iPhone 3GS and the iPod touch 2G asked the
+frontend's ring for every RX frame, set the resampler to their own port's
+rate, and flushed a ring they never deliver from. Upstream measured the 3GS
+recording silence whichever way it is wired, so those frames were consumed
+and dropped.
+
+A `host-mic` property now decides, and only the A4 board file sets it
+(hw/arm/ipad1.c, i == 0: the iPad 1, the iPhone 4 and the iPod touch 4G,
+which are all A4Board subclasses). Everywhere else the port behaves exactly
+as it did before the microphone patch: the voice's ring, then silence.
+
+Ported from the engine's upstream, blake-lucas/qemu-ios 8e0f6ac87 ("s5l8930
+i2s: the frontend's microphone only on the A4 boards"). Adapted to this
+branch: ipad1.c here has no codec link line yet, and the three call sites in
+s5l8930_i2s.c are the ones patch 0009 added, so the gate wraps those rather
+than upstream's context.
+
+tests/mic/capture-port.c slices i2s_next_frame() out of this file, so its
+reduced S5L8930I2SState carries the new field and its cases set it; a new
+case covers the port that does not have the microphone.
+---
+ hw/arm/ipad1.c       |  3 +++
+ hw/arm/s5l8930_i2s.c | 10 +++++++---
+ 2 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/hw/arm/ipad1.c b/hw/arm/ipad1.c
+index d8a0c7e..a358ae8 100644
+--- a/hw/arm/ipad1.c
++++ b/hw/arm/ipad1.c
+@@ -1828,6 +1828,9 @@ static void ipad1_init(MachineState *machine)
+         dev = qdev_new(TYPE_S5L8930_I2S);
+         qdev_prop_set_bit(dev, "audio-out", i == 0);
+         qdev_prop_set_uint8(dev, "port", i);
++        /* The frontend's microphone, where a recording app has been heard through it: iPad, iPhone 4,
++         * iPod touch 4G. The 3GS (s5l8920.c) shares the port model but records silence. */
++        qdev_prop_set_bit(dev, "host-mic", i == 0);
+         if (i == 0 && s->codec) {
+             qdev_connect_clock_in(dev, "lrclk", qdev_get_clock_out(s->codec, "lrclk"));
+         }
+diff --git a/hw/arm/s5l8930_i2s.c b/hw/arm/s5l8930_i2s.c
+index 93ee98f..97d6033 100644
+--- a/hw/arm/s5l8930_i2s.c
++++ b/hw/arm/s5l8930_i2s.c
+@@ -104,6 +104,7 @@ struct S5L8930I2SState {
+      * (0x7900101) and stops by clearing it (0x7900000, then 0), leaving +0x08 at its frame
+      * format (0x78057805); the A4's starts with TXCOM = 6. */
+     bool ctrl_run;
++    bool host_mic;                  /* property: the frontend's microphone is this port's input */
+     uint8_t port;                   /* property: i2s<port>, selects its NCO */
+     Clock *lrclk;                   /* in: the codec's frame clock, followed while the port is the slave */
+     uint64_t nco_base;              /* property, S5L8920: the audio complex's NCO for MCLK */
+@@ -211,7 +212,7 @@ static void i2s_set_in_rate(S5L8930I2SState *s, unsigned rate)
+         .freq = rate, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .big_endian = false,
+     };
+ 
+-    if (!s->tone_hz) {
++    if (!s->tone_hz && s->host_mic) {
+         /* The frontend resamples what it recorded to this rate, and is told even where a host
+          * input voice exists: it is the port's rate that decides which frames it hands out. */
+         host_mic_set_rate(rate);
+@@ -245,7 +246,7 @@ static void i2s_next_frame(S5L8930I2SState *s)
+      * nothing. host_mic_read_frame() is false when the frontend pushed nothing (the Mac, where
+      * coreaudio -- not this ring -- is the input, or a phone with the switch off), and only then is
+      * the voice's ring, exactly as before. */
+-    if (host_mic_read_frame(s->rx_frame)) {
++    if (s->host_mic && host_mic_read_frame(s->rx_frame)) {
+         return;
+     }
+     if (s->in_level >= 4) {
+@@ -426,7 +427,9 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
+         } else {
+             /* A stopped recording's unread frames would play back as a burst at the head of the
+              * next one, a second or a day later. */
+-            host_mic_flush();
++            if (s->host_mic) {
++                host_mic_flush();
++            }
+         }
+         if (s->voice_in) {
+             audio_be_set_active_in(s->audio_be, s->voice_in, run);
+@@ -541,6 +544,7 @@ static const VMStateDescription vmstate_s5l8930_i2s = {
+ static const Property s5l8930_i2s_properties[] = {
+     DEFINE_PROP_BOOL("audio-out", S5L8930I2SState, audio_out, false),
+     DEFINE_PROP_BOOL("ctrl-run", S5L8930I2SState, ctrl_run, false),
++    DEFINE_PROP_BOOL("host-mic", S5L8930I2SState, host_mic, false),
+     DEFINE_PROP_UINT8("port", S5L8930I2SState, port, 0),
+     DEFINE_PROP_UINT64("nco-base", S5L8930I2SState, nco_base, 0),
+     DEFINE_PROP_UINT32("nco-ref-hz", S5L8930I2SState, nco_ref_hz, 0),
+-- 
+2.39.5
+

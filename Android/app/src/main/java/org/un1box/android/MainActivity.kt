@@ -1002,7 +1002,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         engine = null; workerPid = 0; sessionOwned = false; displayAsleep = false; stopSensors(); displayView?.keepScreenOn = false
         status = if (unexpected) "failed" else "stopped"
         detail = ""
-        if (unexpected) error = "Guest worker exited unexpectedly; writable state retained. Start creates a fresh worker. Private diagnostics are retained."
+        if (unexpected) error = "The emulator stopped unexpectedly. The device's data is kept; press Start to run it again."
         Thread({
             WorkerExitEvidence.capture(applicationContext, exitedPid)
             val terminal = try {

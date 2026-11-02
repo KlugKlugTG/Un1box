@@ -44,17 +44,17 @@ internal object GuestCrashDiagnosis {
         // More specific than a generic missing-entrypoint hint: the app requested a buffer with NULL data,
         // and the bridge had no guest-side memory to hand back from glMapBuffer.
         if (engine.any { it.contains("REFUSED map:no-guest-copy") }) {
-            return "The engine's own log says glMapBuffer had no guest memory to return: the buffer was created " +
-                "with a NULL data pointer, so the bridge returned 0. That points to missing GLES buffer "
-                "storage in the emulator, not an app-version mismatch."
+            return "The emulator's log shows glMapBuffer had no device memory to hand back: the app created the " +
+                "buffer with a NULL data pointer, so the emulator returned 0. That is a gap in Un1box's graphics " +
+                "support, not an app-version mismatch."
         }
         // An entry point that answered nothing is the stronger evidence of the two, so it wins wherever it is.
         engine.asReversed().firstNotNullOfOrNull { Regex("""UNHANDLED (\w+) \(id (\d+)\)""").find(it) }
-            ?.let { return "The engine's own log says the GL bridge did not implement ${it.groupValues[1]} " +
-                "(id ${it.groupValues[2]}) and answered 0: if this crash came right after that, the value the app " +
-                "used was ours, not the app's." }
+            ?.let { return "The emulator's log shows the app called ${it.groupValues[1]} (id ${it.groupValues[2]}), a " +
+                "graphics function Un1box doesn't support yet, and got 0 back. If the app crashed right after, " +
+                "that is the likely cause." }
         engine.asReversed().firstNotNullOfOrNull { Regex("""REFUSED (\S+)""").find(it) }
-            ?.let { return "The engine's own log says it refused ${it.groupValues[1]}: the crash may follow from that." }
+            ?.let { return "The emulator's log shows it refused ${it.groupValues[1]}, which may have caused the crash." }
         return null
     }
 
@@ -68,16 +68,16 @@ internal object GuestCrashDiagnosis {
         val serial = tail(File(stateDir, "guest-serial.log"), 40)
         val hint = engineHint(engine)
         return buildString {
-            appendLine(summary?.verdict ?: "No crash report, so the app did not crash: iOS or the system killed it, " +
-                "or it is still running.")
+            appendLine(summary?.verdict ?: "There is no crash report, so the app didn't crash. Either iOS closed it " +
+                "(for example, to free memory) or it is still running.")
             if (hint != null) {
                 appendLine()
                 appendLine(hint)
             }
             if (guestLog != null) {
                 appendLine()
-                appendLine("——— Guest system log, last launch ———")
-                appendLine(guestLog.ifBlank { "(the guest printed nothing)" })
+                appendLine("——— iOS system log, last launch ———")
+                appendLine(guestLog.ifBlank { "(iOS logged nothing)" })
             }
             if (summary != null) {
                 appendLine()
@@ -86,12 +86,12 @@ internal object GuestCrashDiagnosis {
             }
             if (engine.isNotEmpty()) {
                 appendLine()
-                appendLine("——— Engine log (emulation's own words) ———")
+                appendLine("——— Emulator log ———")
                 engine.forEach { appendLine(it) }
             }
             if (serial.isNotEmpty()) {
                 appendLine()
-                appendLine("——— guest-serial.log ———")
+                appendLine("——— Serial console (guest-serial.log) ———")
                 serial.forEach { appendLine(it) }
             }
         }.trimEnd()

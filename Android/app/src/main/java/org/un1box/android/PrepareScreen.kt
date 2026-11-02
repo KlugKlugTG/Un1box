@@ -162,6 +162,7 @@ private fun SupportBadge(support: Support) {
         Support.TESTED_SLOW -> MaterialTheme.colorScheme.tertiary
         Support.EXPERIMENTAL -> LtColors.Warning
         Support.UNTESTED -> MaterialTheme.colorScheme.onSurfaceVariant
+        Support.DOESNT_START -> MaterialTheme.colorScheme.error
     }
     Text(support.label, Modifier.padding(start = 12.dp).clip(RoundedCornerShape(8.dp)).background(color.copy(alpha = 0.14f))
         .padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall, color = color)
@@ -238,7 +239,11 @@ private fun ColumnScope.PreparedCopyStep(state: PrepareState, busy: Boolean, onC
     val context = androidx.compose.ui.platform.LocalContext.current
     Heading("$name, iOS ${firmware.label}", "Un1box can't build this version on a phone yet. Prepare it on a computer, then add it here.")
     if (firmware.support != Support.TESTED) Text("${firmware.support.label}: ${firmware.support.detail}", Modifier.padding(bottom = 12.dp),
-        style = MaterialTheme.typography.bodySmall, color = if (firmware.support == Support.UNTESTED) MaterialTheme.colorScheme.onSurfaceVariant else LtColors.Warning)
+        style = MaterialTheme.typography.bodySmall, color = when (firmware.support) {
+            Support.UNTESTED -> MaterialTheme.colorScheme.onSurfaceVariant
+            Support.DOESNT_START -> MaterialTheme.colorScheme.error
+            else -> LtColors.Warning
+        })
     Card(icon = LtIcons.Layers, title = "Prepared system", done = false, detail = "${firmware.id}.itbase, made from ${firmware.fileName}") {
         Text("On a Mac, Light Touch for Mac's firmwarekit tool prepares it and packs it into an .itbase folder. Copy that folder to this phone, then choose it here:",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

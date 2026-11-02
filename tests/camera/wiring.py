@@ -7,7 +7,8 @@ The slices prove what a piece does; these prove the pieces are connected to each
   device model   the ISP copies the phone's frame before it draws, never draws a size that is not a mode, and
                  falls back to the pattern only when the phone has sent nothing
   native         the JNI entry points the app declares exist, with the names the app asks for
-  android        the permission, the switch, the settings line and the worker's own wiring
+  android        the permission and the request that still belong to the path, the worker's own wiring,
+                 and that Settings no longer offers a switch for a path that delivers no picture
 """
 import os
 import subprocess
@@ -124,16 +125,21 @@ def portable_declares_the_camera():
             "the portable layer does not ask the engine for the picture's size")
 
 
-def android_asks_for_the_permission():
+def android_the_permission_and_its_request_stay():
+    """The path is dark, not gone: what would ask Android for the camera is still in place."""
     manifest = read("Android/app/src/main/AndroidManifest.xml")
     require('android.permission.CAMERA' in manifest, "the manifest does not ask for the camera")
     activity = read("Android/app/src/main/java/org/un1box/android/MainActivity.kt")
-    require("Manifest.permission.CAMERA" in activity, "the switch does not ask Android for the camera")
+    require("Manifest.permission.CAMERA" in activity, "nothing asks Android for the camera any more")
+    require("cameraPermission.launch" in activity, "the permission has no request left to launch it")
 
 
-def android_the_switch_reaches_the_worker():
+def android_the_worker_decides_and_keeps_the_camera_off():
+    """The worker's wiring, and the one place that now decides: no stored preference can start a capture."""
     service = read("Android/app/src/main/java/org/un1box/android/EngineService.kt")
-    require('getBoolean("camera", false)' in service, "the worker does not read the camera switch")
+    require('getBoolean("camera"' not in service,
+            "the worker still reads a stored camera preference, and Settings has no switch to turn it off")
+    require("cameraWanted = false" in service, "the worker does not say plainly that the camera stays off")
     require('setenv("IT_CAMERA"' in service,
             "IT_CAMERA is not set before the guest starts: off, the board unmatches the isp node and there is "
             "no camera at all")
@@ -147,13 +153,19 @@ def android_the_switch_reaches_the_worker():
     require("Native.CAMERA_BACK," in capture, "the frame does not say which camera it came from")
 
 
-def android_the_switch_is_in_settings():
+def android_settings_does_not_offer_the_camera():
+    """No switch, and no status line: the guest's ISP delivers no picture, so the row is out.
+
+    What stays is the plumbing the row was wired to, so that putting the row back is a Settings change
+    and not a rebuild of the path."""
     settings = read("Android/app/src/main/java/org/un1box/android/SettingsScreen.kt")
-    require('"camera_toggle"' in settings, "Settings has no camera switch")
-    require("host.cameraStatus" in settings, "Settings does not show what the camera is doing")
+    for gone in ('"camera_toggle"', '"camera_status"', "host.useCamera", "host.cameraStatus", 'Group("Camera")'):
+        require(gone not in settings, f"Settings still offers the camera: {gone}")
     shell = read("Android/app/src/main/java/org/un1box/android/Shell.kt")
-    require("val camera: Boolean" in shell and "val cameraStatus: String" in shell,
-            "the screen host does not carry the camera's state")
+    require("val camera: Boolean" in shell and "val cameraStatus: String" in shell and "fun useCamera(" in shell,
+            "the screen host no longer carries the camera's state: the plumbing is meant to stay")
+    prefs = read("Android/app/src/main/java/org/un1box/android/AppSettings.kt")
+    require('getBoolean("camera", false)' in prefs, "the preference the old switch wrote is not read any more")
 
 
 # --- the stack itself --------------------------------------------------------
@@ -212,7 +224,8 @@ CHECKS = [
     ("engine patch: a size that is not a mode is refused", engine_patch_refuses_a_size_that_is_not_a_mode),
     ("portable: the camera API is declared and resolved", portable_declares_the_camera),
     ("native: every entry point the app declares exists", jni_matches_the_app),
-    ("android: the manifest and the switch ask for the camera", android_asks_for_the_permission),
-    ("android: the switch reaches the worker and the guest", android_the_switch_reaches_the_worker),
-    ("android: Settings has the switch and the line", android_the_switch_is_in_settings),
+    ("android: the permission and the request that go with it stay", android_the_permission_and_its_request_stay),
+    ("android: the worker is wired, and keeps the camera off itself",
+     android_the_worker_decides_and_keeps_the_camera_off),
+    ("android: Settings does not offer the camera", android_settings_does_not_offer_the_camera),
 ]

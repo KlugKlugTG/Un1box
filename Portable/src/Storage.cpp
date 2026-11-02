@@ -755,11 +755,16 @@ static void clone_sparse(const fs::path &from, const fs::path &to) {
         off_t end = st.st_size;
 #ifdef SEEK_DATA
         off_t data = lseek(in.n, at, SEEK_DATA);
-        if (data < 0)
+        if (data < 0 && errno == ENXIO)
             break;  // only a hole remains
-        at = data;
-        end = lseek(in.n, data, SEEK_HOLE);
-        io(end > 0, "seek hole " + from.string());
+        if (data >= 0) {
+            at = data;
+            end = lseek(in.n, data, SEEK_HOLE);
+            if (end <= at)
+                end = st.st_size;
+        }
+        // Otherwise the filesystem can't say, and the rest is copied: macOS's App Translocation mount (an app opened
+        // from Downloads) answers ENOTSUP, and taking that for a hole left the record's guest package all zeros.
 #endif
         while (at < end) {
             const size_t want = size_t(std::min<off_t>(off_t(buffer.size()), end - at));

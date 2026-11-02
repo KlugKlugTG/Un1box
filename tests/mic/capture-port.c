@@ -33,9 +33,10 @@
 extern int64_t mic_test_now_us;
 
 /* hw/arm/s5l8930_i2s.c's state, reduced to the fields these two functions
- * touch: the port's ring of host input, the frame being read out, and the
- * tone property. */
+ * touch: whether this board gave the port the frontend's microphone, the port's
+ * ring of host input, the frame being read out, and the tone property. */
 typedef struct S5L8930I2SState {
+    bool host_mic;
     int tone_hz;
     uint64_t tone_frame;
     unsigned in_rate;
@@ -72,7 +73,7 @@ static void reset_clock(void) { mic_test_now_us = 1000000; }
 
 static void test_microphone_wins_over_a_silent_voice(void)
 {
-    S5L8930I2SState port = {0};
+    S5L8930I2SState port = { .host_mic = true };
     int16_t sent[512][2], got[512][2];
 
     reset_clock();
@@ -92,9 +93,38 @@ static void test_microphone_wins_over_a_silent_voice(void)
     assert(port.in_level == I2S_RING);
 }
 
-static void test_voice_answers_when_nothing_was_recorded(void)
+/* The S5L8920 boards share this port model but set no `host-mic` property
+ * (patch 0013): the ring is left alone and the guest hears the voice's
+ * silence, exactly as it did before the microphone patch. */
+static void test_a_board_without_the_microphone_ignores_the_ring(void)
 {
     S5L8930I2SState port = {0};
+    int16_t sent[8][2], got[8][2];
+    HostMicState state;
+
+    reset_clock();
+    host_mic_flush();
+    silent_voice(&port);
+    host_mic_set_rate(44100);
+    for (int i = 0; i < 8; i++) {
+        sent[i][0] = 5000;
+        sent[i][1] = -5000;
+    }
+    assert(host_mic_push(sent, sizeof sent) == 8);
+    read_frames(&port, got, 8);
+    for (int i = 0; i < 8; i++) {
+        assert(got[i][0] == 0 && got[i][1] == 0);
+    }
+    /* And it consumed nothing: the frames are still there for a port that has
+     * the microphone, which is the point of not asking. */
+    host_mic_state(&state);
+    assert(state.queued == 8);
+    host_mic_flush();
+}
+
+static void test_voice_answers_when_nothing_was_recorded(void)
+{
+    S5L8930I2SState port = { .host_mic = true };
     int16_t got[2][2];
 
     reset_clock();
@@ -128,7 +158,7 @@ static void test_nothing_anywhere_is_silence(void)
 
 static void test_a_slower_port_resamples(void)
 {
-    S5L8930I2SState port = {0};
+    S5L8930I2SState port = { .host_mic = true };
     int16_t sent[64][2], got[64][2];
 
     reset_clock();
@@ -152,7 +182,7 @@ static void test_a_slower_port_resamples(void)
 
 static void test_the_tail_stops_when_recording_stops(void)
 {
-    S5L8930I2SState port = {0};
+    S5L8930I2SState port = { .host_mic = true };
     int16_t sent[8][2], got[8][2];
 
     reset_clock();
@@ -174,7 +204,7 @@ static void test_the_tail_stops_when_recording_stops(void)
 
 static void test_a_stopped_capture_leaves_nothing_behind(void)
 {
-    S5L8930I2SState port = {0};
+    S5L8930I2SState port = { .host_mic = true };
     int16_t sent[8][2], got[2][2];
     HostMicState state;
 
@@ -192,7 +222,7 @@ static void test_a_stopped_capture_leaves_nothing_behind(void)
 
 static void test_bytes_are_little_endian_per_half(void)
 {
-    S5L8930I2SState port = {0};
+    S5L8930I2SState port = { .host_mic = true };
     int16_t sent[1][2] = {{0x1234, (int16_t)0xabcd}};
     uint8_t bytes[4];
 
@@ -228,6 +258,7 @@ static void test_a_full_ring_drops_and_counts(void)
 int main(void)
 {
     test_microphone_wins_over_a_silent_voice();
+    test_a_board_without_the_microphone_ignores_the_ring();
     test_voice_answers_when_nothing_was_recorded();
     test_nothing_anywhere_is_silence();
     test_a_slower_port_resamples();
@@ -235,7 +266,7 @@ int main(void)
     test_a_stopped_capture_leaves_nothing_behind();
     test_bytes_are_little_endian_per_half();
     test_a_full_ring_drops_and_counts();
-    puts("capture port: the frontend's microphone reaches the guest, and silence still wins when it "
-         "should");
+    puts("capture port: the frontend's microphone reaches the guest on a board that has one, and "
+         "silence still wins when it should");
     return 0;
 }
