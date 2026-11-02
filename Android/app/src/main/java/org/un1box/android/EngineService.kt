@@ -214,7 +214,7 @@ class EngineService : Service() {
             val s = Native.status()
             s.getOrNull(2)?.takeIf { it.isNotEmpty() }?.let { error = it }
             if (s.firstOrNull() == "failed" && started.isConsumed() && failureRecorded.compareAndSet(false, true)) {
-                val retainedError = error.ifEmpty { "Guest worker failed; writable state and diagnostics retained. Start a fresh worker." }
+                val retainedError = error.ifEmpty { "The emulator stopped. The device's data is kept; press Start to run it again." }
                 Thread({ persistStopError(retainedError); persistObservations("unexpected-engine-exit") }, "guest-failure-record").start()
             }
             return Bundle().apply {
