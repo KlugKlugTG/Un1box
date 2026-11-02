@@ -31,6 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = ROOT / "tests" / "mic"
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(ROOT / "tests"))       # the slicer, shared with tests/gles
 
 import slice as slicer  # noqa: E402
 import wiring  # noqa: E402
