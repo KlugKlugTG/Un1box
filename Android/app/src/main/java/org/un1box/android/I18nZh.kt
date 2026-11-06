@@ -16,13 +16,16 @@ package org.un1box.android
  * stops matching. tests/i18n/run.py checks that.
  */
 internal object I18nZh {
-    private val exact: Map<String, String> = HashMap<String, String>(1354).apply {
+    private val exact: Map<String, String> = HashMap<String, String>(1404).apply {
         put("No", "否")
         put("OK", "好")
+        put(" ms", " 毫秒")
         put("How", "方式")
         put("May", "5 月")
         put("Off", "关闭")
         put("Yes", "是")
+        put(" FPS", " 帧/秒")
+        put(" or ", " 或 ")
         put("Back", "返回")
         put("Chip", "芯片")
         put("Copy", "复制")
@@ -37,6 +40,7 @@ internal object I18nZh {
         put("None", "无")
         put("Save", "保存")
         put("Stop", "停止")
+        put(" and ", " 和 ")
         put("About", "关于")
         put("April", "4 月")
         put("Audio", "音频")
@@ -163,6 +167,7 @@ internal object I18nZh {
         put("Unpacking", "正在解包")
         put("Volume up", "音量 +")
         put("boot file", "启动文件")
+        put("no report", "无报告")
         put("not found", "未找到")
         put("not ready", "尚未就绪")
         put("unable to", "无法")
@@ -205,6 +210,7 @@ internal object I18nZh {
         put("Volume down", "音量 −")
         put("Why it quit", "退出原因")
         put("Your device", "你的设备")
+        put("back camera", "后置相机")
         put("Add a device", "添加设备")
         put("All licenses", "全部许可证")
         put("Bottom right", "右下")
@@ -222,7 +228,9 @@ internal object I18nZh {
         put("Top Grossing", "收入榜")
         put("Un1box guest", "Un1box 客户机")
         put("Unpacking · ", "正在解包 · ")
+        put("front camera", "前置相机")
         put("is truncated", "已被截断")
+        put("no frame yet", "尚无画面")
         put("no such file", "文件不存在")
         put("Called from: ", "调用自：")
         put("Choose a file", "选择文件")
@@ -239,6 +247,7 @@ internal object I18nZh {
         put("On this phone", "本机占用")
         put("Rename device", "重命名设备")
         put("Rename failed", "重命名失败")
+        put("Requires iOS ", "需要 iOS ")
         put("Running guest", "客户机运行中")
         put("Search failed", "搜索失败")
         put("Serial number", "序列号")
@@ -289,6 +298,7 @@ internal object I18nZh {
         put("Select a device", "选择设备")
         put("Shown on screen", "已显示到屏幕")
         put("Slowest events:", "最慢的事件：")
+        put("vCPU accounting", "vCPU 统计")
         put("Add device files", "添加设备文件")
         put("Cannot read file", "无法读取文件")
         put("Close and resume", "关闭并继续")
@@ -313,6 +323,7 @@ internal object I18nZh {
         put("Recover and start", "恢复并启动")
         put("Screenshot failed", "截屏失败")
         put("could not save it", "无法保存")
+        put("no camera service", "无相机服务")
         put("640 × 960 (Retina)", "640 × 960（Retina）")
         put("About this setting", "关于此设置")
         put("Changes since then", "之后的改动")
@@ -453,6 +464,7 @@ internal object I18nZh {
         put("Couldn't load the categories", "分类加载失败")
         put("Device library unavailable: ", "设备库不可用：")
         put("Download no longer available", "下载链接已失效")
+        put("Experimental cache selection", "实验性缓存选择")
         put("Prepare from an IPSW instead", "改为从 IPSW 准备")
         put("Start the device to install.", "启动设备后才能安装。")
         put("Un1box finds the files in it", "Un1box 会在其中自动查找文件")
@@ -463,6 +475,7 @@ internal object I18nZh {
         put("Notice integrity check failed", "声明完整性校验失败")
         put("The IPA directory is damaged.", "IPA 目录已损坏。")
         put("What the step is doing — 45 s", "当前步骤 — 45 秒")
+        put("the guest has named no camera", "客户机没有指定相机")
         put("warming up (sampling resumed)", "正在预热（采样已恢复）")
         put("Cannot read the selected file.", "无法读取所选文件。")
         put("Checked on Un1box for Android.", "已在 Android 版 Un1box 上验证。")
@@ -480,6 +493,7 @@ internal object I18nZh {
         put("This file is not a ZIP archive.", "该文件不是 ZIP 归档。")
         put("Touch timestamp moved backwards", "触摸时间戳倒退了")
         put("exceeds the guest package limit", "超出客户机工具包的大小上限")
+        put("the guest is on the back camera", "客户机正在使用后置相机")
         put("Could not finish profile capture", "未能完成性能录制")
         put("Could not read the frame history", "无法读取帧历史")
         put("Couldn't read this device's apps", "无法读取此设备上的应用")
@@ -493,6 +507,7 @@ internal object I18nZh {
         put("The app's executable is missing.", "应用的可执行文件缺失。")
         put("Touch timestamp must be positive", "触摸时间戳必须为正")
         put("Versions that run on this device", "可在此设备上运行的版本")
+        put("the guest is on the front camera", "客户机正在使用前置相机")
         put("Application Specific Information:", "应用特定信息：")
         put("Couldn't check the Legacy Store: ", "无法查询经典商店：")
         put("Encrypted — cannot open in Un1box", "已加密 — 无法在 Un1box 中打开")
@@ -507,6 +522,7 @@ internal object I18nZh {
         put("Device worker exited during import", "导入过程中设备工作进程退出")
         put("Fewer pauses when opening iOS apps", "打开 iOS 应用时减少停顿")
         put("The app executable is unsupported.", "不支持该应用的可执行文件。")
+        put("touch dropped: no input generation", "触摸被丢弃：无输入代次")
         put("A fresh firmware worker is required", "需要新的固件工作进程")
         put("Could not create a download folder.", "无法创建下载文件夹。")
         put("Couldn't check for newer versions. ", "无法检查新版本。")
@@ -526,10 +542,12 @@ internal object I18nZh {
         put("Legacy Store sent an unreadable chart.", "经典商店返回了无法解析的榜单。")
         put("The IPA has a damaged ZIP64 directory.", "IPA 的 ZIP64 目录已损坏。")
         put("This copy is not made for this device.", "该副本不是为这台设备制作的。")
+        put("Touch source timestamp moved backwards", "触摸源时间戳发生倒退")
         put("this phone refused the capture session", "手机拒绝了这次拍摄会话")
         put("Couldn't read the apps on this device: ", "无法读取此设备上的应用：")
         put("Prepared on a computer, then added here", "在电脑上准备好，然后添加到这里")
         put("The download exceeds its expected size.", "下载内容超出预期大小。")
+        put("\nPrepared on a computer, then added here", "\n在电脑上准备好，再添加到这里")
         put("A minute or a few, with 1.5 to 5 GB free", "约一两分钟，需要 1.5–5 GB 可用空间")
         put("Could not stage the built-in guest tools", "无法准备内置的客户机工具")
         put("From an IPSW, or a device image you have", "从 IPSW，或你已有的设备镜像")
@@ -567,6 +585,7 @@ internal object I18nZh {
         put("The device gets no camera from the next start", "下次启动后设备不再使用摄像头")
         put("The downloaded IPA failed its checksum check.", "下载的 IPA 校验和检查失败。")
         put("The guest returned an incomplete app identity", "客户机返回的应用标识不完整")
+        put("Guest worker unavailable; display was detached", "客户机工作线程不可用；显示已分离")
         put("Legacy Store does not support this device yet.", "经典商店还不支持此设备。")
         put("Legacy Store sent an unreadable category list.", "经典商店返回了无法解析的分类列表。")
         put("The Internet Archive is busy; try again later.", "Internet Archive 正忙，请稍后重试。")
@@ -605,6 +624,7 @@ internal object I18nZh {
         put("Stop the running device to switch to or add another.", "停止正在运行的设备后才能切换或新增。")
         put("The apps on a device are read from it while it runs.", "设备上的应用在运行时才会被读取。")
         put("This build of Un1box has no device preparation tools", "此版本的 Un1box 不包含设备准备工具")
+        put("Touch trace selection requires a fresh unused worker", "触摸轨迹选择需要新的、未使用过的工作线程")
         put("Preparing a device; return to view progress or cancel", "正在准备设备；返回可查看进度或取消")
         put("This IPA does not contain a supported ARM executable.", "该 IPA 不含受支持的 ARM 可执行文件。")
         put("Un1box sets up a device for you, right on this phone:", "Un1box 就在这台手机上为你准备好一台设备：")
@@ -621,6 +641,7 @@ internal object I18nZh {
         put("Also show it on the drawn device, not only in full screen", "在绘制的设备上也显示，而不只是全屏时")
         put("Stops at a white screen after it's set up. Not fixed yet.", "配置完成后停在白屏，尚未修复。")
         put("Titles in grey haven't been preserved in the archive yet.", "灰色标题表示归档中尚未收录。")
+        put("Graphics provider selection requires a fresh unused worker", "图形提供者选择需要新的、未使用过的工作线程")
         put("Previous guest worker has not exited. Retry after it stops.", "上一个客户机工作进程尚未退出，停止后再重试。")
         put("Your phone's motion sensors move the device's accelerometer", "用手机的运动传感器驱动设备的加速度计")
         put("The IPA contains unsafe, duplicate or encrypted ZIP members.", "IPA 中含有不安全、重复或加密的 ZIP 成员。")
@@ -639,9 +660,11 @@ internal object I18nZh {
         put("Without the camera permission the emulated device has no camera.", "没有相机权限时，模拟设备就没有摄像头。")
         put("Microphone unavailable: this phone refused 44.1 kHz mono capture.", "麦克风不可用：本机拒绝了 44.1 kHz 单声道采集。")
         put("This copy is encrypted or has not been classified as installable.", "该副本已加密，或尚未判定为可安装。")
+        put("This worker is disposing; vCPU accounting requires a fresh worker", "该工作线程正在结束；vCPU 统计需要新的工作线程")
         put("Tested versions are checked on Un1box; the others are yours to try.", "已验证版本都在 Un1box 上测过，其余的可自行尝试。")
         put("The guest was busy for the whole frame: more guest work than usual.", "整帧客户机都在忙：比平常做了更多工作。")
         put("Without the microphone permission the emulated device has no input.", "没有麦克风权限时，模拟设备就没有输入。")
+        put("This worker is disposing; recovery and Start require a fresh worker.", "该工作线程正在结束；恢复与启动需要新的工作线程。")
         put("Camera unavailable: this phone offers no YUV size the device can use.", "摄像头不可用：本机没有设备可用的 YUV 尺寸。")
         put("Capture engine timing for the app on screen, for tools/perf/profile.py", "为当前屏幕上的应用采集引擎计时数据，供 tools/perf/profile.py 使用")
         put("This device needs no boot file. Un1box's guest tools are added for you.", "此设备不需要启动文件，Un1box 会自动加入客户机工具。")
@@ -657,6 +680,8 @@ internal object I18nZh {
         put("Checked on Un1box for Android, but slower than the iPod touch 2G on iOS 3.1.3.", "已在 Android 版 Un1box 上验证，但比 iPod touch 2G + iOS 3.1.3 慢。")
         put("Its apps, settings and data are removed from this phone. This can't be undone.", "它的应用、设置和数据会从这台手机上删除，且无法撤销。")
         put("Starts in Light Touch for Mac's checks; not yet checked on Un1box for Android.", "在 Light Touch for Mac 的检查中可启动；尚未在 Android 版 Un1box 上验证。")
+        put("This worker is disposing; experimental cache selection requires a fresh worker", "该工作线程正在结束；实验性缓存选择需要新的工作线程")
+        put("Start and recovery require a fresh unused guest worker. Stop this worker first.", "启动与恢复需要新的、未使用过的客户机工作线程。请先停止当前工作线程。")
         put("This device also needs its boot file; add it from Settings after it is created.", "此设备还需要启动文件；创建完成后可在设置中添加。")
         put("Recording the system log for 30 seconds. Open the app now and wait for it to quit.", "正在记录 30 秒系统日志。现在打开应用，等它自己退出。")
         put("Choose a device and iOS version; Un1box downloads Apple's firmware and builds it here", "选择设备和 iOS 版本；Un1box 下载 Apple 固件并在此构建")
@@ -698,6 +723,19 @@ internal object I18nZh {
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */
     private val rules: List<Pair<Regex, String>> = listOf(
+        Regex("^(.+) is truncated\$") to "\$1 已被截断",
+        Regex("^(.+) is not a guest package\$") to "\$1 不是客户机软件包",
+        Regex("^(.+) exceeds the guest package limit\$") to "\$1 超出客户机软件包上限",
+        Regex("^(.+) requires a fresh unused worker\$") to "\$1需要新的、未使用过的工作线程",
+        Regex("^Camera: (.+); trying again\$") to "相机：\$1；正在重试",
+        Regex("^the camera reported error (.+)\$") to "相机报告错误 \$1",
+        Regex("^touch rejected: (.+)\$") to "触摸被拒绝：\$1",
+        Regex("^gesture cancelled: (.+)\$") to "手势已取消：\$1",
+        Regex("^(.+); input release failed: (.+)\$") to "\$1；输入释放失败：\$2",
+        Regex("^Guest audio output stopped \\(code (.+)\\)\\. Stop and restart if it does not recover\\.\$") to "客户机音频输出已停止（代码 \$1）。若无法自行恢复，请停止后重新启动。",
+        Regex("^phone: (.+) frames · (.+) · (.*)\$") to "手机：\$1 帧 · \$2 · \$3",
+        Regex("^Microphone read failed \\((.+)\\)\$") to "麦克风读取失败（\$1）",
+        Regex("^The app crashed in (.+), called from (.+), using something that didn't exist\\. On a real device that is a bug in the app; here it can also mean the emulated iOS didn't provide something the app expected\\. The system log below may say which\\.\$") to "应用在 \$1 中崩溃，调用来自 \$2，用到了并不存在的东西。在真机上这是应用的 bug；在这里也可能意味着模拟的 iOS 没有提供应用期望的东西。下面的系统日志可能会说明是哪一种。",
         Regex("^Reusing the one from (.+)\$") to "复用来自 \$1 的那一份",
         Regex("^Last (.+)\$") to "最近 \$1",
         Regex("^(Tested|Tested, slow|Experimental|Untested|Doesn't start yet): (.+)\$") to "\$1：\$2",

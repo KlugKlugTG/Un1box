@@ -66,8 +66,47 @@ python3 tests/i18n/run.py -v   # 外加每个文件的完成度和仍未翻译�
 - 词表能解析、没有重复键、没有空值、中文值里确实有中文；
 - `%d` / `%s` / `%.2f` 这类占位符在译文里个数和种类不变；
 - 每条规则的正则能编译、`$n` 不超过组数、锚定在开头；
-- 界面里能显示的字符串有 91% 以上已翻译，且 `SCREENS` 列出的界面文件各自 ≥95%；
+- 界面里能显示的字符串有 95% 以上已翻译，且 `SCREENS` 列出的界面文件各自 ≥95%；
 - 本包只有一个 `Text`（就是会翻译的那个），语言开关在设置里可达。
+
+## 在真正的 Android 工程里编译与运行过
+
+上面的脚本只看文本。词表本身也在真实工具链上过了一遍（AGP 8.9.2、Kotlin 2.1.20、
+Compose 编译器插件、NDK 28.2，编译 `compileSdk 35`）：
+
+```sh
+./gradlew :app:compileDebugKotlin      # 零 error
+./gradlew :app:testDebugUnitTest       # 79 个 JVM 单测全过
+```
+
+再把 AGP 编出来的 `org.un1box.android.I18nZh` 类直接拿来跑：从 `*.kt` 里取出全部
+904 条界面能显示的字符串（`"a" + "b"` 已按运行时拼接合并、转义已展开），逐条交给
+`I18nZh.translate`，结果写回文件核对。766 条变成中文；余下 138 条是：
+
+- 95 条按设计保留英文（机型名、芯片名、单位、崩溃报告的原始标题）；
+- 20 条是 `Icons.kt` 里 `icon("Mic", "M12 14c…")` 的图标内部名，不是屏幕上的字；
+- 23 条是崩溃日志的解析模式（`Symbol not found:\s*(.+)`）和性能浮层的表头
+  （`# sequence published-ns …`），给人看的是它们匹配到的内容，不是模式本身。
+
+这个过程抓到了纯文本检查抓不到的东西：带 `$变量` 的句子在源码里只是模板，
+只有跑起来才知道拼完是什么样，`"Camera: $reason; trying again"`、`"$asset is truncated"`
+这类句子的译文因此补成了规则。
+
+### 在 Windows 上构建的两个坑
+
+与翻译无关，但会让 `./gradlew` 在 Windows 上直接失败：
+
+1. `gradle/verification-metadata.xml` 记录了依赖的 SHA256，其中 `aapt2` 只有
+   Linux/macOS 的产物。Windows 版 `aapt2-8.9.2-…-windows.jar` 不在清单里，
+   `processDebugResources` 会以 "Dependency verification failed" 停下。
+   本机构建加 `--dependency-verification=off` 即可（不要改这个文件，它保护的是真依赖）。
+2. `aidl.exe` 会把自己被调用的命令行写进生成文件的注释里。Windows 路径含
+   `…\org\un1box\…`，而 javac 在分词之前先处理 `\uXXXX` 转义，于是注释里的
+   `\un1box` 被当成非法的 Unicode 转义，`compileDebugJavaWithJavac` 报错。
+   在 Java 编译前把这一行注释删掉即可。这两个都只影响本机构建，源码不需要改。
+
+完整 APK 还需要仓库外的两样东西：`qemu-ios` 源码（`LIGHTTOUCH_QEMU_SOURCE`）和
+预编译引擎 `engineRoot/<abi>/libqemu-arm.so`，见 `scripts/build.env` 与 `docs/BUILDING.md`。
 
 ## 已知限制
 
@@ -76,7 +115,8 @@ python3 tests/i18n/run.py -v   # 外加每个文件的完成度和仍未翻译�
 - `PerformanceOverlay.kt` 显式导入了 `androidx.compose.material3.Text`（它画的是
   `AnnotatedString`），显式导入优先于同包声明，所以性能浮层里的标签不被翻译 ——
   那里全是数字和单位，本来也不需要。
-- 少数引擎层的长诊断句仍是英文：它们只在出错时的错误卡里出现，且含大量内部字段名。
+- 仍有少量引擎层的诊断句不翻译：它们是崩溃日志的原始字段（`Dyld Error Message:`、
+  `# sequence published-ns …`）和日志解析模式，属于要原样呈现的证据，不是界面用语。
 - UI 是语言切换后重建界面生效，不是即时重排。
 
 ## 这个仓库的译文怎么来的
