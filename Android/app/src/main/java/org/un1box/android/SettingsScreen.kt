@@ -1,5 +1,6 @@
 package org.un1box.android
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -47,6 +48,12 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
                 Text("Settings", style = MaterialTheme.typography.titleLarge)
             }
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings")) {
+                Group("Language") {
+                    ChoiceRow(LtIcons.Info, "Language", UiLanguage.entries, s.language, { it.label },
+                        "Applies to the whole app", tag = "ui_language") {
+                        s.language = it; I18n.choose(it); (context as? Activity)?.recreate()
+                    }
+                }
                 Group("Controls") {
                     SwitchRow(LtIcons.Tilt, "Tilt controls", "Your phone's motion sensors move the device's accelerometer", s.tilt, "tilt_toggle") { s.tilt = it; host.applySettings() }
                     SwitchRow(LtIcons.VolumeUp, "Phone volume keys control the device", "Off, they set your phone's volume as usual; the device's own volume buttons are on screen", s.volumeKeys) { s.volumeKeys = it }

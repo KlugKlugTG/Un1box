@@ -309,6 +309,9 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     private val pickGuestToolsFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) copyAsset(uri, "guest.itpack") }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The UI language is picked before anything draws: the phone's, unless Settings chose one.
+        I18n.onSystemLanguage(resources.configuration.locales[0]?.toLanguageTag())
+        I18n.choose(settings.language)
         // The guest is a portrait device; its landscape apps rotate inside the portrait screen.
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         WindowCompat.setDecorFitsSystemWindows(window, false)
