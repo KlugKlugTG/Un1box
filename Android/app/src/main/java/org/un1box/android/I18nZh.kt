@@ -16,7 +16,7 @@ package org.un1box.android
  * stops matching. tests/i18n/run.py checks that.
  */
 internal object I18nZh {
-    private val exact: Map<String, String> = HashMap<String, String>(1404).apply {
+    private val exact: Map<String, String> = HashMap<String, String>(1414).apply {
         put("No", "否")
         put("OK", "好")
         put(" ms", " 毫秒")
@@ -143,6 +143,8 @@ internal object I18nZh {
         put("Untested", "未验证")
         put("Version ", "版本 ")
         put("app list", "应用列表")
+        put("this iOS", "此 iOS 版本")
+        put("this one", "此版本")
         put(" Crashed:", " 崩溃：")
         put(" of flash", " 闪存")
         put("1 version", "1 个版本")
@@ -386,6 +388,7 @@ internal object I18nZh {
         put("Shown on screen after", "之后显示到屏幕")
         put("Where do I get these?", "这些文件从哪里获取？")
         put("device must be one of", "设备必须是以下之一")
+        put("iOS system, boot file", "iOS 系统、启动文件")
         put("Camera not started yet", "摄像头尚未启动")
         put("Cannot read the folder", "无法读取该文件夹")
         put("Copying the iOS system", "正在复制 iOS 系统")
@@ -613,13 +616,14 @@ internal object I18nZh {
         put("The IPA contains a symbolic link outside its app.", "IPA 含有指向应用之外的符号链接。")
         put("The prepared device is kept; try adding it again.", "已准备的设备仍然保留，请重新添加。")
         put("This app is not made for the guest device family.", "该应用不是为客户机机型制作的。")
+        put("Un1box needs Apple's stock IPSW for this version.", "此版本需要 Apple 原版 IPSW。")
         put("Camera unavailable: Android has no camera service.", "摄像头不可用：Android 没有相机服务。")
         put("Guest app services are not included in this build.", "此版本不包含客户机应用服务。")
         put("The app has invalid bundle or executable metadata.", "应用的 bundle 或可执行元信息无效。")
         put("This copy has not been analyzed for compatibility.", "尚未分析该副本的兼容性。")
         put("Guest tools updated; they install at the next start", "客户机工具已更新，下次启动时安装")
         put("The app executable targets an unsupported platform.", "应用可执行文件的目标平台不受支持。")
-        put("The crash report doesn't say where the app crashed.", "崩溃报告没有说明应用在哪里崩溃。")
+        put("The crash report doesn't say where the app crashed.", "崩溃报告未说明应用是在哪里崩溃的。")
         put("Not shut down cleanly; it recovers at the next start", "未正常关机；下次启动时会恢复")
         put("Stop the running device to switch to or add another.", "停止正在运行的设备后才能切换或新增。")
         put("The apps on a device are read from it while it runs.", "设备上的应用在运行时才会被读取。")
@@ -677,6 +681,7 @@ internal object I18nZh {
         put("Without the boot file this device will not start; you can still add it now.", "没有启动文件，此设备无法启动；现在仍可添加。")
         put("64 KB, part of the chip rather than the IPSW. The same for every iOS version.", "64 KB，属于芯片而非 IPSW，各 iOS 版本都相同。")
         put("The emulator stopped. The device's data is kept; press Start to run it again.", "模拟器已停止。设备数据已保留，点「开始」可再次运行。")
+        put("Un1box needs Apple's stock IPSW for this version, and the device's boot file.", "此版本需要 Apple 原版 IPSW，以及设备的启动文件。")
         put("Checked on Un1box for Android, but slower than the iPod touch 2G on iOS 3.1.3.", "已在 Android 版 Un1box 上验证，但比 iPod touch 2G + iOS 3.1.3 慢。")
         put("Its apps, settings and data are removed from this phone. This can't be undone.", "它的应用、设置和数据会从这台手机上删除，且无法撤销。")
         put("Starts in Light Touch for Mac's checks; not yet checked on Un1box for Android.", "在 Light Touch for Mac 的检查中可启动；尚未在 Android 版 Un1box 上验证。")
@@ -686,7 +691,7 @@ internal object I18nZh {
         put("Recording the system log for 30 seconds. Open the app now and wait for it to quit.", "正在记录 30 秒系统日志。现在打开应用，等它自己退出。")
         put("Choose a device and iOS version; Un1box downloads Apple's firmware and builds it here", "选择设备和 iOS 版本；Un1box 下载 Apple 固件并在此构建")
         put("Space iOS frees is not given back to your phone yet, so a device's changes only grow.", "iOS 释放的空间暂时不会归还手机，因此设备的改动只会持续增长。")
-        put("iOS rejected the app's code signature and closed it. This is not an emulation problem.", "iOS 拒绝了应用的代码签名并关闭了它，这不是模拟器的问题。")
+        put("iOS rejected the app's code signature and closed it. This is not an emulation problem.", "iOS 拒绝了应用的代码签名并将其关闭。这不是模拟导致的问题。")
         put("Off, they set your phone's volume as usual; the device's own volume buttons are on screen", "关闭时音量键照常调手机音量；设备自身的音量键在屏幕上")
         put("A button that pauses iOS and opens the frame inspector, to pick apart a hitch you just saw", "一个暂停 iOS 并打开帧检查器的按钮，用来分析刚看到的卡顿")
         put("Camera off: Un1box has no camera permission. Turn the switch off and on again to grant it.", "摄像头已关闭：Un1box 没有相机权限。把开关关掉再打开即可授权。")
@@ -703,7 +708,7 @@ internal object I18nZh {
         put("Hand-picked by the archive. Whether a version runs on this device is checked when you open an app.", "由归档精选。某个版本能否在此设备运行，会在打开应用时检查。")
         put("Microphone off: Un1box has no microphone permission. Turn the switch off and on again to grant it.", "麦克风已关闭：Un1box 没有麦克风权限。把开关关掉再打开即可授权。")
         put("iOS shuts down like holding the power button: apps close and the device turns off. Your apps and data are kept.", "iOS 会像长按电源键那样关机：应用关闭、设备断电，应用与数据都会保留。")
-        put("iOS closed the app because it took too long to start. The emulator was too slow; the app itself is probably fine.", "iOS 因为启动太久关闭了该应用。是模拟器太慢，应用本身大概没问题。")
+        put("iOS closed the app because it took too long to start. The emulator was too slow; the app itself is probably fine.", "iOS 因应用启动耗时过长而将其关闭。模拟器速度太慢，应用本身大概率没有问题。")
         put("Could not reach Legacy Store. Check your connection, and that Un1box is allowed network access in Android's app settings.", "无法连接经典商店。请检查网络，并确认 Android 应用设置中允许 Un1box 联网。")
         put("Stereo sound, as through the headphone jack; off plays through the device's speaker. Applies the next time the device starts", "立体声，如同通过耳机插孔输出；关闭则从设备扬声器播放。下次启动设备时生效")
         put("There is no crash report, so the app didn't crash. Either iOS closed it (for example, to free memory) or it is still running.", "没有崩溃报告，说明应用并没有崩溃。可能是 iOS 关闭了它（例如为释放内存），或者它仍在运行。")
@@ -715,7 +720,7 @@ internal object I18nZh {
         put("Skips large emulator-code cleanups after app changes. Uses more RAM and may slightly lower steady-state game speed; applies after restarting the emulated iPhone.", "应用切换后跳过大规模的模拟器代码清理。更占内存，稳态游戏速度可能略降；重启模拟设备后生效。")
         put("Turn on Detailed frame timing in Settings › Diagnostics to see where each frame's time went: guest CPU, GL and lock waits. It costs a few percent of speed while on.", "在设置 › 诊断中开启「详细帧计时」，即可看到每帧时间去向：客户机 CPU、GL 与锁等待。开启时会损失几个百分点的速度。")
         put("The frame copy into the guest's surface runs on a worker thread. Off copies it on the CPU instead, which can be steadier when the guest is waiting most of its frame anyway. Applies at the next guest start.", "把帧复制到客户机表面由工作线程完成。关闭则改在 CPU 上复制，当客户机本来大半帧都在等待时可能更稳。下次启动客户机时生效。")
-        put("The emulator's log shows glMapBuffer had no device memory to hand back: the app created the buffer with a NULL data pointer, so the emulator returned 0. That is a gap in Un1box's graphics support, not an app-version mismatch.", "模拟器日志显示 glMapBuffer 没有可返回的显存：应用用 NULL 数据指针创建了缓冲，所以模拟器返回了 0。这是 Un1box 图形支持的一处缺口，而非应用版本不匹配。")
+        put("The emulator's log shows glMapBuffer had no device memory to hand back: the app created the buffer with a NULL data pointer, so the emulator returned 0. That is a gap in Un1box's graphics support, not an app-version mismatch.", "模拟器日志显示 glMapBuffer 没有设备内存可分配：应用创建缓冲区时传了 NULL 数据指针，模拟器因此返回 0。这是 Un1box 图形支持上的缺口，不是应用版本不匹配。")
         put("This phone's microphone becomes the device's input, for Voice Memos, Shazam and anything else that records; iOS asks inside the device the first time an app records. Android asks for the microphone permission when you turn this on. Applies the next time the device starts", "把本机麦克风作为设备的输入，供语音备忘录、Shazam 等录音应用使用；应用首次录音时 iOS 会在设备内询问。打开此选项时 Android 会请求麦克风权限。下次启动设备时生效")
         put("The frame block models a transfer's full hardware span (3 ms for a full screen), which the guest waits for as emulated time. Off ends a transfer when its pixels are written, which takes that span out of every frame the display pipeline shows. Applies at the next guest start.", "帧块按传输的完整硬件耗时建模（满屏约 3 毫秒），客户机以模拟时间等待这段耗时。关闭则在像素写完时结束传输，从而把这段耗时从显示管线呈现的每一帧中移除。下次启动客户机时生效。")
         put("With headphones, iOS plays games and music in stereo, unchanged.\n\nOn the speaker, iOS reshapes the sound for the device's small built-in speaker: mono, with the bass cut and a limiter to protect it. That processing runs on the emulated CPU, so games run a little slower, and the sound is closer to an old iPod's speaker than to your phone's.\n\nHeadphones also turn off the speaker's protection limiter. Some games count on it to keep loud sounds in check and can sound distorted without it; if a game crackles or clips, switch this off and restart the device.", "插入耳机时，iOS 以立体声播放游戏和音乐，不做任何处理。\n\n用扬声器时，iOS 会为设备小巧的内置喇叭重新塑形声音：单声道、削减低频，并加上限幅器保护喇叭。这段处理跑在模拟 CPU 上，所以游戏会稍慢；声音也更接近老 iPod 的喇叭，而不是你手机的。\n\n耳机还会关掉扬声器的保护限幅器。有些游戏靠它压制过响的声音，关掉后可能听起来失真；若某款游戏有爆音或削波，就关掉这个选项并重启设备。")
@@ -723,6 +728,18 @@ internal object I18nZh {
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */
     private val rules: List<Pair<Regex, String>> = listOf(
+        Regex("^Preparing runs on this phone, takes (.+) and needs about (.+) free\\. Un1box's guest tools are added for you\\.\$") to "准备过程在本机进行，耗时 \$1，需要约 \$2 可用空间。Un1box 会自动加入客户机工具。",
+        Regex("^The app needs (.+), which (.+) doesn't have\\. It was built for a newer iOS than (.+)\\.\$") to "应用需要 \$1，但 \$2 中没有它。该应用是为比 \$3 更新的 iOS 构建的。",
+        Regex("^The app crashed inside (.+), part of iOS\\. The emulation is the likely cause, not the app\\.\$") to "应用崩溃于 \$1（iOS 的组成部分）。最可能的原因是模拟本身，而不是应用。",
+        Regex("^The app crashed in its own code \\((.+)\\)\\. The emulation can still be the cause if the app relied on something Un1box doesn't support yet\\.\$") to "应用崩溃于它自己的代码（\$1）。如果应用依赖了 Un1box 尚未支持的功能，模拟仍可能是原因。",
+        Regex("^The emulator's log shows the app called (.+) \\(id (\\d+)\\), a graphics function Un1box doesn't support yet, and got 0 back\\. If the app crashed right after, that is the likely cause\\.\$") to "模拟器日志显示应用调用了 \$1（id \$2），这是 Un1box 尚未支持的图形函数，返回值为 0。如果应用随后立即崩溃，这很可能就是原因。",
+        Regex("^Found (.+) in (.+)\$") to "在 \$2 中找到 \$1",
+        Regex("^(\\S+) s selected\$") to "已选择 \$1 秒",
+        Regex("^firmwarekit (.+) failed \\(exit (\\d+)\\)\$") to "firmwarekit \$1 失败（退出码 \$2）",
+        Regex("^Downloading (.+) · (\\d+) of (\\d+)\$") to "正在下载 \$1 · 第 \$2 个，共 \$3 个",
+        Regex("^Installing (.+) · (\\d+) of (\\d+)\$") to "正在安装 \$1 · 第 \$2 个，共 \$3 个",
+        Regex("^Downloading (.+) of (.+)\$") to "正在下载 \$1，共 \$2",
+        Regex("^Released (.+) · build (.+)\$") to "发布于 \$1 · 构建 \$2",
         Regex("^(.+) is truncated\$") to "\$1 已被截断",
         Regex("^(.+) is not a guest package\$") to "\$1 不是客户机软件包",
         Regex("^(.+) exceeds the guest package limit\$") to "\$1 超出客户机软件包上限",
@@ -793,12 +810,11 @@ internal object I18nZh {
         Regex("^Could not download the boot file: (.+)\$") to "无法下载启动文件：\$1",
         Regex("^Looking up (.+)\$") to "正在查询 \$1",
         Regex("^This takes (.+)\\. You can leave Un1box; preparation continues in the background\\.\$") to "约需\$1。你可以离开 Un1box，准备会在后台继续。",
-        Regex("^Preparing runs on this phone, takes (.+) and needs about (.+) free\\. Un1box's guest tools are added for you\\.\$") to "准备在本机进行，约需 \$1，需要约 \$2 可用空间。Un1box 会自动加入客户机工具。",
         Regex("^Released (.+)\$") to "发布于 \$1",
         Regex("^It could not be added as a device: (.+)\$") to "无法将其作为设备添加：\$1",
         Regex("^Frame times · (.+) frames\$") to "帧时间 · \$1 帧",
         Regex("^Frame (\\d+)\$") to "第 \$1 帧",
-        Regex("^Show all (\\d+)\$") to "显示全部 \$1",
+        Regex("^Show all (\\d+)\$") to "显示全部 \$1 条",
         Regex("^at (.+)\$") to "在 \$1 处",
         Regex("^vCPU (.+)% of wall\$") to "vCPU 占实际时间 \$1%",
         Regex("^Serial (.+)\$") to "序列号 \$1",
