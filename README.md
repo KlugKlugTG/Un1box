@@ -4,6 +4,8 @@
 
 **Un1box** is the Android app that runs classic iPhone OS and iOS on your phone: pick a device and a version, prepare it on the phone, and a real, touchable iOS device appears in a window. **Android only, for now** — the desktop ports in this repository (Linux, Windows, macOS) still ship under their **LightTouch** names and are unchanged.
 
+**简体中文** · [中文说明](README.zh-CN.md) — the app's interface speaks Simplified Chinese; see [docs/TRANSLATION.md](docs/TRANSLATION.md).
+
 Un1box is a fork of **[Light Touch](https://github.com/blake-lucas/LightTouch)** — and of [Light Touch for Mac](https://github.com/samhenrigold/LightTouchMac) before it — built around the shared [qemu-ios engine](https://github.com/blake-lucas/qemu-ios). LightTouch gave this project its emulator, its device preparation, its engine work and most of its code; Un1box adds its own Android app, its own name and its own direction. Everything LightTouch does, it still does here: the settings, the store, the device library and the prepared-system format are the same, so a device prepared by either one can be opened by the other.
 
 A prepared iOS system can back several saved devices, each with its own storage.
@@ -72,6 +74,7 @@ python3 tests/idle/run.py        # the app's idle loops
 python3 tests/mic/run.py         # the microphone path
 python3 tests/camera/run.py      # the camera path
 python3 tests/gles/run.py        # the guest's GL bridge
+python3 tests/i18n/run.py        # the Simplified-Chinese catalogue and its coverage
 ```
 
 The last three also take `--engine PATH` to a `qemu-ios` checkout, which is where their engine-side
