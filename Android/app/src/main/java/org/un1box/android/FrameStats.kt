@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.system.Os
 import android.system.OsConstants
 import java.io.File
+import java.io.FileInputStream
 import java.io.RandomAccessFile
 
 /**
@@ -15,25 +16,79 @@ import java.io.RandomAccessFile
 internal class WorkerCpuSampler {
     private var vcpuTid = 0
     private val tickNs = 1_000_000_000L / maxOf(1L, Os.sysconf(OsConstants._SC_CLK_TCK))
+    private val scratch = ByteArray(1024)
+
+    private fun readAscii(path: String): Int {
+        FileInputStream(path).use { stream ->
+            var total = 0
+            while (total < scratch.size) {
+                val n = stream.read(scratch, total, scratch.size - total)
+                if (n <= 0) break
+                total += n
+            }
+            return total
+        }
+    }
+
+    private fun parseLongField(length: Int, startOffset: Int, targetField: Int): Long {
+        var i = startOffset
+        var field = 0
+        while (i < length) {
+            while (i < length && (scratch[i] == ' '.code.toByte() || scratch[i] == '\n'.code.toByte())) i++
+            if (i >= length) break
+            if (field == targetField) {
+                var neg = false
+                if (scratch[i] == '-'.code.toByte()) { neg = true; i++ }
+                var value = 0L
+                var digits = 0
+                while (i < length && scratch[i] in '0'.code.toByte()..'9'.code.toByte()) {
+                    value = value * 10L + (scratch[i] - '0'.code.toByte())
+                    i++
+                    digits++
+                }
+                return if (digits > 0) (if (neg) -value else value) else -1L
+            }
+            while (i < length && scratch[i] != ' '.code.toByte() && scratch[i] != '\n'.code.toByte()) i++
+            field++
+        }
+        return -1L
+    }
+
+    private fun afterStatComm(length: Int): Int {
+        for (i in length - 1 downTo 0) if (scratch[i] == ')'.code.toByte()) return i + 1
+        return -1
+    }
 
     private fun findVcpu(): Int = File("/proc/self/task").listFiles()?.firstOrNull { task ->
         try { File(task, "comm").readText().trim() == "CPU 0/TCG" } catch (_: Exception) { false }
     }?.name?.toIntOrNull() ?: 0
 
     /** [vCPU run ns, last core, core kHz, worker CPU ns]; -1 for anything unreadable. */
-    fun sample(): LongArray {
+    @Synchronized fun sample(): LongArray {
         val out = longArrayOf(-1, -1, -1, -1)
-        if (vcpuTid == 0 || !File("/proc/self/task/$vcpuTid").exists()) vcpuTid = findVcpu()
+        if (vcpuTid == 0) vcpuTid = findVcpu()
         if (vcpuTid != 0) try {
-            out[0] = File("/proc/self/task/$vcpuTid/schedstat").readText().trim().split(' ')[0].toLong()
-            val fields = File("/proc/self/task/$vcpuTid/stat").readText().substringAfterLast(')').trim().split(' ')
-            val core = fields[36].toLong()  // field 39, "processor"
-            out[1] = core
-            out[2] = File("/sys/devices/system/cpu/cpu$core/cpufreq/scaling_cur_freq").readText().trim().toLong()
+            val schedLen = readAscii("/proc/self/task/$vcpuTid/schedstat")
+            out[0] = parseLongField(schedLen, 0, 0)
+            val statLen = readAscii("/proc/self/task/$vcpuTid/stat")
+            val statStart = afterStatComm(statLen)
+            if (statStart >= 0) {
+                val core = parseLongField(statLen, statStart, 36)  // field 39, "processor"
+                if (core >= 0) {
+                    out[1] = core
+                    val freqLen = readAscii("/sys/devices/system/cpu/cpu$core/cpufreq/scaling_cur_freq")
+                    out[2] = parseLongField(freqLen, 0, 0)
+                }
+            }
         } catch (_: Exception) { vcpuTid = 0 }
         try {
-            val fields = File("/proc/self/stat").readText().substringAfterLast(')').trim().split(' ')
-            out[3] = (fields[11].toLong() + fields[12].toLong()) * tickNs  // utime + stime
+            val procLen = readAscii("/proc/self/stat")
+            val procStart = afterStatComm(procLen)
+            if (procStart >= 0) {
+                val utime = parseLongField(procLen, procStart, 11)
+                val stime = parseLongField(procLen, procStart, 12)
+                if (utime >= 0 && stime >= 0) out[3] = (utime + stime) * tickNs
+            }
         } catch (_: Exception) { }
         return out
     }

@@ -41,15 +41,17 @@
 
 namespace {
 std::mutex guard;
+std::mutex frame_cache_guard;
 std::mutex library_guard;
 lt_library *library=nullptr;
 std::string library_root;
 lt_runtime *runtime = nullptr;
 lt_device *device = nullptr;
 ANativeWindow *window = nullptr;
-FrameCopyCache frame_cache;
+FrameCopyCache frame_cache;  // guarded by frame_cache_guard (present() is sole writer)
 auto &pixels = frame_cache.pixels;
 auto &frame = frame_cache.frame;
+lt_frame_info latest_frame_meta = LT_INIT(lt_frame_info);  // guarded by guard
 lt_pcm_info pcm = LT_INIT(lt_pcm_info);
 lt_board_info board = LT_INIT(lt_board_info);
 uint64_t sequence = 0;
@@ -61,7 +63,6 @@ std::unique_ptr<ProfileWriter> profile_presentation; // guard owns the producer 
 uint64_t profile_presentation_started=0;
 uint64_t max_present_work_ns=0,window_failures=0,frame_copy_failures=0,surface_generation=0,pcm_failures=0;
 uint64_t present_intervals[6]={};
-uint64_t frame_sample_pixels=0,frame_nonzero_rgb_samples=0,frame_rgb_sample_sum=0;
 int first_lock_error=0,last_lock_error=0,first_post_error=0,last_post_error=0,last_geometry_error=0;
 int last_buffer_format=0,last_buffer_width=0,last_buffer_height=0,last_buffer_stride=0;
 uint64_t geometry_failures=0,invalid_buffers=0,first_window_error_ns=0;
@@ -72,6 +73,10 @@ unsigned window_log_budget=8;
 std::mutex frame_wake_mutex;
 std::condition_variable frame_wake;
 uint64_t frame_wake_sequence=0;
+void wake_presenter() {
+    {std::lock_guard<std::mutex> lock(frame_wake_mutex);++frame_wake_sequence;}
+    frame_wake.notify_one();
+}
 VcpuPerformanceHint vcpu_hint;  // frame publisher thread only
 VcpuBigCoreAffinity vcpu_affinity;  // frame publisher thread only
 uint64_t monotonic_ns() { timespec value{};clock_gettime(CLOCK_MONOTONIC,&value);return uint64_t(value.tv_sec)*1000000000ull+value.tv_nsec; }
@@ -264,7 +269,7 @@ Viewport viewport(int width, int height, const lt_frame_info &source) {
     double w = source.width * scale, h = source.height * scale;
     return {(width-w)/2, (height-h)/2, w, h};
 }
-Viewport viewport(int width, int height) { return viewport(width, height, frame); }
+Viewport viewport(int width, int height) { return viewport(width, height, latest_frame_meta); }
 lt_status open_library(const char *root,lt_error *error) {
     if(!root)return LT_INVALID;
     if(library && library_root==root)return LT_OK;
@@ -315,6 +320,21 @@ void convert_row_rgba(uint32_t *dst,const uint8_t *src,int width) {
     }
 #endif
 }
+void duplicate_row_2x(uint32_t *dst,const uint32_t *src,int src_width) {
+    int x=0;
+#if defined(__aarch64__)
+    for(;x+4<=src_width;x+=4) {
+        const uint32x4_t v=vld1q_u32(src+x);
+        vst1q_u32(dst+size_t(x)*2,vzip1q_u32(v,v));
+        vst1q_u32(dst+size_t(x)*2+4,vzip2q_u32(v,v));
+    }
+#endif
+    for(;x<src_width;++x) {
+        const uint32_t pixel=src[x];
+        dst[size_t(x)*2]=pixel;
+        dst[size_t(x)*2+1]=pixel;
+    }
+}
 void present() {
     request_display_priority();
     uint64_t configured_generation = 0;
@@ -324,11 +344,14 @@ void present() {
     uint64_t phase_generation=0,phase_epoch=0;
     uint64_t withdrawn_generation=0;
     for (;;) {
-        // The snapshot outlives both guarded scopes, so its release is outside
+        // The snapshot outlives all guarded scopes, so its release is outside
         // the control mutex even when a stale platform operation returns late.
-        std::optional<WindowSnapshot> snapshot,covered;
+        std::optional<WindowSnapshot> candidate,snapshot,covered;
         const bool visible=present_visible.load(std::memory_order_relaxed);
         lt_frame_info source = LT_INIT(lt_frame_info);
+        lt_runtime *local_runtime = nullptr;
+        uint64_t local_sequence = 0;
+        bool has_runtime = false, has_window = false, pending_input = false;
         uint64_t begin = 0;
         const uint64_t observe_begin=monotonic_ns();
         uint64_t guard_acquired=0,copy_begin=0;
@@ -337,7 +360,9 @@ void present() {
             std::lock_guard<std::mutex> lock(guard);
             guard_acquired=monotonic_ns();
             phase_generation=surface_generation;phase_epoch=presentation_epoch;
-            if (runtime) {
+            has_runtime=runtime!=nullptr;
+            has_window=window!=nullptr;
+            if (runtime && display_lease.inputPending()) {
                 present_stage(PresentPhase::InputStatus,phase_generation,phase_epoch);
                 lt_input_status delivered=LT_INIT(lt_input_status);lt_error error=LT_INIT(lt_error);
                 if(lt_runtime_input_status(runtime,&delivered,&error)==LT_OK) {
@@ -356,43 +381,67 @@ void present() {
                             }
                         } else {
                             ++ignored_input_rejections;last_ignored_input_request=delivered.request_id;
+                            display_lease.inputObserved(delivered.request_id);
                         }
                     }
                 }
             }
+            pending_input=runtime && display_lease.inputPending();
             if (window && !visible && withdrawn_generation!=surface_generation)
                 covered.emplace(window, surface_generation, presentation_epoch);
             if (runtime && window && visible) {
-                copy_begin=monotonic_ns();
-                present_stage(PresentPhase::FrameCopy,phase_generation,phase_epoch);
-                lt_error error = LT_INIT(lt_error);
-                const auto status = frame_cache.latest(sequence, error,
+                local_runtime=runtime;
+                local_sequence=sequence;
+                candidate.emplace(window, surface_generation, presentation_epoch);
+            } else {
+                present_stage(runtime&&window?PresentPhase::IdleNoNewFrame:PresentPhase::IdleNoTarget,
+                    phase_generation,phase_epoch);
+            }
+        }
+        // Copy guest pixels under frame_cache_guard rather than the control guard so
+        // touch, sensor, audio, and status calls never stall behind a 2.46 MB copy.
+        if (candidate && local_runtime) {
+            copy_begin=monotonic_ns();
+            present_stage(PresentPhase::FrameCopy,phase_generation,phase_epoch);
+            lt_error error = LT_INIT(lt_error);
+            lt_status copy_status = LT_AGAIN;
+            bool copied_valid = false;
+            bool invalidated_meta = false;
+            {
+                std::lock_guard<std::mutex> cache_lock(frame_cache_guard);
+                copy_status = frame_cache.latest(local_sequence, error,
                     [&](uint64_t since, lt_frame_info &out, lt_error &failure) {
-                        return lt_runtime_frame_metadata(runtime, since, &out, &failure);
+                        return lt_runtime_frame_metadata(local_runtime, since, &out, &failure);
                     },
                     [&](void *storage, uint64_t capacity, uint64_t &next, lt_frame_info &out, lt_error &failure) {
-                        return lt_runtime_copy_frame(runtime, storage, capacity, &next, &out, &failure);
+                        return lt_runtime_copy_frame(local_runtime, storage, capacity, &next, &out, &failure);
                     },
-                    [&] { frame_sample_pixels=frame_nonzero_rgb_samples=frame_rgb_sample_sum=0; });
-                if (status == LT_OK && frame.width && frame.height && frame.stride >= frame.width * 4 && frame.bytes <= pixels.size()) {
+                    [&] { invalidated_meta = true; });
+                if (copy_status == LT_OK && frame.width && frame.height && frame.stride >= frame.width * 4 && frame.bytes <= pixels.size()) {
                     begin=monotonic_ns();
                     source=frame;
-                    snapshot.emplace(window, surface_generation, presentation_epoch);
-                    frame_sample_pixels=frame_nonzero_rgb_samples=frame_rgb_sample_sum=0;
-                    // A fixed 16x16 grid diagnoses the copied guest frame without
-                    // another full image pass or claiming every pixel is black.
-                    for(uint32_t gy=0;gy<16;++gy)for(uint32_t gx=0;gx<16;++gx) {
-                        const uint32_t x=std::min((gx*2+1)*source.width/32,source.width-1);
-                        const uint32_t y=std::min((gy*2+1)*source.height/32,source.height-1);
-                        const uint8_t *sample=pixels.data()+y*source.stride+x*4;
-                        const uint32_t rgb=uint32_t(sample[0])+sample[1]+sample[2];
-                        ++frame_sample_pixels;frame_nonzero_rgb_samples+=rgb!=0;frame_rgb_sample_sum+=rgb;
-                    }
-                    present_stage(PresentPhase::CopiedCache,phase_generation,phase_epoch);
-                } else if(status!=LT_AGAIN) ++frame_copy_failures;
+                    copied_valid=true;
+                }
             }
-            if(!snapshot)present_stage(runtime&&window?PresentPhase::IdleNoNewFrame:PresentPhase::IdleNoTarget,
-                phase_generation,phase_epoch);
+            {
+                std::lock_guard<std::mutex> lock(guard);
+                if (invalidated_meta) latest_frame_meta = LT_INIT(lt_frame_info);
+                if (copied_valid) {
+                    latest_frame_meta = source;
+                    if (candidate->current(window, surface_generation, presentation_epoch)) {
+                        sequence = local_sequence;
+                        snapshot.emplace(window, surface_generation, presentation_epoch);
+                        present_stage(PresentPhase::CopiedCache,phase_generation,phase_epoch);
+                    }
+                } else if (copy_status != LT_AGAIN) {
+                    ++frame_copy_failures;
+                }
+                if (!snapshot) {
+                    present_stage(runtime&&window?PresentPhase::IdleNoNewFrame:PresentPhase::IdleNoTarget,
+                        phase_generation,phase_epoch);
+                }
+            }
+            candidate.reset();
         }
         if (covered) {
             // Uncovered, the next frame reconfigures the window, which asks for 60 Hz again.
@@ -451,43 +500,48 @@ void present() {
                     // 320x480 guest on a 1080x2400 panel used to cost two
                     // integer divides per target pixel, ~2.6M per frame.
                     // The window buffer is the guest's own size here whenever the scale is the
-                    // default (guest-sized geometry) or a whole multiple of it: then every row is
-                    // converted straight across, with no mapping and no margins.
-                    if(int(source.width)==target.width && int(source.height)==target.height &&
-                       target.stride==target.width) {
+                    // default (guest-sized geometry): every row is converted straight across via
+                    // NEON, even when gralloc pads target.stride wider than target.width.
+                    if(int(source.width)==target.width && int(source.height)==target.height) {
                         for(int y=0;y<target.height;++y)
                             convert_row_rgba(static_cast<uint32_t *>(target.bits)+size_t(y)*target.stride,
                                              pixels.data()+size_t(y)*source.stride,target.width);
                     } else {
-                    static thread_local std::vector<uint32_t> columns;
-                    const int x0=std::max(int(view.left),0);
-                    int x1=x0;
-                    while(x1<view.left+view.width && x1<target.width)++x1;
-                    columns.resize(size_t(std::max(x1-x0,0)));
-                    for(int x=x0;x<x1;++x)
-                        columns[x-x0]=std::min(uint32_t((x-view.left)*source.width/view.width),source.width-1)*4;
-                    const uint32_t *previous=nullptr;
-                    uint32_t previous_sy=UINT32_MAX;
-                    for(int y=0;y<target.height;++y) {
-                        auto *row=static_cast<uint32_t *>(target.bits)+y*target.stride;
-                        if(y<view.top || y>=view.top+view.height) {
-                            std::fill(row,row+target.width,0xff000000u);
-                            continue;
+                        static thread_local std::vector<uint32_t> columns;
+                        static thread_local std::vector<uint32_t> converted_row;
+                        const int x0=std::max(int(view.left),0);
+                        int x1=x0;
+                        while(x1<view.left+view.width && x1<target.width)++x1;
+                        const bool exact_2x=x0==0 && x1==target.width && target.width==int(source.width)*2;
+                        if(!exact_2x) {
+                            columns.resize(size_t(std::max(x1-x0,0)));
+                            for(int x=x0;x<x1;++x)
+                                columns[x-x0]=std::min(uint32_t((x-view.left)*source.width/view.width),source.width-1);
                         }
-                        uint32_t sy=std::min(uint32_t((y-view.top)*source.height/view.height),source.height-1);
-                        if(previous && sy==previous_sy) {
-                            memcpy(row,previous,size_t(target.width)*4);
-                            continue;
+                        converted_row.resize(source.width);
+                        const uint32_t *previous=nullptr;
+                        uint32_t previous_sy=UINT32_MAX;
+                        for(int y=0;y<target.height;++y) {
+                            auto *row=static_cast<uint32_t *>(target.bits)+size_t(y)*target.stride;
+                            if(y<view.top || y>=view.top+view.height) {
+                                std::fill(row,row+target.width,0xff000000u);
+                                continue;
+                            }
+                            uint32_t sy=std::min(uint32_t((y-view.top)*source.height/view.height),source.height-1);
+                            if(previous && sy==previous_sy) {
+                                memcpy(row,previous,size_t(target.width)*4);
+                                continue;
+                            }
+                            convert_row_rgba(converted_row.data(),pixels.data()+size_t(sy)*source.stride,int(source.width));
+                            if(exact_2x) {
+                                duplicate_row_2x(row,converted_row.data(),int(source.width));
+                            } else {
+                                std::fill(row,row+x0,0xff000000u);
+                                std::fill(row+x1,row+target.width,0xff000000u);
+                                for(int x=x0;x<x1;++x)row[x]=converted_row[columns[x-x0]];
+                            }
+                            previous=row;previous_sy=sy;
                         }
-                        std::fill(row,row+x0,0xff000000u);
-                        std::fill(row+x1,row+target.width,0xff000000u);
-                        const uint8_t *src=pixels.data()+sy*source.stride;
-                        for(int x=x0;x<x1;++x) {
-                            const uint8_t *p=src+columns[x-x0];
-                            row[x]=uint32_t(p[2])|(uint32_t(p[1])<<8)|(uint32_t(p[0])<<16)|0xff000000u;
-                        }
-                        previous=row;previous_sy=sy;
-                    }
                     }
                 }
                 scale_end=monotonic_ns();
@@ -556,10 +610,11 @@ void present() {
             present_stage(PresentPhase::Idle,phase_generation,phase_epoch);
         }
         // A frame published while this one was drawn is presented at once.
-        // The timeout keeps input-status and surface changes serviced while the
-        // guest screen is static.
+        // State changes (surface, visibility, scale, or queued touch) explicitly
+        // wake this condvar, so only in-flight touch status needs a short poll.
+        const auto wait_ms=pending_input?16:(has_runtime && has_window && visible)?100:250;
         std::unique_lock<std::mutex> wake(frame_wake_mutex);
-        frame_wake.wait_for(wake,std::chrono::milliseconds(16),[&] { return frame_wake_sequence!=woken_sequence; });
+        frame_wake.wait_for(wake,std::chrono::milliseconds(wait_ms),[&] { return frame_wake_sequence!=woken_sequence; });
         woken_sequence=frame_wake_sequence;
     }
 }
@@ -764,6 +819,7 @@ static jstring start_runtime(JNIEnv *env,jstring root,jstring id,bool allow_dirt
         if(stopped!=LT_OK)diagnostic=result(stopped,stop_error);
     }
     if(!presenter_started){presenter_started=true;std::thread(present).detach();}
+    else wake_presenter();
     return string(env,diagnostic);
 }
 
@@ -844,6 +900,7 @@ JNI(claimDisplay) jlong JNICALL Java_org_un1box_android_Native_claimDisplay(JNIE
         ++surface_generation;++presentation_epoch;previous_present_ns=0;
     }
     if(retired)ANativeWindow_release(retired);
+    wake_presenter();
     return jlong(token);
 }
 JNI(ownsDisplay) jboolean JNICALL Java_org_un1box_android_Native_ownsDisplay(JNIEnv *,jobject,jlong lease) {
@@ -873,6 +930,7 @@ JNI(attachDisplay) jstring JNICALL Java_org_un1box_android_Native_attachDisplay(
         }
     }
     if(retired)ANativeWindow_release(retired);
+    if(committed)wake_presenter();
     // incoming's rejected conversion reference is released outside guard.
     return string(env,committed?"":converted?retired_display:"Guest Surface conversion failed");
 }
@@ -888,6 +946,7 @@ JNI(detachDisplay) void JNICALL Java_org_un1box_android_Native_detachDisplay(JNI
         ++surface_generation;++presentation_epoch;previous_present_ns=0;
     }
     if(retired)ANativeWindow_release(retired);
+    wake_presenter();
 }
 JNI(releaseDisplay) void JNICALL Java_org_un1box_android_Native_releaseDisplay(JNIEnv *,jobject,jlong lease) {
     ANativeWindow *retired=nullptr;
@@ -905,6 +964,7 @@ JNI(releaseDisplay) void JNICALL Java_org_un1box_android_Native_releaseDisplay(J
         ++surface_generation;++presentation_epoch;previous_present_ns=0;
     }
     if(retired)ANativeWindow_release(retired);
+    wake_presenter();
 }
 JNI(cancelDisplayInput) jstring JNICALL Java_org_un1box_android_Native_cancelDisplayInput(JNIEnv *env,jobject,jlong lease,jlong generation) {
     std::lock_guard<std::mutex> lock(guard);
@@ -926,22 +986,28 @@ JNI(backgroundDisplay) jstring JNICALL Java_org_un1box_android_Native_background
     }
     display_lease.contactsReleased();
     ++presentation_epoch;previous_present_ns=0;sequence=0;
-    if(starting){startup_pause_requested=true;return string(env,"");}
-    return string(env,runtime?result(lt_runtime_pause(runtime,1,&error),error):"No active session");
+    if(starting){startup_pause_requested=true;wake_presenter();return string(env,"");}
+    const auto out=runtime?result(lt_runtime_pause(runtime,1,&error),error):"No active session";
+    wake_presenter();
+    return string(env,out);
 }
 JNI(pause) jstring JNICALL Java_org_un1box_android_Native_pause(JNIEnv *env,jobject,jboolean paused) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
     // An old in-flight failure cannot rewind the new epoch's cursor. Replay
     // the cache here so Resume does not depend on a newer guest repaint.
     ++presentation_epoch;previous_present_ns=0;sequence=0;
-    if(starting){startup_pause_requested=paused;return string(env,"");}
-    return string(env,runtime?result(lt_runtime_pause(runtime,paused,&error),error):"No active session");
+    if(starting){startup_pause_requested=paused;wake_presenter();return string(env,"");}
+    const auto out=runtime?result(lt_runtime_pause(runtime,paused,&error),error):"No active session";
+    wake_presenter();
+    return string(env,out);
 }
 JNI(stop) jstring JNICALL Java_org_un1box_android_Native_stop(JNIEnv *env,jobject) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
     ++presentation_epoch;previous_present_ns=0;
     if(starting)startup_stop_requested=true;
-    return string(env,runtime?result(lt_runtime_request_shutdown(runtime,&error),error):"");
+    const auto out=runtime?result(lt_runtime_request_shutdown(runtime,&error),error):"";
+    wake_presenter();
+    return string(env,out);
 }
 JNI(button) jstring JNICALL Java_org_un1box_android_Native_button(JNIEnv *env,jobject,jint button,jboolean down) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
@@ -963,7 +1029,7 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
         if(cancellation==LT_OK)display_lease.contactsReleased();
         return result(cancellation,cancelled);
     };
-    if(!frame.width || !frame.height) {
+    if(!latest_frame_meta.width || !latest_frame_meta.height) {
         const auto cancellation=release_input();
         std::string failure="No active guest frame; gesture cancelled";
         if(!cancellation.empty())failure += "; input release failed: "+cancellation;
@@ -1006,6 +1072,7 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
         if(identity==LT_OK && submitted.request_id) {
             display_lease.submittedInput(submitted.request_id,lease);
             if(submitted.state==2)display_lease.inputCompleted(submitted.request_id);
+            else wake_presenter();
         } else {
             failure="Touch request identity unavailable; gesture cancelled";
             lt_error cancelled=LT_INIT(lt_error);
@@ -1052,7 +1119,8 @@ JNI(motion) jstring JNICALL Java_org_un1box_android_Native_motion(JNIEnv *env,jo
     return string(env,status==LT_UNSUPPORTED || status==LT_AGAIN?"":result(status,error));
 }
 JNI(capture) jobject JNICALL Java_org_un1box_android_Native_capture(JNIEnv *env,jobject) {
-    std::lock_guard<std::mutex> lock(guard);if(!frame.width||!frame.height)return nullptr;
+    std::lock_guard<std::mutex> cache_lock(frame_cache_guard);
+    if(!frame.width||!frame.height||frame.bytes>pixels.size())return nullptr;
     jclass bitmap=env->FindClass("android/graphics/Bitmap"),config=env->FindClass("android/graphics/Bitmap$Config");
     auto argb=env->GetStaticObjectField(config,env->GetStaticFieldID(config,"ARGB_8888","Landroid/graphics/Bitmap$Config;"));
     auto create=env->GetStaticMethodID(bitmap,"createBitmap","(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;");
@@ -1060,20 +1128,28 @@ JNI(capture) jobject JNICALL Java_org_un1box_android_Native_capture(JNIEnv *env,
     if(env->ExceptionCheck()||!result)return nullptr;
     AndroidBitmapInfo info;void *data=nullptr;
     if(AndroidBitmap_getInfo(env,result,&info)!=ANDROID_BITMAP_RESULT_SUCCESS||AndroidBitmap_lockPixels(env,result,&data)!=ANDROID_BITMAP_RESULT_SUCCESS)return nullptr;
-    for(uint32_t y=0;y<frame.height;++y)for(uint32_t x=0;x<frame.width;++x) {
-        const uint8_t *src=pixels.data()+y*frame.stride+x*4;auto *dst=static_cast<uint8_t *>(data)+y*info.stride+x*4;
-        dst[0]=src[2];dst[1]=src[1];dst[2]=src[0];dst[3]=255;
+    for(uint32_t y=0;y<frame.height;++y) {
+        convert_row_rgba(reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(data)+size_t(y)*info.stride),
+                         pixels.data()+size_t(y)*frame.stride,int(frame.width));
     }
     AndroidBitmap_unlockPixels(env,result);return result;
 }
 JNI(audio) jint JNICALL Java_org_un1box_android_Native_audio(JNIEnv *env,jobject,jshortArray buffer) {
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return 0;
-    std::vector<int16_t> data(env->GetArrayLength(buffer));lt_error error=LT_INIT(lt_error);
-    const auto status=lt_runtime_pcm(runtime,data.data(),uint32_t(data.size()/2),&pcm,&error);
-    if(status==LT_AGAIN)return 0;
-    if(status!=LT_OK){++pcm_failures;return -jint(status);}
-    if(pcm.channels>2||pcm.channels<1||pcm.frames*pcm.channels>data.size()){++pcm_failures;return -jint(LT_INVALID);}
-    const jint count=pcm.frames*pcm.channels;env->SetShortArrayRegion(buffer,0,count,data.data());return count;
+    const jsize len=env->GetArrayLength(buffer);
+    if(len<=0)return 0;
+    static thread_local std::vector<int16_t> data;
+    if(data.size()<size_t(len))data.resize(size_t(len));
+    jint count=0;
+    {
+        std::lock_guard<std::mutex> lock(guard);if(!runtime)return 0;
+        lt_error error=LT_INIT(lt_error);
+        const auto status=lt_runtime_pcm(runtime,data.data(),uint32_t(size_t(len)/2),&pcm,&error);
+        if(status==LT_AGAIN)return 0;
+        if(status!=LT_OK){++pcm_failures;return -jint(status);}
+        if(pcm.channels>2||pcm.channels<1||pcm.frames*pcm.channels>size_t(len)){++pcm_failures;return -jint(LT_INVALID);}
+        count=jint(pcm.frames*pcm.channels);
+    }
+    env->SetShortArrayRegion(buffer,0,count,data.data());return count;
 }
 JNI(audioInfo) jintArray JNICALL Java_org_un1box_android_Native_audioInfo(JNIEnv *env,jobject) {
     std::lock_guard<std::mutex> lock(guard);jint data[2]={jint(pcm.sample_rate),jint(pcm.channels)};
@@ -1135,13 +1211,22 @@ JNI(cameraInfo) jlongArray JNICALL Java_org_un1box_android_Native_cameraInfo(JNI
 }
 
 JNI(microphone) jint JNICALL Java_org_un1box_android_Native_microphone(JNIEnv *env,jobject,jshortArray buffer,jint count) {
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return -jint(LT_AGAIN);
     const jint mono=std::min(count,jint(env->GetArrayLength(buffer)));
     if(mono<=0)return 0;
     static thread_local std::vector<int16_t> input,stereo;
-    input.resize(size_t(mono));env->GetShortArrayRegion(buffer,0,mono,input.data());
-    stereo.resize(size_t(mono)*2);
-    for(jint i=0;i<mono;++i){stereo[size_t(i)*2]=input[size_t(i)];stereo[size_t(i)*2+1]=input[size_t(i)];}
+    if(input.size()<size_t(mono))input.resize(size_t(mono));
+    env->GetShortArrayRegion(buffer,0,mono,input.data());
+    if(stereo.size()<size_t(mono)*2)stereo.resize(size_t(mono)*2);
+    jint i=0;
+#if defined(__aarch64__)
+    for(;i+8<=mono;i+=8) {
+        const int16x8_t v=vld1q_s16(input.data()+i);
+        vst1q_s16(stereo.data()+size_t(i)*2,vzip1q_s16(v,v));
+        vst1q_s16(stereo.data()+size_t(i)*2+8,vzip2q_s16(v,v));
+    }
+#endif
+    for(;i<mono;++i){stereo[size_t(i)*2]=input[size_t(i)];stereo[size_t(i)*2+1]=input[size_t(i)];}
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return -jint(LT_AGAIN);
     lt_error error=LT_INIT(lt_error);
     const auto status=lt_runtime_mic_write(runtime,stereo.data(),uint32_t(mono),&error);
     if(status==LT_OK)return mono;
@@ -1219,6 +1304,24 @@ JNI(guestCancel) void JNICALL Java_org_un1box_android_Native_guestCancel(JNIEnv 
 }
 
 JNI(observations) jlongArray JNICALL Java_org_un1box_android_Native_observations(JNIEnv *env,jobject) {
+    lt_frame_info observed_frame=LT_INIT(lt_frame_info);
+    uint64_t sample_pixels=0,nonzero_rgb_samples=0,rgb_sample_sum=0;
+    {
+        // Sample the 16x16 diagnostic grid on demand rather than on every 60 Hz frame,
+        // releasing frame_cache_guard before acquiring guard so the two locks never nest.
+        std::lock_guard<std::mutex> cache_lock(frame_cache_guard);
+        observed_frame=frame;
+        if(observed_frame.width && observed_frame.height &&
+           observed_frame.stride>=observed_frame.width*4 && observed_frame.bytes<=pixels.size()) {
+            for(uint32_t gy=0;gy<16;++gy)for(uint32_t gx=0;gx<16;++gx) {
+                const uint32_t x=std::min((gx*2+1)*observed_frame.width/32,observed_frame.width-1);
+                const uint32_t y=std::min((gy*2+1)*observed_frame.height/32,observed_frame.height-1);
+                const uint8_t *sample=pixels.data()+size_t(y)*observed_frame.stride+size_t(x)*4;
+                const uint32_t rgb=uint32_t(sample[0])+sample[1]+sample[2];
+                ++sample_pixels;nonzero_rgb_samples+=rgb!=0;rgb_sample_sum+=rgb;
+            }
+        }
+    }
     std::lock_guard<std::mutex> lock(guard);
     lt_runtime_io_stats shared=LT_INIT(lt_runtime_io_stats);lt_error error=LT_INIT(lt_error);
     if(runtime)lt_runtime_io_statistics(runtime,&shared,&error);
@@ -1239,15 +1342,15 @@ JNI(observations) jlongArray JNICALL Java_org_un1box_android_Native_observations
     const bool phase_stable=phase_revision_before==phase_revision_after && !(phase_revision_after&1u);
     jlong values[]={jlong(monotonic_ns()),jlong(presented_frames),jlong(first_present_ns),jlong(last_present_ns),
         jlong(max_present_gap_ns),jlong(max_present_work_ns),jlong(window_failures),jlong(frame_copy_failures),
-        jlong(surface_generation),jlong(frame.sequence),jlong(frame.timestamp_ns),jlong(pcm_failures),jlong(pcm.dropped_frames),
+        jlong(surface_generation),jlong(observed_frame.sequence),jlong(observed_frame.timestamp_ns),jlong(pcm_failures),jlong(pcm.dropped_frames),
         jlong(present_intervals[0]),jlong(present_intervals[1]),jlong(present_intervals[2]),jlong(present_intervals[3]),jlong(present_intervals[4]),jlong(present_intervals[5]),jlong(shared.frame_count),jlong(shared.frame_sequence),jlong(shared.frame_timestamp_ns),
         jlong(shared.frame_published_monotonic_ns),jlong(shared.pcm_captured_frames),jlong(shared.pcm_pulled_frames),jlong(shared.pcm_dropped_frames),
         jlong(shared.input_requests),jlong(shared.pcm_queued_packets),first_lock_error,last_lock_error,first_post_error,last_post_error,last_geometry_error,
         jlong(geometry_failures),last_buffer_format,last_buffer_width,last_buffer_height,last_buffer_stride,jlong(invalid_buffers),jlong(first_window_error_ns),jlong(observer_status),jlong(observer.engine_ready),
         jlong(observer.display_sleeping),jlong(observer.backlight_level),jlong(agent_status),jlong(live_agent),
         jlong(observer.shutdown_phase),jlong(observer.shutdown_route),jlong(observer.shutdown_reply_status),
-        jlong(observer.shutdown_reply_received),jlong(frame.width),jlong(frame.height),
-        jlong(frame_sample_pixels),jlong(frame_nonzero_rgb_samples),jlong(frame_rgb_sample_sum),
+        jlong(observer.shutdown_reply_received),jlong(observed_frame.width),jlong(observed_frame.height),
+        jlong(sample_pixels),jlong(nonzero_rgb_samples),jlong(rgb_sample_sum),
         jlong(window_attached.load()),jlong(presentation_epoch),jlong(phase),jlong(phase_entry),
         jlong(phase_generation),jlong(phase_epoch),jlong(phase_revision_after),jlong(phase_stable),
         jlong(ignored_input_rejections),jlong(last_ignored_input_request)};
@@ -1333,12 +1436,22 @@ JNI(frameTimeline) jlongArray JNICALL Java_org_un1box_android_Native_frameTimeli
     return array;
 }
 JNI(setPresentVisible) void JNICALL Java_org_un1box_android_Native_setPresentVisible(JNIEnv *,jobject,jboolean visible) {
-    present_visible.store(visible,std::memory_order_relaxed);
-    {std::lock_guard<std::mutex> lock(frame_wake_mutex);++frame_wake_sequence;}
-    frame_wake.notify_one();
+    const bool now_visible=visible!=JNI_FALSE;
+    const bool was_visible=present_visible.exchange(now_visible,std::memory_order_relaxed);
+    if(now_visible && !was_visible) {
+        std::lock_guard<std::mutex> lock(guard);
+        sequence=0;
+    }
+    wake_presenter();
 }
 JNI(setPresentScale) void JNICALL Java_org_un1box_android_Native_setPresentScale(JNIEnv *,jobject,jint mode) {
-    if(mode>=ScaleSmooth && mode<=ScaleCpu)present_scale.store(mode,std::memory_order_relaxed);
+    if(mode>=ScaleSmooth && mode<=ScaleCpu) {
+        if(present_scale.exchange(mode,std::memory_order_relaxed)!=mode) {
+            std::lock_guard<std::mutex> lock(guard);
+            sequence=0;
+        }
+        wake_presenter();
+    }
 }
 JNI(debugArmVcpuAccounting) jstring JNICALL Java_org_un1box_android_Native_debugArmVcpuAccounting(JNIEnv *env,jobject) {
 #ifdef LT_ANDROID_DEBUG

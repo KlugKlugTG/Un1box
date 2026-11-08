@@ -12,11 +12,12 @@ ScreenshotRead screenshot_read(const lt_shared_frame *shared, std::vector<uint8_
     if (!shared || shared->size != sizeof(*shared) || shared->version != 1 || shared->capacity != LT_FRAME_CAPACITY)
         return ScreenshotRead::invalid;
     for (unsigned attempt = 0; attempt < 3; ++attempt) {
-        const auto before = __atomic_load_n(&shared->generation, __ATOMIC_SEQ_CST);
+        const auto before = __atomic_load_n(&shared->generation, __ATOMIC_ACQUIRE);
         if (before & 1)
             continue;
         const auto candidate = load_frame_metadata(shared->frame);
-        const auto metadata_after = __atomic_load_n(&shared->generation, __ATOMIC_SEQ_CST);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        const auto metadata_after = __atomic_load_n(&shared->generation, __ATOMIC_RELAXED);
         if (before != metadata_after || (metadata_after & 1))
             continue;
         if (!candidate.sequence)
@@ -29,7 +30,8 @@ ScreenshotRead screenshot_read(const lt_shared_frame *shared, std::vector<uint8_
         }
         memcpy(pixels.data(), reinterpret_cast<const uint8_t *>(shared) + sizeof(*shared), size_t(candidate.bytes));
         observe(attempt);
-        const auto after = __atomic_load_n(&shared->generation, __ATOMIC_SEQ_CST);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        const auto after = __atomic_load_n(&shared->generation, __ATOMIC_RELAXED);
         if (before != after || (after & 1))
             continue;
         frame = candidate;

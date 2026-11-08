@@ -16,11 +16,18 @@ class DisplayVsync {
 public:
     void start() { std::thread([this] { run(); }).detach(); }
     // Latest vsync and period, or {0, 0} when not known or a second stale.
-    std::pair<uint64_t,uint64_t> get(uint64_t now) const {
+    // Choreographer callbacks sleep automatically once presentation has been idle
+    // for 500 ms and wake on demand here so paused/static screens burn zero CPU.
+    std::pair<uint64_t,uint64_t> get(uint64_t now) {
+        demand_ns_.store(now,std::memory_order_relaxed);
+        if(!armed_.load(std::memory_order_acquire)) {
+            if(ALooper *looper=looper_.load(std::memory_order_acquire))ALooper_wake(looper);
+        }
         const uint64_t vsync=vsync_.load(std::memory_order_acquire), period=period_.load(std::memory_order_relaxed);
-        return vsync && period && now-vsync<1000000000ull ? std::make_pair(vsync,period) : std::make_pair(uint64_t(0),uint64_t(0));
+        return vsync && period && now>=vsync && now-vsync<1000000000ull ? std::make_pair(vsync,period) : std::make_pair(uint64_t(0),uint64_t(0));
     }
 private:
+    static constexpr uint64_t kKeepAliveNs=500000000ull;
     static void frame(int64_t frame_time_ns, void *opaque) {
         auto *self=static_cast<DisplayVsync *>(opaque);
         const uint64_t t=uint64_t(frame_time_ns), last=self->vsync_.load(std::memory_order_relaxed);
@@ -31,20 +38,42 @@ private:
             self->period_.store(shortest,std::memory_order_relaxed);
         }
         self->vsync_.store(t,std::memory_order_release);
-        AChoreographer_postFrameCallback64(self->choreographer_,frame,self);
+        const uint64_t demand=self->demand_ns_.load(std::memory_order_relaxed);
+        if(self->count_<8 || (demand && (t<=demand || t-demand<kKeepAliveNs))) {
+            AChoreographer_postFrameCallback64(self->choreographer_,frame,self);
+        } else {
+            self->armed_.store(false,std::memory_order_release);
+            // Re-check in case get() raced with disarming before ALooper_wake.
+            const uint64_t recheck=self->demand_ns_.load(std::memory_order_acquire);
+            if(recheck && (t<=recheck || t-recheck<kKeepAliveNs)) {
+                self->armed_.store(true,std::memory_order_release);
+                AChoreographer_postFrameCallback64(self->choreographer_,frame,self);
+            }
+        }
     }
     void run() {
         request_display_priority();
-        ALooper_prepare(0);
+        ALooper *looper=ALooper_prepare(0);
         choreographer_=AChoreographer_getInstance();
-        if(!choreographer_)return;
+        if(!looper || !choreographer_)return;
+        ALooper_acquire(looper);
+        armed_.store(true,std::memory_order_release);
+        looper_.store(looper,std::memory_order_release);
         AChoreographer_postFrameCallback64(choreographer_,frame,this);
-        for(;;)ALooper_pollOnce(-1,nullptr,nullptr,nullptr);
+        for(;;) {
+            ALooper_pollOnce(-1,nullptr,nullptr,nullptr);
+            if(!armed_.load(std::memory_order_relaxed) && demand_ns_.load(std::memory_order_acquire)) {
+                armed_.store(true,std::memory_order_release);
+                AChoreographer_postFrameCallback64(choreographer_,frame,this);
+            }
+        }
     }
     AChoreographer *choreographer_=nullptr;
+    std::atomic<ALooper *> looper_{nullptr};
     std::array<uint64_t,32> gaps_{};  // looper thread only
     uint64_t count_=0;
-    std::atomic<uint64_t> vsync_{0}, period_{0};
+    std::atomic<uint64_t> vsync_{0}, period_{0}, demand_ns_{0};
+    std::atomic<bool> armed_{false};
 };
 
 // Posts guest frames on the guest's own 60 Hz grid. Each frame carries the time its frame

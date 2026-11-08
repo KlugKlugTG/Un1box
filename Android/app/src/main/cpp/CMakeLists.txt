@@ -16,18 +16,15 @@ else()
 endif()
 add_subdirectory("${LT_PORTABLE_DIR}" "${CMAKE_BINARY_DIR}/portable")
 add_library(un1box_jni SHARED un1box_jni.cpp)
-# Optimize frame conversion and the shared publisher/control loop in Debug
-# without replacing its symbols/assertion flags or changing release policy.
-# Runtime.cpp belongs to the Portable target's source-property directory.
+# Optimize all shared runtime/storage/SHA-256 sources and JNI glue in Debug
+# (which non-debuggable CI/release APKs also assemble via -Pdebuggable=false)
+# without replacing debug symbols/assertion flags or changing Release policy.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
    (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND
     CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU"))
     set(LT_ANDROID_DEBUG_OPTIMIZATION "$<$<CONFIG:Debug>:-O2>")
-    set_property(SOURCE un1box_jni.cpp APPEND PROPERTY
-                 COMPILE_OPTIONS "${LT_ANDROID_DEBUG_OPTIMIZATION}")
-    set_property(SOURCE "${LT_PORTABLE_DIR}/src/Runtime.cpp"
-                 TARGET_DIRECTORY lighttouch_runtime APPEND PROPERTY
-                 COMPILE_OPTIONS "${LT_ANDROID_DEBUG_OPTIMIZATION}")
+    target_compile_options(lighttouch_runtime PRIVATE "${LT_ANDROID_DEBUG_OPTIMIZATION}")
+    target_compile_options(un1box_jni PRIVATE "${LT_ANDROID_DEBUG_OPTIMIZATION}")
 endif()
 target_include_directories(un1box_jni PRIVATE "${LT_PORTABLE_DIR}/include")
 target_link_libraries(un1box_jni PRIVATE lighttouch_runtime android log jnigraphics)
