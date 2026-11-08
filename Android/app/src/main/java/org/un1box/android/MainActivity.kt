@@ -1038,7 +1038,10 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         val graphicsProvider = settings.graphicsProvider
         Thread({
             try {
-                if (BuildConfig.DEBUG) {
+                // The route is selectable exactly when this APK carries a provider (the staged
+                // receipt is what `angleProviderBundled` reads), not only in debug builds: the
+                // workflow's perf APKs are non-debuggable and carry it.
+                if (settings.angleProviderBundled) {
                     val providerError = worker.debugSelectGraphicsProvider(graphicsProvider.nativeChoice)
                     if (providerError.isNotEmpty()) {
                         handler.post {

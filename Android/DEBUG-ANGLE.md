@@ -1,10 +1,18 @@
-# Explicit debug ANGLE providers
+# Packaged ANGLE providers
 
-The normal provider remains Android platform EGL/GLES. Debug-only provider enum
-`0` selects that route; `1` requests the packaged ANGLE route in a fresh unused
-worker. Packaging ANGLE does not select it, change the default or introduce an
-automatic software fallback. The existing selection becomes fixed for that
-worker; failures require a fresh worker after correcting the package.
+The normal provider remains Android platform EGL/GLES. Provider enum `0` selects
+that route; `1` requests the packaged ANGLE route in a fresh unused worker.
+Packaging ANGLE does not select it, change the default or introduce an automatic
+software fallback. The existing selection becomes fixed for that worker; failures
+require a fresh worker after correcting the package.
+
+The route exists exactly where the APK carries the provider: the Gradle build
+stages it into a variant's source set when it is given the five properties below,
+the native side compiles its selection route in for that same build
+(`-DLT_ANGLE_PROVIDER=ON`), and the app offers the choice and calls the selection
+when the staged receipt is present ("Native GLES" / "ANGLE" in Settings). A
+build given no properties stages nothing, keeps the platform route only and never
+compiles the selection in.
 
 The closed host ABI set is `arm64-v8a` and `x86_64`. Guest ARMv6/ARMv7 package
 names do not choose this host provider. Selection accepts no library path,
@@ -15,10 +23,9 @@ remain fixed:
 * `libEGL_lighttouch_angle.so`
 * `libGLESv1_CM_lighttouch_angle.so`
 
-The debug JNI loader opens these names inside the app linker namespace before
-guest creation. Release APKs do not stage the optional provider or expose this
-debug selection. A same-host raw pixel/renderer probe is useful evidence but is
-not app-UID library loading, an actual guest or a compatibility pass.
+The JNI loader opens these names inside the app linker namespace before guest
+creation. A same-host raw pixel/renderer probe is useful evidence but is not
+app-UID library loading, an actual guest or a compatibility pass.
 
 ## Build inputs
 
@@ -58,6 +65,10 @@ the approved closure and notice hashes. ARM64 closure metadata must declare
 `"abi": "arm64-v8a"`; the historical x86 closure without an ABI field remains
 accepted as x86 only. Both bundles finish validation before any generated output
 is replaced. Missing, malformed, cross-ABI or duplicate inputs fail the task.
+
+The workflow's `variant` input defaults to `release`, which stages the provider
+for the release variant as well; `variant: debug` keeps the debug-env and QMP
+tools for a diagnostic run.
 
 ## Pinned ARM64 bundle
 

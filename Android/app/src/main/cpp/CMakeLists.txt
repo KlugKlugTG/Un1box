@@ -29,6 +29,12 @@ endif()
 target_include_directories(un1box_jni PRIVATE "${LT_PORTABLE_DIR}/include")
 target_link_libraries(un1box_jni PRIVATE lighttouch_runtime android log jnigraphics)
 target_link_options(un1box_jni PRIVATE "-Wl,-z,max-page-size=16384")
+# -DLT_ANGLE_PROVIDER=ON comes from the Gradle build when it was given the ANGLE
+# provider properties, whatever the variant: the selection route exists exactly in
+# an APK that carries the three DSOs (Android/DEBUG-ANGLE.md).
+if(LT_ANGLE_PROVIDER)
+    target_compile_definitions(un1box_jni PRIVATE LT_ANDROID_ANGLE_PROVIDER=1)
+endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(un1box_jni PRIVATE LT_ANDROID_DEBUG=1)
     target_sources(un1box_jni PRIVATE "${LIGHTTOUCH_QEMU_SOURCE}/contrib/portable/engine-qmp-snapshot.c")

@@ -216,6 +216,12 @@ val angleInputs = mapOf(
     "arm64-v8a" to listOf("angleArm64Libraries", "angleArm64Manifest", "angleArm64Notices", "angleArm64ManifestSha256", "angleArm64NoticesSha256")
 ).mapValues { (_, names) -> names.map { providers.gradleProperty(it) } }
 val angleStage = layout.buildDirectory.dir("generated/angleRuntime")
+// Which provider ABIs this build was given. The native side compiles its selection route in
+// exactly when one is selected, and the same set is staged into both variants below.
+val angleSelected = angleInputs.filterValues { properties -> properties.all { it.isPresent } }
+if (angleSelected.isNotEmpty()) {
+    android.defaultConfig.externalNativeBuild.cmake.arguments += "-DLT_ANGLE_PROVIDER=ON"
+}
 val prepareAngleRuntime = tasks.register<Exec>("prepareAngleRuntime") {
     val packagedAbis = providers.gradleProperty("targetAbis").orElse("arm64-v8a,x86_64").get().split(",")
     angleInputs.forEach { (abi, properties) ->
@@ -223,7 +229,7 @@ val prepareAngleRuntime = tasks.register<Exec>("prepareAngleRuntime") {
             "Supply all five ANGLE runtime/closure/notice inputs and pins for $abi"
         }
     }
-    val selected = angleInputs.filterValues { properties -> properties.all { it.isPresent } }
+    val selected = angleSelected
     require(selected.keys.all { it in packagedAbis }) { "ANGLE provider ABI must be packaged in targetAbis" }
     if ("arm64-v8a" in selected) {
         require((android.defaultConfig.minSdk ?: 0) >= 29) { "The fixed ARM64 ANGLE provider requires minSdk >= 29" }
@@ -249,11 +255,16 @@ val prepareAngleRuntime = tasks.register<Exec>("prepareAngleRuntime") {
         commandLine(arguments)
     }
 }
+// The provider is staged for both variants now that the workflow's default APK is a release
+// build: an APK that carries the three DSOs and their receipt can select the route, and a
+// build given no properties stages nothing at all.
 android.sourceSets["debug"].jniLibs.srcDir(angleStage.map { it.dir("jniLibs") })
+android.sourceSets["release"].jniLibs.srcDir(angleStage.map { it.dir("jniLibs") })
 android.sourceSets["debug"].assets.srcDir(angleStage.map { it.dir("assets") })
+android.sourceSets["release"].assets.srcDir(angleStage.map { it.dir("assets") })
 android.packaging.jniLibs.keepDebugSymbols += setOf("**/libEGL_lighttouch_angle.so", "**/libGLESv1_CM_lighttouch_angle.so", "**/libGLESv2_lighttouch_angle.so")
 // AGP registers variant tasks after this script is evaluated.
-tasks.matching { it.name == "preDebugBuild" }.configureEach { dependsOn(prepareAngleRuntime) }
+tasks.matching { it.name == "preDebugBuild" || it.name == "preReleaseBuild" }.configureEach { dependsOn(prepareAngleRuntime) }
 
 // Firmware owns extraction; this consumer verifies the complete unchanged bundle
 // against the actual main variant graph before copying public notice assets.

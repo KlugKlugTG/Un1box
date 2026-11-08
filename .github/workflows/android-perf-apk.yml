@@ -8,6 +8,11 @@ name: Android perf APK
 # (libun1box_jni.so) and the engine (libqemu-arm.so) from the requested
 # engine ref.
 #
+# The `variant` input picks what is assembled: `release` (the default) is the
+# shipped shape -- minified, no debug-env/QMP channels -- and `debug` keeps the
+# diagnostic channels for a run that needs them. Both carry the pinned ARM64
+# ANGLE provider when `angle_arm64` is on.
+#
 # What is reused: firmwarekit (device preparation), its one-shot booter, the
 # USB bridge and it_seal are extracted from a published release APK. The two
 # guest itpacks are then replaced with a matching serial-39 artifact from the
@@ -68,7 +73,7 @@ on:
         required: true
         default: "4"
       debuggable:
-        description: Debuggable APK - needed for files/debug-env engine switches and adb run-as
+        description: Debuggable APK (debug variant only) - needed for files/debug-env engine switches and adb run-as
         type: choice
         options:
           - "true"
@@ -89,6 +94,13 @@ on:
         description: Expected SHA256 of that bundle
         required: true
         default: "c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1"
+      variant:
+        description: Gradle variant to assemble - release is the shipped shape, debug keeps debug-env and the QMP tools
+        type: choice
+        options:
+          - release
+          - debug
+        default: release
       dependency_verification:
         description: Gradle dependency verification against Android/gradle/verification-metadata.xml
         type: choice
@@ -146,6 +158,7 @@ jobs:
       DECLARED_BASE_RELEASE_REPO: ${{ inputs.base_release_repository || 'blake-lucas/LightTouch' }}
       DECLARED_BASE_RELEASE_TAG: ${{ inputs.base_release_tag || 'v0.0.10' }}
       DECLARED_DEBUGGABLE: ${{ inputs.debuggable || 'true' }}
+      DECLARED_VARIANT: ${{ inputs.variant || 'release' }}
       DECLARED_ANGLE_ARM64: ${{ inputs.angle_arm64 || 'true' }}
       ANGLE_BUNDLE_URL: ${{ inputs.angle_bundle_url || 'https://github.com/KlugKlugTG/Un1box/releases/download/angle-arm64-v8a-4a5ccd7/angle-lighttouch-arm64-v8a.tar.gz' }}
       ANGLE_BUNDLE_SHA256: ${{ inputs.angle_bundle_sha256 || 'c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1' }}
@@ -168,7 +181,7 @@ jobs:
         id: engine
         run: |
           echo "sha=$(git -C qemu-ios rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "APK is named ci/Un1box-<engine>-arm64-debug.apk"
+          echo "APK is named ci/Un1box-<engine>-arm64-$DECLARED_VARIANT.apk"
 
       - name: Extract firmwarekit, USB bridge and guest tools from the published APK
         env:
@@ -671,13 +684,14 @@ jobs:
               --dependency-verification="$DECLARED_DEPENDENCY_VERIFICATION" \
               -Pdebuggable="$DECLARED_DEBUGGABLE" "${angle_args[@]}" "$@"
           }
+          VARIANT_CAP="${DECLARED_VARIANT^}"
           # Resolving the runtime classpath checks the pinned dependency verification; the dry
           # run configures every task without running it.
-          gradlew :app:dependencies --configuration debugRuntimeClasspath > /dev/null
-          gradlew --dry-run :app:assembleDebug
+          gradlew :app:dependencies --configuration "${DECLARED_VARIANT}RuntimeClasspath" > /dev/null
+          gradlew --dry-run ":app:assemble$VARIANT_CAP"
           # AIDL first (Kotlin compiles against its generated interfaces), then Kotlin and Java:
           # what the APK step compiles, none of what it packages.
-          gradlew :app:compileDebugAidl :app:compileDebugKotlin :app:compileDebugJavaWithJavac
+          gradlew ":app:compile${VARIANT_CAP}Aidl" ":app:compile${VARIANT_CAP}Kotlin" ":app:compile${VARIANT_CAP}JavaWithJavac"
 
       # A cache hit is a tree the scripts' own recorded recipe accepts (the key is that recipe), so
       # there is nothing to rebuild. Without the skip this step spent ~3.5 minutes on every run
@@ -851,7 +865,7 @@ jobs:
             -PsourceReference="https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME}" \
             -Pdebuggable="$DECLARED_DEBUGGABLE" \
             "${angle_args[@]}" \
-            :app:assembleDebug
+            ":app:assemble${DECLARED_VARIANT^}"
 
       # AGP signs a debug build with whatever it finds (or makes) at
       # ~/.android/debug.keystore, which is not the cached key: a run would then
@@ -861,19 +875,22 @@ jobs:
         working-directory: Android
         run: |
           APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          # The release variant has no signing config, so AGP writes app-release-unsigned.apk;
+          # the debug variant's file is app-debug.apk. Either is signed here.
+          APK="$(ls "app/build/outputs/apk/$DECLARED_VARIANT/"*.apk | head -1)"
+          echo "signing $APK"
           "$APKSIGNER" sign --ks "$GITHUB_WORKSPACE/ci/debug.keystore" \
             --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey \
-            --in "$APK" --out app-debug-signed.apk
-          mv app-debug-signed.apk "$APK"
+            --in "$APK" --out app-signed.apk
+          mv app-signed.apk "$APK"
 
       - name: Check the APK and write provenance
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ENGINE_SHORT="$(git -C qemu-ios rev-parse --short HEAD)"
-          APK="ci/Un1box-${ENGINE_SHORT}-arm64-debug.apk"
-          cp Android/app/build/outputs/apk/debug/app-debug.apk "$APK"
+          APK="ci/Un1box-${ENGINE_SHORT}-arm64-${DECLARED_VARIANT}.apk"
+          cp "$(ls "Android/app/build/outputs/apk/$DECLARED_VARIANT/"*.apk | head -1)" "$APK"
           ls -la "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK"
           SIGNED="$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK" | sed -n 's/.*SHA-256 digest: //p' | head -1)"
@@ -902,7 +919,7 @@ jobs:
             else
               echo "- ARM64 ANGLE provider: not packaged"
             fi
-            echo "- debuggable: $DECLARED_DEBUGGABLE; signed with this workflow's own keystore"
+            echo "- variant: $DECLARED_VARIANT (debuggable: $DECLARED_DEBUGGABLE); signed with this workflow's own keystore"
             echo
             echo "## Engine commits in $ENGINE_REF that are not in main"
             echo
@@ -924,7 +941,7 @@ jobs:
         with:
           name: Un1box-perf-apk-${{ steps.engine.outputs.sha }}
           path: |
-            ci/Un1box-*-arm64-debug.apk
+            ci/Un1box-*-arm64-*.apk
             ci/PROVENANCE.txt
 
       - name: Attach the APK to a pre-release

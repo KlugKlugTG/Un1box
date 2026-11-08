@@ -1364,7 +1364,7 @@ JNI(shutdownGraceMillis) jint JNICALL Java_org_un1box_android_Native_shutdownGra
 
 
 JNI(debugSelectGraphicsProvider) jstring JNICALL Java_org_un1box_android_Native_debugSelectGraphicsProvider(JNIEnv *env,jobject,jint choice) {
-#ifndef LT_ANDROID_DEBUG
+#if !defined(LT_ANDROID_DEBUG) && !defined(LT_ANDROID_ANGLE_PROVIDER)
     return string(env,"Graphics provider diagnosis is unavailable in this build");
 #else
     std::lock_guard<std::mutex> lock(guard);
