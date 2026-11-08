@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""The Chinese translation, checked as text.
+"""The translations, checked as text.
 
-The UI speaks English in its sources and I18nZh decides what a Chinese reader sees, so
-the two things that can break are silent: a key that no longer matches the string the
-screens build, and a translation that drops a number or a newline. Both are text, so
-both are checked here, without a build, a device or a network.
+The UI speaks English in its sources and one catalogue per language decides what a
+reader sees (I18nZh, I18nRu), so the two things that can break are silent: a key that
+no longer matches the string the screens build, and a translation that drops a number
+or a newline. Both are text, so both are checked here, without a build, a device or a
+network.
 
-  the catalogue   every entry parses, no key twice, no empty value, Chinese in the value
+  the catalogues  every entry parses, no key twice, no empty value, the language's own
+                  script in the value
   placeholders    %d / %s / %.2f survive the trip, in count and in kind
   the rules       each pattern compiles, each $n names a group, and a rule that nothing
                   else can reach is reported rather than left to rot
   coverage        every label-shaped string in the Compose sources is translated, or is
                   English on purpose (device names, chips, crash-report internals)
-  the wiring      one Text in this package (the one that translates), and the language
-                  switch is reachable from Settings
+  the wiring      one Text in this package (the one that translates), every catalogue
+                  reachable from it, and the language switch reachable from Settings
 
   python3 tests/i18n/run.py [-v]
 """
@@ -23,7 +25,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android"
-CATALOGUE = SRC / "I18nZh.kt"
 SHIM = SRC / "LocalizedText.kt"
 I18N = SRC / "I18n.kt"
 SETTINGS = SRC / "AppSettings.kt"
@@ -34,7 +35,7 @@ ACTIVITY = SRC / "MainActivity.kt"
 # crash-report's own headings, and the glue the screens concatenate around a value.
 KEEP_ENGLISH = {
     "Un1box", "iOS", "iPad", "iPhone", "iPod", "Payload", "Info.plist", "Legacy Store",
-    "English", "简体中文", "ANGLE", "ARM64", "x86-64", "HTTP", "GPU", "GL", "vCPU", "CPU",
+    "English", "简体中文", "Русский", "ANGLE", "ARM64", "x86-64", "HTTP", "GPU", "GL", "vCPU", "CPU",
     # glue a sentence is assembled from; the whole sentence is translated instead
     "Installing ", "Downloading ", " of ", "and ", " else ",
 }
@@ -58,6 +59,8 @@ KEEP_PATTERNS = [
 
 MONTHS = ["January", "February", "March", "April", "May", "June",
           "July", "August", "September", "October", "November", "December"]
+MONTHS_RU = ["январь", "февраль", "март", "апрель", "май", "июнь",
+             "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
 # What the composables can show: a literal with a space or a capitalised word. Tags,
 # keys, state names and formats are not language.
@@ -65,6 +68,30 @@ NOISE = ("http://", "https://", "android.", "org.un1box", "java.", "kotlin.", "/
          "SELECT", "INSERT", "content://", "application/", "image/", "audio/", "video/",
          "text/", ".json", ".log", ".txt", ".ipa", ".itbase", ".itpack")
 ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "$": "$"}
+
+
+class Catalogue:
+    """One language: where it lives, what its script is, and how it writes a date."""
+
+    def __init__(self, path, name, script, date):
+        self.path, self.name, self.script, self.date = path, name, script, date
+
+    def read(self):
+        """(exact, rules, dupes) out of the Kotlin file, parsed as the Kotlin it is."""
+        text = self.path.read_text(encoding="utf-8")
+        body = text.split("private val exact", 1)[1].split("private val rules", 1)
+        put = re.compile(r'\n        put\(("(?:[^"\\]|\\.)*"), ("(?:[^"\\]|\\.)*")\)')
+        exact, dupes = {}, []
+        for m in put.finditer(body[0]):
+            k, v = unescape(m.group(1)[1:-1]), unescape(m.group(2)[1:-1])
+            if k in exact:
+                dupes.append(k)
+            exact[k] = v
+        rule = re.compile(r'\n        Regex\(("(?:[^"\\]|\\.)*")\) to ("(?:[^"\\]|\\.)*"),')
+        rules = []
+        for m in rule.finditer(body[1] if len(body) > 1 else ""):
+            rules.append((unescape(m.group(1)[1:-1]), unescape(m.group(2)[1:-1])))
+        return exact, rules, dupes
 
 
 def unescape(s):
@@ -131,61 +158,12 @@ def showable(s):
     return s == "OK" or bool(re.fullmatch(r"[A-Z][a-z]{1,}", s)) or " " in s
 
 
-def read_catalogue():
-    """(exact, rules) out of I18nZh.kt, parsed as the Kotlin it is."""
-    text = CATALOGUE.read_text(encoding="utf-8")
-    body = text.split("private val exact", 1)[1].split("private val rules", 1)
-    put = re.compile(r'\n        put\(("(?:[^"\\]|\\.)*"), ("(?:[^"\\]|\\.)*")\)')
-    exact = {}
-    dupes = []
-    for m in put.finditer(body[0]):
-        k, v = unescape(m.group(1)[1:-1]), unescape(m.group(2)[1:-1])
-        if k in exact:
-            dupes.append(k)
-        exact[k] = v
-    rule = re.compile(r'\n        Regex\(("(?:[^"\\]|\\.)*")\) to ("(?:[^"\\]|\\.)*"),')
-    rules = []
-    for m in rule.finditer(body[1] if len(body) > 1 else ""):
-        pattern = unescape(m.group(1)[1:-1])
-        replacement = unescape(m.group(2)[1:-1])
-        rules.append((pattern, replacement))
-    return exact, rules, dupes
-
-
-def localize_date(text):
-    match = re.fullmatch(r"([A-Z][a-z]+) (\d{4})", text)
-    if not match or match.group(1) not in MONTHS:
-        return text
-    return "%s 年 %d 月" % (match.group(2), MONTHS.index(match.group(1)) + 1)
-
-
-def translate(text, exact, raw_rules, depth=0):
-    if text in exact:
-        return localize_date(exact[text])
-    if depth < 2:
-        for pattern, replacement in raw_rules:
-            if pattern.search(text):
-                return localize_date(expand(pattern, replacement, text, exact, raw_rules, depth))
-    return localize_date(text)
-
-
-def expand(pattern, replacement, text, exact, raw_rules, depth):
-    match = pattern.search(text)
-    out, i = [], 0
-    while i < len(replacement):
-        c = replacement[i]
-        if c == "\\" and i + 1 < len(replacement):
-            out.append(replacement[i + 1]); i += 2; continue
-        if c == "$" and i + 1 < len(replacement) and replacement[i + 1].isdigit():
-            g = int(replacement[i + 1])
-            group = match.group(g) if match and g <= match.re.groups else ""
-            out.append(translate(group, exact, raw_rules, depth + 1)); i += 2; continue
-        out.append(c); i += 1
-    return "".join(out)
-
-
 def cjk(s):
     return re.search(r"[\u4e00-\u9fff]", s) is not None
+
+
+def cyrillic(s):
+    return re.search(r"[\u0400-\u04ff]", s) is not None
 
 
 def specifiers(s):
@@ -193,65 +171,88 @@ def specifiers(s):
     return re.findall(r"%(?:[-+0#]*\d*(?:\.\d+)?[diouxXeEfgGsc])", s)
 
 
-def main():
-    verbose = "-v" in sys.argv
+def make_translate(catalogue, exact, rules):
+    raw_rules = [(re.compile(p), r) for p, r in rules]
+
+    def localize_date(text):
+        match = re.fullmatch(r"([A-Z][a-z]+) (\d{4})", text)
+        if not match or match.group(1) not in MONTHS:
+            return text
+        return catalogue.date(match.group(2), MONTHS.index(match.group(1)))
+
+    def translate(text, depth=0):
+        if text in exact:
+            return localize_date(exact[text])
+        if depth < 2:
+            for pattern, replacement in raw_rules:
+                if pattern.search(text):
+                    return localize_date(expand(pattern, replacement, text, depth))
+        return localize_date(text)
+
+    def expand(pattern, replacement, text, depth):
+        match = pattern.search(text)
+        out, i = [], 0
+        while i < len(replacement):
+            c = replacement[i]
+            if c == "\\" and i + 1 < len(replacement):
+                out.append(replacement[i + 1]); i += 2; continue
+            if c == "$" and i + 1 < len(replacement) and replacement[i + 1].isdigit():
+                g = int(replacement[i + 1])
+                group = match.group(g) if match and g <= match.re.groups else ""
+                out.append(translate(group, depth + 1)); i += 2; continue
+            out.append(c); i += 1
+        return "".join(out)
+
+    return translate
+
+
+def check_catalogue(catalogue, strings, verbose):
+    """Everything that is about one language's text. Returns (problems, notes, stats)."""
     problems, notes = [], []
-
-    if not CATALOGUE.exists():
-        print("missing %s" % CATALOGUE)
-        return 1
-
-    exact, rules, dupes = read_catalogue()
-
-    # ---- the catalogue itself
+    if not catalogue.path.exists():
+        return ["missing %s" % catalogue.path], notes, (0, 0, 0.0)
+    exact, rules, dupes = catalogue.read()
     if len(exact) < 100:
-        problems.append("only %d entries parsed; is the table still `put(...)` lines?" % len(exact))
+        problems.append("%s: only %d entries parsed; is the table still `put(...)` lines?"
+                        % (catalogue.name, len(exact)))
     for key in dupes:
-        problems.append("key twice in the catalogue: %r" % key)
+        problems.append("%s: key twice in the catalogue: %r" % (catalogue.name, key))
     for key, value in exact.items():
         if not value.strip():
-            problems.append("empty translation for %r" % key)
+            problems.append("%s: empty translation for %r" % (catalogue.name, key))
         if value == key and key not in KEEP_ENGLISH and not any(re.fullmatch(p, key) for p in KEEP_PATTERNS):
-            notes.append("translated as itself: %r" % key)
-        if not cjk(value) and value != key and not any(re.fullmatch(p, value) for p in KEEP_PATTERNS):
-            notes.append("no Chinese in the value for %r -> %r" % (key, value))
+            notes.append("%s: translated as itself: %r" % (catalogue.name, key))
+        if not catalogue.script(value) and value != key and not any(re.fullmatch(p, value) for p in KEEP_PATTERNS):
+            notes.append("%s: no %s text in the value for %r -> %r" % (catalogue.name, catalogue.name, key, value))
         if specifiers(key) != specifiers(value):
-            problems.append("format specifiers changed: %r -> %r" % (key, value))
-        if key.count("\n") != value.count("\n") and cjk(value):
-            notes.append("newline count differs: %r" % key[:60])
+            problems.append("%s: format specifiers changed: %r -> %r" % (catalogue.name, key, value))
+        if key.count("\n") != value.count("\n") and catalogue.script(value):
+            notes.append("%s: newline count differs: %r" % (catalogue.name, key[:60]))
 
-    # ---- the rules
     raw_rules = []
     for pattern, replacement in rules:
         try:
             compiled = re.compile(pattern)
         except re.error as e:
-            problems.append("rule does not compile (%s): %s" % (e, pattern))
+            problems.append("%s: rule does not compile (%s): %s" % (catalogue.name, e, pattern))
             continue
         raw_rules.append((compiled, replacement))
         groups = compiled.groups
         for ref in re.findall(r"\$(\d)", replacement.replace("\\\\", "")):
             if int(ref) > groups:
-                problems.append("rule %r refers to $%s but has %d groups" % (pattern, ref, groups))
+                problems.append("%s: rule %r refers to $%s but has %d groups"
+                                % (catalogue.name, pattern, ref, groups))
         if not pattern.startswith("^"):
-            problems.append("rule is not anchored at the start: %s" % pattern)
+            problems.append("%s: rule is not anchored at the start: %s" % (catalogue.name, pattern))
     for i, (pattern, _) in enumerate(raw_rules):
         for other, _ in raw_rules[:i]:
             if other.pattern == pattern.pattern:
-                problems.append("rule twice: %s" % pattern.pattern)
+                problems.append("%s: rule twice: %s" % (catalogue.name, pattern.pattern))
 
-    # ---- what the screens can show
-    sources = sorted(SRC.glob("*.kt"))
-    strings = {}
-    for path in sources:
-        if path.name in ("I18nZh.kt", "I18n.kt", "LocalizedText.kt"):
-            continue
-        for line, body in literals(path):
-            if showable(body):
-                strings.setdefault(body, "%s:%d" % (path.name, line))
+    translate = make_translate(catalogue, exact, rules)
     untranslated = []
     for text, where in strings.items():
-        if translate(text, exact, raw_rules) != text:
+        if translate(text) != text:
             continue
         if text in KEEP_ENGLISH or any(re.fullmatch(p, text) for p in KEEP_PATTERNS):
             continue
@@ -260,23 +261,78 @@ def main():
     share = 100.0 * covered / max(len(strings), 1)
     # The screens a person actually reads have to be done; the worker's diagnostics and
     # the crash report's own headings are allowed to stay English.
-    per_file = {}
-    for text, where in untranslated:
-        name = where.split(":")[0]
-        per_file[name] = per_file.get(name, 0) + 1
-    totals = {}
+    per_file, totals = {}, {}
     for text, where in strings.items():
         name = where.split(":")[0]
         totals[name] = totals.get(name, 0) + 1
+    for text, where in untranslated:
+        name = where.split(":")[0]
+        per_file[name] = per_file.get(name, 0) + 1
     for name in SCREENS:
-        left = per_file.get(name, 0)
-        total = totals.get(name, 0)
+        left, total = per_file.get(name, 0), totals.get(name, 0)
         done = 100.0 * (total - left) / max(total, 1)
         if done < 95.0:
-            problems.append("%s is %.0f%% translated (%d of %d left)" % (name, done, left, total))
+            problems.append("%s: %s is %.0f%% translated (%d of %d left)"
+                            % (catalogue.name, name, done, left, total))
     if share < 80.0:
-        problems.append("only %.1f%% of the %d showable strings are translated (%d left)"
-                        % (share, len(strings), len(untranslated)))
+        problems.append("%s: only %.1f%% of the %d showable strings are translated (%d left)"
+                        % (catalogue.name, share, len(strings), len(untranslated)))
+
+    for english, expected in catalogue.samples:
+        got = translate(english)
+        if got != expected:
+            problems.append("%s: expected %r for %r, got %r" % (catalogue.name, expected, english, got))
+    if translate("running") != "running":
+        problems.append("%s: a state string was translated; the worker compares those by name"
+                        % catalogue.name)
+
+    if verbose:
+        for text, where in sorted(untranslated, key=lambda x: x[1]):
+            print("    %-22s %s" % (where, text.replace("\n", "\\n")[:110]))
+        for note in notes:
+            print("  note: %s" % note)
+    return problems, notes, (len(exact), len(rules), share)
+
+
+def main():
+    verbose = "-v" in sys.argv
+    problems = []
+
+    catalogues = [
+        Catalogue(SRC / "I18nZh.kt", "Chinese", cjk,
+                  lambda year, month: "%s 年 %d 月" % (year, month + 1)),
+        Catalogue(SRC / "I18nRu.kt", "Russian", cyrillic,
+                  lambda year, month: "%s %s г." % (MONTHS_RU[month], year)),
+    ]
+    catalogues[0].samples = [
+        ("Stop Poco F3?", "停止 Poco F3？"),
+        ("Delete my iPod?", "删除 my iPod？"),
+        ("Tested: Checked on Un1box for Android.", "已验证：已在 Android 版 Un1box 上验证。"),
+        ("March 2010", "2010 年 3 月"),
+        ("Version 3.1.3 is available", "3.1.3 版本可用"),
+        ("Installed 4 apps", "已安装 4 个应用"),
+    ]
+    catalogues[1].samples = [
+        ("March 2010", "март 2010 г."),
+        ("Version 3.1.3 is available", "Доступна версия 3.1.3"),
+        ("Installed 4 apps", "Установлено приложений: 4"),
+    ]
+
+    # ---- what the screens can show (the same for every catalogue)
+    sources = sorted(SRC.glob("*.kt"))
+    strings = {}
+    for path in sources:
+        if path.name in ("I18nZh.kt", "I18nRu.kt", "I18n.kt", "LocalizedText.kt"):
+            continue
+        for line, body in literals(path):
+            if showable(body):
+                strings.setdefault(body, "%s:%d" % (path.name, line))
+
+    for catalogue in catalogues:
+        found, _notes, (entries, rules, share) = check_catalogue(catalogue, strings, verbose)
+        problems += found
+        print("%-8s %4d entries, %3d rules, %.1f%% of %d showable strings"
+              % (catalogue.name, entries, rules, share, len(strings)))
 
     # ---- the wiring that makes any of this reach a screen
     shim = SHIM.read_text(encoding="utf-8") if SHIM.exists() else ""
@@ -290,7 +346,8 @@ def main():
         if re.search(r"\n(?:internal |private |public )?fun Text\(", path.read_text(encoding="utf-8")):
             problems.append("%s declares its own Text, which would shadow the translating one" % path.name)
     i18n = I18N.read_text(encoding="utf-8") if I18N.exists() else ""
-    for needle in ("enum class UiLanguage", "fun onSystemLanguage", "fun choose", "fun t("):
+    for needle in ("enum class UiLanguage", "fun onSystemLanguage", "fun choose", "fun t(",
+                   "I18nZh.translate", "I18nRu.translate", "RUSSIAN("):
         if needle not in i18n:
             problems.append("I18n.kt lost %r" % needle)
     if "language" not in SETTINGS.read_text(encoding="utf-8"):
@@ -300,31 +357,7 @@ def main():
     if "I18n.onSystemLanguage" not in ACTIVITY.read_text(encoding="utf-8"):
         problems.append("MainActivity never tells I18n which language the phone speaks")
 
-    # ---- what a reader actually gets
-    samples = [
-        ("Stop Poco F3?", "停止 Poco F3？"),
-        ("Delete my iPod?", "删除 my iPod？"),
-        ("Tested: Checked on Un1box for Android.", "已验证：已在 Android 版 Un1box 上验证。"),
-        ("March 2010", "2010 年 3 月"),
-        ("Version 3.1.3 is available", "3.1.3 版本可用"),
-        ("Installed 4 apps", "已安装 4 个应用"),
-    ]
-    for english, chinese in samples:
-        got = translate(english, exact, raw_rules)
-        if got != chinese:
-            problems.append("expected %r for %r, got %r" % (chinese, english, got))
-    if translate("running", exact, raw_rules) != "running":
-        problems.append("a state string was translated; the worker compares those by name")
-
     # ---- report
-    print("catalogue: %d entries, %d rules" % (len(exact), len(rules)))
-    print("coverage:  %d of %d showable strings (%.1f%%), %d left in English on purpose"
-          % (covered, len(strings), share, len(untranslated)))
-    if verbose:
-        for text, where in sorted(untranslated, key=lambda x: x[1]):
-            print("    %-22s %s" % (where, text.replace("\n", "\\n")[:110]))
-    for note in (notes if verbose else notes[:0]):
-        print("  note: %s" % note)
     for problem in problems:
         print("  FAIL: %s" % problem)
     if problems:
