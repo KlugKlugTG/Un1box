@@ -44,11 +44,6 @@ import kotlinx.coroutines.delay
 internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifier) -> Unit) = DarkTheme {
     BackHandler { host.navigate(Screen.HOME) }
     var confirmStop by remember { mutableStateOf(false) }
-    var fakeCall by remember { mutableStateOf(false) }
-    var fakeSms by remember { mutableStateOf(false) }
-    var fakeBattery by remember { mutableStateOf(false) }
-    // The cellular drives need a modem: the iPhone boards have one, the iPods and the iPad not.
-    val cellular = host.selected?.board in setOf("m68ap", "n82ap", "n88ap", "n90ap")
     val skin = DeviceSkin.forBoard(host.selected?.board)
     val aspect = skin.screenWidth / skin.screenHeight
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black).semantics { testTagsAsResourceId = true }) {
@@ -83,14 +78,16 @@ internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifi
         ErrorBanner(host.error, host::dismissError, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp))
     }
     if (confirmStop) StopDialog(host) { confirmStop = false }
-    if (fakeCall) FakeCallDialog(host) { fakeCall = false }
-    if (fakeSms) FakeSmsDialog(host) { fakeSms = false }
-    if (fakeBattery) FakeBatteryDialog(host) { fakeBattery = false }
 }
 
 @Composable
 private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Unit = {}, onStop: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
+    var fakeCall by remember { mutableStateOf(false) }
+    var fakeSms by remember { mutableStateOf(false) }
+    var fakeBattery by remember { mutableStateOf(false) }
+    // The cellular drives need a modem: the iPhone boards have one, the iPods and the iPad not.
+    val cellular = host.selected?.board in setOf("m68ap", "n82ap", "n88ap", "n90ap")
     val enabled = host.running
     Row(modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
         // Volume on the left, like the device's left edge.
@@ -109,6 +106,9 @@ private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Uni
             Spacer(Modifier.width(8.dp))
             Box {
                 SmallKey(Icons.Filled.MoreVert, "More", { onInteract(); menu = true }, true, tag = "fullscreen_menu")
+                if (fakeCall) FakeCallDialog(host) { fakeCall = false }
+                if (fakeSms) FakeSmsDialog(host) { fakeSms = false }
+                if (fakeBattery) FakeBatteryDialog(host) { fakeBattery = false }
                 DropdownMenu(menu, { menu = false }) {
                     DropdownMenuItem(text = { Text("Exit full screen") }, leadingIcon = { Icon(LtIcons.FullscreenExit, null) },
                         onClick = { menu = false; host.navigate(Screen.HOME) }, modifier = Modifier.testTag("exit_fullscreen"))
