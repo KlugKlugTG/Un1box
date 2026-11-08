@@ -74,6 +74,21 @@ on:
           - "true"
           - "false"
         default: "true"
+      angle_arm64:
+        description: Package the pinned ARM64 ANGLE provider (the debug angle-gl route)
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
+      angle_bundle_url:
+        description: ARM64 ANGLE bundle (libs/, closure.json, notices/)
+        required: true
+        default: https://github.com/KlugKlugTG/Un1box/releases/download/angle-arm64-v8a-4a5ccd7/angle-lighttouch-arm64-v8a.tar.gz
+      angle_bundle_sha256:
+        description: Expected SHA256 of that bundle
+        required: true
+        default: "c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1"
       dependency_verification:
         description: Gradle dependency verification against Android/gradle/verification-metadata.xml
         type: choice
@@ -131,6 +146,9 @@ jobs:
       DECLARED_BASE_RELEASE_REPO: ${{ inputs.base_release_repository || 'blake-lucas/LightTouch' }}
       DECLARED_BASE_RELEASE_TAG: ${{ inputs.base_release_tag || 'v0.0.10' }}
       DECLARED_DEBUGGABLE: ${{ inputs.debuggable || 'true' }}
+      DECLARED_ANGLE_ARM64: ${{ inputs.angle_arm64 || 'true' }}
+      ANGLE_BUNDLE_URL: ${{ inputs.angle_bundle_url || 'https://github.com/KlugKlugTG/Un1box/releases/download/angle-arm64-v8a-4a5ccd7/angle-lighttouch-arm64-v8a.tar.gz' }}
+      ANGLE_BUNDLE_SHA256: ${{ inputs.angle_bundle_sha256 || 'c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1' }}
       DECLARED_DEPENDENCY_VERIFICATION: ${{ inputs.dependency_verification || 'strict' }}
       MESON: ${{ github.workspace }}/meson/bin/meson
 
@@ -599,6 +617,36 @@ jobs:
           echo "LT_SIGNER_SHA256=$SIGNER" >> "$GITHUB_ENV"
           echo "keystore signer: $SIGNER"
 
+      # The debug-only angle-gl route needs its three fixed provider DSOs staged into the
+      # debug source set (Android/DEBUG-ANGLE.md). The bundle is pinned by the SHA256 of the
+      # tarball itself, so the inner closure/notice pins are read from the verified bytes
+      # instead of being restated here, and the staging script validates the whole closure
+      # (ELF machine, fixed SONAMEs, dependency closure, 16 KiB LOAD alignment, notice
+      # hashes) before Gradle ever sees it.
+      - name: Fetch the packaged ARM64 ANGLE provider
+        if: env.DECLARED_ANGLE_ARM64 != 'false'
+        run: |
+          curl -fsSL "$ANGLE_BUNDLE_URL" -o "$RUNNER_TEMP/angle-arm64.tar.gz"
+          echo "$ANGLE_BUNDLE_SHA256  $RUNNER_TEMP/angle-arm64.tar.gz" | sha256sum -c -
+          rm -rf ci/angle-arm64 && mkdir -p ci/angle-arm64
+          tar xzf "$RUNNER_TEMP/angle-arm64.tar.gz" -C ci/angle-arm64 --strip-components=1
+          ( cd ci/angle-arm64 && sha256sum -c SHA256SUMS )
+          CLOSURE="$(sha256sum ci/angle-arm64/closure.json | cut -d' ' -f1)"
+          NOTICES="$(sha256sum ci/angle-arm64/notices/manifest.json | cut -d' ' -f1)"
+          python3 Android/scripts/stage-angle-runtime.py "$RUNNER_TEMP/angle-validate" \
+            --bundle arm64-v8a "$PWD/ci/angle-arm64/libs" "$PWD/ci/angle-arm64/closure.json" \
+              "$PWD/ci/angle-arm64/notices" "$CLOSURE" "$NOTICES" \
+            --readelf "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            --validate-only
+          {
+            echo "ANGLE_ARM64_LIBRARIES=$PWD/ci/angle-arm64/libs"
+            echo "ANGLE_ARM64_MANIFEST=$PWD/ci/angle-arm64/closure.json"
+            echo "ANGLE_ARM64_NOTICES=$PWD/ci/angle-arm64/notices"
+            echo "ANGLE_ARM64_MANIFEST_SHA256=$CLOSURE"
+            echo "ANGLE_ARM64_NOTICES_SHA256=$NOTICES"
+          } >> "$GITHUB_ENV"
+          echo "ARM64 ANGLE provider ready: closure $CLOSURE, notices $NOTICES"
+
       # Configures the whole Gradle build (plugins, dependency verification, the
       # Compose compiler) and compiles the app's sources before the engine build, so a
       # resolution or Kotlin/Java/AIDL error fails here, in about a minute, instead of
@@ -607,11 +655,21 @@ jobs:
       - name: Preflight the Gradle build
         working-directory: Android
         run: |
+          # The packaged provider is a configuration input, so the preflight carries the same
+          # properties the APK step does and a malformed bundle fails here, before the engine.
+          angle_args=()
+          if [ -n "${ANGLE_ARM64_MANIFEST_SHA256:-}" ]; then
+            angle_args=(-PangleArm64Libraries="$ANGLE_ARM64_LIBRARIES" \
+              -PangleArm64Manifest="$ANGLE_ARM64_MANIFEST" \
+              -PangleArm64Notices="$ANGLE_ARM64_NOTICES" \
+              -PangleArm64ManifestSha256="$ANGLE_ARM64_MANIFEST_SHA256" \
+              -PangleArm64NoticesSha256="$ANGLE_ARM64_NOTICES_SHA256")
+          fi
           gradlew() {
             ./gradlew --no-daemon --max-workers="$LT_JOBS" \
               '-Dorg.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m' \
               --dependency-verification="$DECLARED_DEPENDENCY_VERIFICATION" \
-              -Pdebuggable="$DECLARED_DEBUGGABLE" "$@"
+              -Pdebuggable="$DECLARED_DEBUGGABLE" "${angle_args[@]}" "$@"
           }
           # Resolving the runtime classpath checks the pinned dependency verification; the dry
           # run configures every task without running it.
@@ -768,6 +826,16 @@ jobs:
       - name: Build the APK
         working-directory: Android
         run: |
+          # A selected ARM64 ANGLE provider is staged by the Gradle task from these five
+          # properties; with none set the generated provider directory stays empty.
+          angle_args=()
+          if [ -n "${ANGLE_ARM64_MANIFEST_SHA256:-}" ]; then
+            angle_args=(-PangleArm64Libraries="$ANGLE_ARM64_LIBRARIES" \
+              -PangleArm64Manifest="$ANGLE_ARM64_MANIFEST" \
+              -PangleArm64Notices="$ANGLE_ARM64_NOTICES" \
+              -PangleArm64ManifestSha256="$ANGLE_ARM64_MANIFEST_SHA256" \
+              -PangleArm64NoticesSha256="$ANGLE_ARM64_NOTICES_SHA256")
+          fi
           ./gradlew --no-daemon --max-workers="$LT_JOBS" \
             '-Dorg.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m' \
             --dependency-verification="$DECLARED_DEPENDENCY_VERIFICATION" \
@@ -782,6 +850,7 @@ jobs:
             -PsourceRevision="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" \
             -PsourceReference="https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME}" \
             -Pdebuggable="$DECLARED_DEBUGGABLE" \
+            "${angle_args[@]}" \
             :app:assembleDebug
 
       # AGP signs a debug build with whatever it finds (or makes) at
