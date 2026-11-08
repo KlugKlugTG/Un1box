@@ -8,10 +8,11 @@ name: Android perf APK
 # (libun1box_jni.so) and the engine (libqemu-arm.so) from the requested
 # engine ref.
 #
-# The `variant` input picks what is assembled: `release` (the default) is the
-# shipped shape -- minified, no debug-env/QMP channels -- and `debug` keeps the
-# diagnostic channels for a run that needs them. Both carry the pinned ARM64
-# ANGLE provider when `angle_arm64` is on.
+# The `variant` input picks what is assembled. `debug` is the default: it is the
+# shape every perf APK so far used and it keeps the diagnostic channels, while
+# `release` (minified, no debug-env/QMP) still needs a device pass -- a start under
+# it died after the guest came up. Both carry the pinned ARM64 ANGLE provider when
+# `angle_arm64` is on.
 #
 # What is reused: firmwarekit (device preparation), its one-shot booter, the
 # USB bridge and it_seal are extracted from a published release APK. The two
@@ -95,12 +96,12 @@ on:
         required: true
         default: "c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1"
       variant:
-        description: Gradle variant to assemble - release is the shipped shape, debug keeps debug-env and the QMP tools
+        description: Gradle variant to assemble (release is not yet qualified - it runs but a guest start has crashed on device)
         type: choice
         options:
-          - release
           - debug
-        default: release
+          - release
+        default: debug
       dependency_verification:
         description: Gradle dependency verification against Android/gradle/verification-metadata.xml
         type: choice
