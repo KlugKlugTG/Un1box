@@ -63,7 +63,26 @@ tasks.named("preBuild").configure { dependsOn(prepareCatalog) }
 // bakes the helpers beside them into each system it prepares.
 providers.gradleProperty("guestToolsDir").orNull?.let { input ->
     val packs = file(input)
-    require(listOf("armv6.itpack", "armv7.itpack", "it_seal").all { packs.resolve(it).isFile }) { "guestToolsDir must hold the guest packages and helpers (scripts/build.sh firmware-tools)" }
+    // Every file firmwarekit create reads by name: SystemEdits.Helpers (tools, seal, glTest, both itpacks, AppSync,
+    // the GL front end and its name table), N72Recipe.guestTools (it_agent, it_typein, sblaunch, sbdlicon) and N45's
+    // opengles-1x.exports, plus the launchd jobs the seed package loads. firmwarekit only notices a missing one when a
+    // device is prepared ("guest helper <name> missing from <dir>"), long after the APK was installed, so the check
+    // belongs here: an install that cannot prepare every catalog firmware should not be built at all.
+    val required = listOf(
+        "armv6.itpack", "armv7.itpack",
+        "it_pbd", "it_prefs", "it_msmquiet.dylib", "it_seal", "it_gltest",
+        "it_keybag", "it_keybag-armv6", "it_agent", "it_typein.dylib", "sblaunch", "sbdlicon",
+        "it_pbd-legacy", "it_prefs-legacy", "it_msmquiet-legacy.dylib", "it_seal-legacy",
+        "libappsync.dylib", "libappsync-legacy.dylib", "appsync-launch",
+        "OpenGLES", "OpenGLES-1x", "gles-names.h", "opengles-1x.exports",
+        "com.qemu.it-pbd.plist", "com.qemu.it-prefs.plist", "com.qemu.it-agent.plist",
+        "com.qemu.it-seal.plist", "com.qemu.it-gltest.plist",
+    )
+    val missing = required.filterNot { packs.resolve(it).let { f -> f.isFile && f.length() > 0 } }
+    require(missing.isEmpty()) {
+        "guestToolsDir is missing ${missing.size} of the ${required.size} guest tools: ${missing.joinToString()} " +
+            "(scripts/build.sh firmware-tools exports all of them; an APK without them cannot prepare a device)"
+    }
     val guestToolAssets = layout.buildDirectory.dir("generated/guestToolAssets")
     val stage = tasks.register<Copy>("prepareGuestTools") {
         from(packs)
