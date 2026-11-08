@@ -9,7 +9,7 @@ import zipfile
 
 ANGLE_NAMES = {"libEGL_lighttouch_angle.so", "libGLESv1_CM_lighttouch_angle.so", "libGLESv2_lighttouch_angle.so"}
 ANGLE_ABIS = {"arm64-v8a": 183, "x86_64": 62}
-ANGLE_PLATFORM = {"libc.so", "libdl.so", "libm.so", "liblog.so", "libnativewindow.so"}
+ANGLE_PLATFORM = {"libc.so", "libdl.so", "libm.so", "liblog.so", "libnativewindow.so", "libandroid.so"}
 
 
 def check_angle_runtime(archive):

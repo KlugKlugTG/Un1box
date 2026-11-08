@@ -59,6 +59,53 @@ the approved closure and notice hashes. ARM64 closure metadata must declare
 accepted as x86 only. Both bundles finish validation before any generated output
 is replaced. Missing, malformed, cross-ABI or duplicate inputs fail the task.
 
+## Pinned ARM64 bundle
+
+The repository publishes the ARM64 provider, so the debug route needs no private
+tree: the workflow unpacks `angle-lighttouch-arm64-v8a.tar.gz` from the
+pre-release `angle-arm64-v8a-4a5ccd7` into `ci/angle-arm64`, pinned by the
+SHA256 of that tarball
+(`c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1`), checks the
+bundle's own `SHA256SUMS` and validates the closure with the pinned NDK's
+`llvm-readelf` before Gradle configures. `libs/` holds the three fixed DSOs,
+`closure.json` the identity the staging script checks, and `notices/` the licence
+material, the notice manifest and a provenance note. The inner pins are read from
+the verified bytes rather than restated:
+
+* ANGLE `4a5ccd7b61e6ea3bf8bb1c486ac5f92ee7bf4f67` (BSD-3-Clause), built for
+  `arm64-v8a` by `KlugKlugTG/angle-android` (workflow `ANGLE Android Build`, run
+  41197401211, artifact `Android.arm64`; Vulkan primary, OpenGL ES fallback).
+* That build's `lib*_angle.so` files were renamed to the fixed provider names and
+  `patchelf` rewrote each SONAME and GLESv1's `DT_NEEDED` to match; every LOAD
+  segment stays 16 KiB aligned.
+* `libGLESv2` links the platform's `libandroid.so` (the AssetManager its shader
+  cache uses), which both allowlists accept beside
+  `libc`/`libdl`/`libm`/`liblog`/`libnativewindow`.
+
+For a local build, unpack the same tarball and pass its five properties (the two
+manifest pins are the values printed by `sha256sum` inside `SHA256SUMS`; they are
+`e0bb836b87e5d99180dc53ef16584c98464595fcfd1bbca730cb86d95f2a9874` for
+`closure.json` and
+`fd347012371a6c9c886c468f9b451b204d3022706701c0413a5802e8883ee626` for
+`notices/manifest.json`):
+
+```sh
+curl -fsSLO https://github.com/KlugKlugTG/Un1box/releases/download/angle-arm64-v8a-4a5ccd7/angle-lighttouch-arm64-v8a.tar.gz
+echo "c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1  angle-lighttouch-arm64-v8a.tar.gz" | sha256sum -c -
+tar xzf angle-lighttouch-arm64-v8a.tar.gz          # -> angle-lighttouch-arm64-v8a/
+./gradlew ... \
+  -PangleArm64Libraries=$PWD/angle-lighttouch-arm64-v8a/libs \
+  -PangleArm64Manifest=$PWD/angle-lighttouch-arm64-v8a/closure.json \
+  -PangleArm64Notices=$PWD/angle-lighttouch-arm64-v8a/notices \
+  -PangleArm64ManifestSha256=e0bb836b87e5d99180dc53ef16584c98464595fcfd1bbca730cb86d95f2a9874 \
+  -PangleArm64NoticesSha256=fd347012371a6c9c886c468f9b451b204d3022706701c0413a5802e8883ee626 \
+  :app:assembleDebug
+```
+
+Packaging is still not selection: the provider takes effect only when the worker
+is started with the ANGLE route (Settings' graphics provider, `angle-gl`), and a
+worker that has already chosen one keeps it until a fresh start.
+
 ## Independent generated paths
 
 | ABI | JNI libraries | Notices | Provider metadata |

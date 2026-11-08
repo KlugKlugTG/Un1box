@@ -20,7 +20,10 @@ def asset_paths(abi):
             'angle-runtime.json' if abi == 'x86_64' else 'angle-runtime-arm64-v8a.json')
 
 
-PLATFORM = {'libc.so', 'libdl.so', 'libm.so', 'liblog.so', 'libnativewindow.so'}
+# libandroid.so is the NDK's platform library: the ARM64 libGLESv2 links it for
+# the AssetManager its shader cache loads through, and it is part of Bionic's
+# public API surface, not a second provider.
+PLATFORM = {'libc.so', 'libdl.so', 'libm.so', 'liblog.so', 'libnativewindow.so', 'libandroid.so'}
 
 
 def sha(path):
