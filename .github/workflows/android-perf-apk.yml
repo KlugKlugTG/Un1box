@@ -896,6 +896,12 @@ jobs:
             echo "- engine build: arm64-v8a, NDK $ANDROID_NDK_VERSION, --android-api 29, $LT_JOBS jobs"
             echo "- reused from ${BASE_RELEASE_RESOLVED:-$DECLARED_BASE_RELEASE_REPO $DECLARED_BASE_RELEASE_TAG}: firmwarekit, lighttouch-oneshot, USB bridge, it_seal"
             echo "- guest itpacks: serial 39 from guest-package run ${GUEST_PACKAGE_RUN_ID}"
+            ANGLE_TAG="${ANGLE_BUNDLE_URL:-}"; ANGLE_TAG="${ANGLE_TAG%/*}"; ANGLE_TAG="${ANGLE_TAG##*/}"
+            if [ -n "${ANGLE_ARM64_MANIFEST_SHA256:-}" ]; then
+              echo "- ARM64 ANGLE provider: $ANGLE_TAG (${ANGLE_BUNDLE_URL##*/}), closure $ANGLE_ARM64_MANIFEST_SHA256, notices $ANGLE_ARM64_NOTICES_SHA256"
+            else
+              echo "- ARM64 ANGLE provider: not packaged"
+            fi
             echo "- debuggable: $DECLARED_DEBUGGABLE; signed with this workflow's own keystore"
             echo
             echo "## Engine commits in $ENGINE_REF that are not in main"
