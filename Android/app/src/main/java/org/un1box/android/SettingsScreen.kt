@@ -49,9 +49,9 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
             }
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings")) {
                 Group("Language") {
-                    // Four languages in one row: the segmented labels drop the row's
-                    // indent and use the smaller label style, or a long name ("Как в
-                    // системе", "Follow system") is cut mid-word on a narrow screen.
+                    // Four languages in one row: the segmented labels drop the row's indent
+                    // and use the smaller label style, and the follow-system one is the short
+                    // "Auto"/"Авто"/"自动" (a sentence-long name is cut mid-word here).
                     ChoiceRow(LtIcons.Info, "Language", UiLanguage.entries, s.language, { it.label },
                         "Applies to the whole app", tag = "ui_language", compact = true) {
                         s.language = it; I18n.choose(it); (context as? Activity)?.recreate()

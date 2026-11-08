@@ -14,6 +14,13 @@ enum class OverlayGraph(val label: String) { FRAME_TIME("Frame time"), FPS("Fram
 enum class ScreenScaling(val label: String, val native: Int) { SMOOTH("Smooth", 0), SHARP("Sharp", 1) }
 enum class GraphicsProvider(val label: String, val nativeChoice: Int) { PLATFORM("Native GLES", 0), ANGLE("ANGLE", 1) }
 
+/** True when this APK carries the bundled provider the angle-gl route dlopens (Android/DEBUG-ANGLE.md):
+ *  the staging task writes that receipt for every variant it was given the five properties for. */
+fun angleProviderBundled(context: Context): Boolean = Build.SUPPORTED_ABIS.any { abi ->
+    val metadata = if (abi == "x86_64") "angle-runtime.json" else "angle-runtime-$abi.json"
+    runCatching { context.assets.open("providers/$metadata").close() }.isSuccess
+}
+
 /** User preferences, as Compose state backed by SharedPreferences. Read on the main thread. */
 class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
@@ -54,11 +61,8 @@ class AppSettings(context: Context) {
     private val reduceAppSwitchPausesState = mutableStateOf(prefs.getBoolean("reduceAppSwitchPauses", true))
     var reduceAppSwitchPauses: Boolean get() = reduceAppSwitchPausesState.value; set(v) { reduceAppSwitchPausesState.value = v; prefs.edit().putBoolean("reduceAppSwitchPauses", v).apply() }
 
-    /** True when this APK carries the bundled provider the angle-gl route dlopens (Android/DEBUG-ANGLE.md). */
-    val angleProviderBundled: Boolean = Build.SUPPORTED_ABIS.any { abi ->
-        val metadata = if (abi == "x86_64") "angle-runtime.json" else "angle-runtime-$abi.json"
-        runCatching { context.assets.open("providers/$metadata").close() }.isSuccess
-    }
+    /** True when this APK carries the bundled provider (see [angleProviderBundled]). */
+    val angleProviderBundled: Boolean = angleProviderBundled(context)
 
     private val graphicsProviderState = enumPref("graphicsProvider", GraphicsProvider.PLATFORM)
     var graphicsProvider: GraphicsProvider get() = graphicsProviderState.value; set(v) { graphicsProviderState.value = v; prefs.edit().putString("graphicsProvider", v.name).apply() }

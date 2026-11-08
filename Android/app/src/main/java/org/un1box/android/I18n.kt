@@ -10,7 +10,7 @@ package org.un1box.android
  */
 enum class UiLanguage(val tag: String, val label: String) {
     /** Follow the phone's language: the matching catalogue on a Chinese or Russian phone, English otherwise. */
-    AUTO("auto", "Follow system"),
+    AUTO("auto", "Auto"),
     CHINESE("zh", "简体中文"),
     RUSSIAN("ru", "Русский"),
     ENGLISH("en", "English");

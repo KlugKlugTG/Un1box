@@ -240,7 +240,6 @@ internal object I18nZh {
         put("Couldn't load", "加载失败")
         put("Create device", "创建设备")
         put("Delete failed", "删除失败")
-        put("Follow system", "跟随系统")
         put("Guest display", "客户机显示")
         put("Import failed", "导入失败")
         put("Main loop CPU", "主循环 CPU")

@@ -240,7 +240,6 @@ internal object I18nRu {
         put("Couldn't load", "Не удалось загрузить")
         put("Create device", "Создать устройство")
         put("Delete failed", "Не удалось удалить")
-        put("Follow system", "Как в системе")
         put("Guest display", "Дисплей гостевой системы")
         put("Import failed", "Не удалось импортировать")
         put("Main loop CPU", "CPU главного цикла")

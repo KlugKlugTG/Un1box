@@ -127,7 +127,10 @@ class EngineService : Service() {
             return Native.debugEnableTouchTrace()
         }
         override fun debugSelectGraphicsProvider(choice: Int): String {
-            requireDebugDiagnosis()
+            // Not requireDebugDiagnosis(): the route belongs to an APK that carries the provider, and the
+            // workflow's release APK does while carrying no debuggable flag. The engine refuses the
+            // selection itself when it has no provider compiled in, and that message comes back here.
+            check(angleProviderBundled(this)) { "No packaged graphics provider in this build" }
             if (started.isConsumed()) return "Graphics provider selection requires a fresh unused worker"
             return Native.debugSelectGraphicsProvider(choice)
         }
