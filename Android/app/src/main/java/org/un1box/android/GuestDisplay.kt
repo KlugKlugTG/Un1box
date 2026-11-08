@@ -24,6 +24,11 @@ class GuestDisplay(context: Context, private val onError: (String) -> Unit = {},
     private var inputGeneration = 0L
     private var expectedCancellationBatches = 0L
     private val contactIds = mutableSetOf<Int>()
+    // Pre-allocated per-pointer-count arrays (1..8) avoid allocating three heap
+    // arrays and a boxed action list on every 120-240 Hz ACTION_MOVE on the UI thread.
+    private val idsScratch = Array(9) { IntArray(it) }
+    private val phasesScratch = Array(9) { IntArray(it) }
+    private val xyScratch = Array(9) { FloatArray(it * 2) }
     /** Main-thread observations of Android admission, never guest delivery proof. */
     internal fun inputObservations(): Bundle = Bundle().apply {
         putLong("forwardedBatches", forwardedBatches)
@@ -120,18 +125,22 @@ class GuestDisplay(context: Context, private val onError: (String) -> Unit = {},
             rejectedGesture = false
         }
         if (rejectedGesture) { suppressedContinuations++; return true }
-        if (event.pointerCount > 8) { cancelGesture(); return true }
-        if (event.actionMasked !in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_MOVE,
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP)) return true
-        val ids = IntArray(event.pointerCount)
-        val phases = IntArray(event.pointerCount) { 1 }
-        val xy = FloatArray(event.pointerCount * 2)
-        for (index in 0 until event.pointerCount) {
+        val count = event.pointerCount
+        if (count > 8) { cancelGesture(); return true }
+        val action = event.actionMasked
+        if (action != MotionEvent.ACTION_DOWN && action != MotionEvent.ACTION_POINTER_DOWN &&
+            action != MotionEvent.ACTION_MOVE && action != MotionEvent.ACTION_UP &&
+            action != MotionEvent.ACTION_POINTER_UP) return true
+        val ids = idsScratch[count]
+        val phases = phasesScratch[count]
+        val xy = xyScratch[count]
+        for (index in 0 until count) {
             ids[index] = event.getPointerId(index)
+            phases[index] = 1
             xy[index * 2] = event.getX(index)
             xy[index * 2 + 1] = event.getY(index)
         }
-        when (event.actionMasked) {
+        when (action) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> phases[event.actionIndex] = 0
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> phases[event.actionIndex] = 2
         }

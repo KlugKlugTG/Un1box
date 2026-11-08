@@ -310,11 +310,16 @@ class EngineService : Service() {
                 else admitTouch(lease, inputGeneration, timestampNanos, ids, phases, coordinates, width, height, rotation)
             }.also { displayCancellations.record(it) }
         private fun admitTouch(lease: Long?, inputGeneration: Long, timestampNanos: Long, ids: IntArray, phases: IntArray, coordinates: FloatArray, width: Int, height: Int, rotation: Int): String = synchronized(touchAdmissionGuard) {
-            // Native admission rechecks the owner under the control guard. This
-            // early check only avoids advancing the clock for already stale Views.
-            if (lease != null && !Native.ownsDisplay(lease)) return@synchronized "Display ownership retired"
-            if (lease != null && (inputGeneration <= 0L || Native.displayInputGeneration(lease) != inputGeneration))
-                return@synchronized DisplayInputAdmission.GENERATION_RETIRED
+            // Native admission rechecks the owner under the control guard. displayInputGeneration
+            // returns 0 when `lease` is not owned, so a matching non-zero generation proves both
+            // ownership and current generation in one JNI call instead of two.
+            if (lease != null) {
+                val activeGeneration = if (inputGeneration > 0L) Native.displayInputGeneration(lease) else 0L
+                if (activeGeneration != inputGeneration) {
+                    if (!Native.ownsDisplay(lease)) return@synchronized "Display ownership retired"
+                    return@synchronized DisplayInputAdmission.GENERATION_RETIRED
+                }
+            }
             val ordered = try { touchTimestampOrder.select(timestampNanos) }
             catch (failure: IllegalArgumentException) {
                 val rejected = "${failure.message}; gesture cancelled. Start a new gesture."
@@ -566,20 +571,22 @@ class EngineService : Service() {
         /** The pull loop's wait while the guest is silent: its floor, and how far it backs off. */
         private const val AUDIO_IDLE_MIN_MS = 10
         private const val AUDIO_IDLE_MAX_MS = 60
-    }
-
-    private fun playAudio() = synchronized(audioGuard) { audio?.play(); audioGuard.resume() }
-    private fun observations() = Bundle().apply {
-        val values = Native.observations()
-        val keys = listOf("hostMonotonicNs", "presentedFrames", "firstPresentHostNs", "lastPresentHostNs", "maxPresentGapNs", "maxPresentWorkNs",
+        private val OBSERVATION_KEYS = arrayOf(
+            "hostMonotonicNs", "presentedFrames", "firstPresentHostNs", "lastPresentHostNs", "maxPresentGapNs", "maxPresentWorkNs",
             "windowFailures", "frameCopyFailures", "surfaceGeneration", "guestFrameSequence", "guestFrameTimestampNs", "nativePcmFailures", "pcmDroppedFrames",
             "presentIntervalsTo16ms", "presentIntervalsTo33ms", "presentIntervalsTo50ms", "presentIntervalsTo100ms", "presentIntervalsTo250ms", "presentIntervalsOver250ms", "producedFrames", "producerFrameSequence", "producerFrameTimestampNs",
             "framePublishedHostNs", "pcmCapturedFrames", "pcmPulledFrames", "sharedPcmDroppedFrames", "inputRequests", "pcmQueuedPackets", "firstWindowLockError", "lastWindowLockError", "firstWindowPostError", "lastWindowPostError", "lastWindowGeometryError",
             "windowGeometryFailures", "windowBufferFormat", "windowBufferWidth", "windowBufferHeight", "windowBufferStride", "invalidWindowBuffers", "firstWindowErrorHostNs", "runtimeDiagnosticsStatus", "engineReady", "displaySleeping", "backlightLevel",
             "guestAgentSampleStatus", "guestAgentState", "shutdownPhase", "shutdownRoute", "shutdownReplyStatus", "shutdownReplyReceived", "guestFrameWidth", "guestFrameHeight", "guestFrameSamplePixels", "guestFrameNonzeroRgbSamples", "guestFrameRgbSampleSum",
             "windowAttached", "presentationEpoch", "presenterPhase", "presenterPhaseEntryHostNs", "presenterPhaseGeneration", "presenterPhaseEpoch", "presenterPhaseRevision", "presenterPhaseSampleStable",
-            "ignoredInputRejections", "lastIgnoredInputRequest")
-        for ((index, key) in keys.withIndex()) putLong(key, values[index])
+            "ignoredInputRejections", "lastIgnoredInputRequest"
+        )
+    }
+
+    private fun playAudio() = synchronized(audioGuard) { audio?.play(); audioGuard.resume() }
+    private fun observations() = Bundle().apply {
+        val values = Native.observations()
+        for (index in OBSERVATION_KEYS.indices) putLong(OBSERVATION_KEYS[index], values[index])
         putBoolean("presenterTelemetryGuestEvidence", false)
         val diagnosticAvailable = getLong("runtimeDiagnosticsStatus") == 0L
         val agentAvailable = getLong("guestAgentSampleStatus") == 0L

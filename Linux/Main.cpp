@@ -721,18 +721,23 @@ static std::vector<Script> script_file(const std::string &path) {
 static bool frame_copy(const lt_shared_frame *shared, std::vector<uint8_t> &pixels, lt_frame_info &frame,
                        uint64_t &sequence) {
     for (int attempt = 0; attempt < 3; attempt++) {
-        uint64_t before = __atomic_load_n(&shared->generation, __ATOMIC_SEQ_CST);
+        uint64_t before = __atomic_load_n(&shared->generation, __ATOMIC_ACQUIRE);
         if (before & 1)
             continue;
-        auto f = shared->frame;
-        if (!f.sequence || f.sequence == sequence)
+        auto f = lt::load_frame_metadata(shared->frame);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        uint64_t metadata_after = __atomic_load_n(&shared->generation, __ATOMIC_RELAXED);
+        if (before != metadata_after || (metadata_after & 1))
+            continue;
+        if (!f.sequence || f.sequence <= sequence)
             return false;
         require(f.version == 1 && f.size == sizeof f && f.bytes <= LT_FRAME_CAPACITY && f.stride >= f.width * 4ull &&
                     f.bytes >= uint64_t(f.stride) * f.height && f.width <= 4096 && f.height <= 4096,
                 "invalid shared frame bounds");
         pixels.resize(size_t(f.bytes));
         memcpy(pixels.data(), reinterpret_cast<const uint8_t *>(shared) + sizeof(*shared), size_t(f.bytes));
-        uint64_t after = __atomic_load_n(&shared->generation, __ATOMIC_SEQ_CST);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        uint64_t after = __atomic_load_n(&shared->generation, __ATOMIC_RELAXED);
         if (before == after && !(after & 1)) {
             frame = f;
             sequence = f.sequence;

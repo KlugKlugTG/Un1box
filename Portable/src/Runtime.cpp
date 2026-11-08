@@ -238,29 +238,47 @@ static void result(int r) {
 }
 static std::atomic<bool> process_started{false};
 struct PcmPacket {
-    std::array<int16_t, 8192> samples{};
+    std::vector<int16_t> samples;
     uint32_t bytes = 0;
     uint64_t timestamp = 0;
 };
+struct CachedBoardList {
+    std::string path;
+    dev_t dev = 0;
+    ino_t ino = 0;
+    off_t size = 0;
+    int64_t mtime_sec = 0;
+    int64_t mtime_nsec = 0;
+    std::vector<QemuIosPortableBoard> boards;
+};
+static std::mutex board_cache_mutex;
+static CachedBoardList board_cache;
 } // namespace lt
 struct lt_runtime {
     lt_device *device;
     std::unique_ptr<lt::Engine> engine;
     std::thread guest, publisher;
     std::atomic<bool> done{false}, started{false}, stopping{false}, confirmed{false}, storage_failed{false},
-        publisher_running{false};
+        publisher_running{false}, frame_fd_exported{false};
     std::atomic<int> exit_code{0};
     std::atomic<bool> shutdown_requested{false}, shutdown_reply_received{false}, worker_failed{false};
     std::atomic<uint32_t> shutdown_phase{0}, shutdown_route{0}, agent_state{0};
     std::atomic<int32_t> shutdown_reply_status{0};
     std::atomic<uint64_t> frame_count{0};
     std::atomic<uint64_t> frame_sequence{0}, frame_timestamp{0}, frame_published{0}, pcm_captured{0}, pcm_pulled{0};
-    std::mutex mutex;
+    std::mutex mutex, publish_mutex;
     // The engine signals each captured frame (on QEMU's main loop, holding the
     // BQL) so the publisher copies it at once instead of on its next 10 ms poll.
     std::mutex wake_mutex;
     std::condition_variable wake;
     uint64_t engine_frames = 0;
+    void notify_publisher() {
+        {
+            std::lock_guard<std::mutex> lock(wake_mutex);
+            engine_frames++;
+        }
+        wake.notify_all();
+    }
     // Called on the publisher thread after each publication; see the header.
     std::mutex listener_mutex;
     lt_frame_listener listener = nullptr;
@@ -334,11 +352,26 @@ struct lt_runtime {
             fprintf(stderr, "lighttouch: could not record the guest package verdict: %s\n", e.what());
         }
     }
+    lt::FrameCopy copy_engine_frame(void *pixels, size_t capacity, uint64_t since, lt_frame_info &out) {
+        QemuIosPortableFrame meta{sizeof(meta), 1, 0, 0, 0, 0, 0, 0, 0};
+        const int rc = engine->frame(pixels, capacity, since, &meta);
+        if (rc == QEMU_IOS_NO_FRAME)
+            return lt::FrameCopy::no_frame;
+        if (rc == QEMU_IOS_NOT_READY)
+            return lt::FrameCopy::not_ready;
+        if (rc != QEMU_IOS_BUFFER_SMALL)
+            lt::result(rc);
+        out = {sizeof(out), 1, meta.width, meta.height, meta.stride, meta.format,
+               meta.serial, meta.timestamp_ns, meta.required_bytes};
+        return rc == QEMU_IOS_OK ? lt::FrameCopy::copied : lt::FrameCopy::small;
+    }
     void publish() {
         bool quit_sent = false;
         lt::GuestShutdownAdmission shutdown_admission;
         lt::GuestPackageJudge package_judge;
+        int16_t pcm_scratch[8192];
         while (!done) {
+            bool idle_paused = false;
             try {
                 if (engine->ready()) {
                     const bool actual_paused = engine->paused();
@@ -353,6 +386,8 @@ struct lt_runtime {
                         engine->pause();
                     else if (pause_action == lt::VmPauseControl::Action::resume)
                         engine->resume();
+                    idle_paused = actual_paused && pause_action == lt::VmPauseControl::Action::none && !stopping &&
+                                  !shutdown_admission.pending();
                     agent_state = uint32_t(engine->agent_status());
                     shutdown_admission.observe(agent_state.load());
                     if (engine->package_report && !stopping)
@@ -423,29 +458,40 @@ struct lt_runtime {
                         }
                     }
                     lt_frame_info f{sizeof(f), 1, 0, 0, 0, 0, 0, 0, 0};
-                    const auto acquired = lt::acquire_frame(
-                        scratch, serial, f, [&](void *pixels, size_t capacity, uint64_t since, lt_frame_info &out) {
-                            QemuIosPortableFrame meta{sizeof(meta), 1, 0, 0, 0, 0, 0, 0, 0};
-                            const int result = engine->frame(pixels, capacity, since, &meta);
-                            if (result == QEMU_IOS_NO_FRAME)
-                                return lt::FrameCopy::no_frame;
-                            if (result == QEMU_IOS_NOT_READY)
-                                return lt::FrameCopy::not_ready;
-                            if (result != QEMU_IOS_BUFFER_SMALL)
-                                lt::result(result);
-                            out = {sizeof(out), 1, meta.width, meta.height, meta.stride, meta.format,
-                                   meta.serial, meta.timestamp_ns, meta.required_bytes};
-                            return result == QEMU_IOS_OK ? lt::FrameCopy::copied : lt::FrameCopy::small;
-                        });
-                    lt::require(acquired != lt::FrameAcquire::invalid, "engine returned invalid frame", LT_ENGINE);
-                    if (acquired == lt::FrameAcquire::copied) {
-                        lt::require(lt::publish_frame(shared, f, scratch.data(), scratch.size()),
-                                    "invalid shared frame publication", LT_ENGINE);
-                        serial = f.sequence;
-                        frame_sequence = f.sequence;
-                        frame_timestamp = f.timestamp_ns;
-                        frame_published = lt::now_ns();
-                        frame_count++;
+                    bool published_new = false;
+                    {
+                        std::lock_guard<std::mutex> pub_lock(publish_mutex);
+                        if (frame_fd_exported.load(std::memory_order_relaxed)) {
+                            const auto acquired = lt::acquire_frame(
+                                scratch, serial, f, [this](void *pixels, size_t capacity, uint64_t since, lt_frame_info &out) {
+                                    return copy_engine_frame(pixels, capacity, since, out);
+                                });
+                            lt::require(acquired != lt::FrameAcquire::invalid, "engine returned invalid frame",
+                                        LT_ENGINE);
+                            if (acquired == lt::FrameAcquire::copied) {
+                                lt::require(lt::publish_frame(shared, f, scratch.data(), scratch.size()),
+                                            "invalid shared frame publication", LT_ENGINE);
+                                published_new = true;
+                            }
+                        } else {
+                            const auto probed = copy_engine_frame(nullptr, 0, serial, f);
+                            if (probed != lt::FrameCopy::no_frame && probed != lt::FrameCopy::not_ready) {
+                                lt::require(lt::valid_frame(f) && f.sequence > serial, "engine returned invalid frame",
+                                            LT_ENGINE);
+                                lt::require(lt::publish_frame_metadata(shared, f),
+                                            "invalid shared frame publication", LT_ENGINE);
+                                published_new = true;
+                            }
+                        }
+                        if (published_new) {
+                            serial = f.sequence;
+                            frame_sequence = f.sequence;
+                            frame_timestamp = f.timestamp_ns;
+                            frame_published = lt::now_ns();
+                            frame_count++;
+                        }
+                    }
+                    if (published_new) {
                         if (frame_log) {
                             fprintf(frame_log, "%llu %llu\n", (unsigned long long)frame_published.load(),
                                     (unsigned long long)f.sequence);
@@ -472,14 +518,13 @@ struct lt_runtime {
                                                   [&] { return engine->audio_start(); });
                         if (!suspended && !vm_paused && audio_capture.generation) {
                             for (int i = 0; i < 8; i++) {
-                                lt::PcmPacket p;
                                 double seconds = 0;
-                                int bytes = engine->audio_read(audio_capture.generation, p.samples.data(),
-                                                               int(sizeof p.samples), &seconds);
+                                int bytes = engine->audio_read(audio_capture.generation, pcm_scratch,
+                                                               int(sizeof pcm_scratch), &seconds);
                                 {
                                     std::lock_guard<std::mutex> lock(mutex);
                                     if (read_epoch != pcm.epoch || pcm.suspended || stopping) {
-                                        if (bytes > 0 && bytes <= int(sizeof p.samples) && bytes % 4 == 0) {
+                                        if (bytes > 0 && bytes <= int(sizeof pcm_scratch) && bytes % 4 == 0) {
                                             pcm_captured += bytes / 4;
                                             pcm.dropped += bytes / 4;
                                         }
@@ -491,9 +536,11 @@ struct lt_runtime {
                                 }
                                 if (!bytes)
                                     break;
-                                lt::require(bytes <= int(sizeof p.samples) && bytes % 4 == 0,
+                                lt::require(bytes <= int(sizeof pcm_scratch) && bytes % 4 == 0,
                                             "invalid engine PCM packet", LT_ENGINE);
+                                lt::PcmPacket p;
                                 p.bytes = uint32_t(bytes);
+                                p.samples.assign(pcm_scratch, pcm_scratch + (bytes / 2));
                                 pcm_captured += p.bytes / 4;
                                 p.timestamp = uint64_t(std::max(0.0, seconds) * 1e9);
                                 std::lock_guard<std::mutex> lock(mutex);
@@ -519,7 +566,8 @@ struct lt_runtime {
             {
                 std::unique_lock<std::mutex> lock(wake_mutex);
                 const uint64_t seen = engine_frames;
-                wake.wait_for(lock, std::chrono::milliseconds(10), [&] { return engine_frames != seen; });
+                wake.wait_for(lock, std::chrono::milliseconds(idle_paused ? 100 : 10),
+                              [&] { return engine_frames != seen || done.load(std::memory_order_relaxed); });
             }
         }
         if (shutdown_admission.wake_down() && engine->ready())
@@ -540,9 +588,43 @@ lt_status lt_engine_board(const char *library, const char *board, lt_board_info 
     return lt::guard(e, [&] {
         lt::abi(out);
         lt::require(board, "board required");
+        lt::require(library && *library, "engine library missing");
+        static_assert(sizeof(lt_board_info) == sizeof(QemuIosPortableBoard));
+        struct stat st {};
+        if (stat(library, &st) == 0) {
+#ifdef __APPLE__
+            const int64_t mtime_sec = int64_t(st.st_mtimespec.tv_sec);
+            const int64_t mtime_nsec = int64_t(st.st_mtimespec.tv_nsec);
+#else
+            const int64_t mtime_sec = int64_t(st.st_mtim.tv_sec);
+            const int64_t mtime_nsec = int64_t(st.st_mtim.tv_nsec);
+#endif
+            std::lock_guard<std::mutex> lock(lt::board_cache_mutex);
+            if (lt::board_cache.path != library || lt::board_cache.dev != st.st_dev ||
+                lt::board_cache.ino != st.st_ino || lt::board_cache.size != st.st_size ||
+                lt::board_cache.mtime_sec != mtime_sec || lt::board_cache.mtime_nsec != mtime_nsec) {
+                lt::Engine engine(library);
+                std::vector<QemuIosPortableBoard> boards;
+                for (int index = 0; index < 128; index++) {
+                    QemuIosPortableBoard facts{sizeof(facts), 1, {}, {}, 0, 0, 0, 0, 0, 0};
+                    int rc = engine.board_at(index, &facts);
+                    if (rc == QEMU_IOS_UNSUPPORTED)
+                        break;
+                    lt::require(rc == QEMU_IOS_OK, "engine board discovery failed", LT_ENGINE);
+                    boards.push_back(facts);
+                }
+                lt::board_cache = {library, st.st_dev, st.st_ino, st.st_size, mtime_sec, mtime_nsec, std::move(boards)};
+            }
+            for (const auto &facts : lt::board_cache.boards) {
+                if (std::strcmp(board, facts.board) == 0 || std::strcmp(board, facts.machine) == 0) {
+                    memcpy(out, &facts, sizeof facts);
+                    return;
+                }
+            }
+            throw lt::Failure(LT_UNSUPPORTED, std::string("engine does not expose board: ") + board);
+        }
         lt::Engine engine(library);
         auto f = engine.find_board(board);
-        static_assert(sizeof(lt_board_info) == sizeof(QemuIosPortableBoard));
         memcpy(out, &f, sizeof f);
     });
 }
@@ -689,6 +771,7 @@ lt_status lt_runtime_start(lt_runtime *r, lt_error *e) {
                     r->confirmed = true;
                 r->exit_code = result;
                 r->done = true;
+                r->notify_publisher();
             });
         } catch (const std::exception &x) {
             r->exit_code = -1;
@@ -763,18 +846,25 @@ lt_status lt_runtime_pause(lt_runtime *r, uint32_t paused, lt_error *e) {
             r->pcm.transition(paused != 0);
             r->vm_pause.request(paused != 0);
         }
+        r->notify_publisher();
     });
 }
 lt_status lt_runtime_request_shutdown(lt_runtime *r, lt_error *e) {
     return lt::guard(e, [&] {
         lt::require(r && r->started && !r->done, "runtime not active", LT_AGAIN);
-        std::lock_guard<std::mutex> lock(r->mutex);
-        if (!r->stopping.exchange(true)) {
-            r->pcm.transition(true);
-            r->vm_pause.shutdown_target();
-            r->shutdown_phase = 1;
-            r->shutdown_requested = true;
+        bool notify = false;
+        {
+            std::lock_guard<std::mutex> lock(r->mutex);
+            if (!r->stopping.exchange(true)) {
+                r->pcm.transition(true);
+                r->vm_pause.shutdown_target();
+                r->shutdown_phase = 1;
+                r->shutdown_requested = true;
+                notify = true;
+            }
         }
+        if (notify)
+            r->notify_publisher();
     });
 }
 lt_status lt_runtime_diagnose(lt_runtime *r, lt_runtime_diagnostics *out, lt_error *e) {
@@ -861,6 +951,26 @@ lt_status lt_runtime_frame_fd(lt_runtime *r, int *fd, uint64_t *bytes, lt_error 
         std::string path = "/proc/self/fd/" + std::to_string(r->frame_fd);
         int copy = open(path.c_str(), O_RDONLY | O_CLOEXEC);
         lt::io(copy >= 0, "readonly frame FD");
+        {
+            std::lock_guard<std::mutex> pub_lock(r->publish_mutex);
+            if (!r->frame_fd_exported.load(std::memory_order_relaxed)) {
+                if (r->started && !r->done && r->engine && r->serial > 0) {
+                    lt_frame_info backfilled{sizeof(backfilled), 1, 0, 0, 0, 0, 0, 0, 0};
+                    const auto acquired = lt::acquire_frame(
+                        r->scratch, 0, backfilled,
+                        [r](void *pixels, size_t capacity, uint64_t since, lt_frame_info &out) {
+                            return r->copy_engine_frame(pixels, capacity, since, out);
+                        });
+                    if (acquired == lt::FrameAcquire::copied &&
+                        lt::publish_frame(r->shared, backfilled, r->scratch.data(), r->scratch.size())) {
+                        r->serial = backfilled.sequence;
+                        r->frame_sequence = backfilled.sequence;
+                        r->frame_timestamp = backfilled.timestamp_ns;
+                    }
+                }
+                r->frame_fd_exported.store(true, std::memory_order_release);
+            }
+        }
         *fd = copy;
         *bytes = r->mapping_bytes;
     });

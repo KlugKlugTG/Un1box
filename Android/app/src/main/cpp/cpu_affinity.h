@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <sched.h>
 #include <unistd.h>
+#include <vector>
 
 // Big-core affinity for the guest's vCPU threads.
 //
@@ -84,27 +85,46 @@ private:
         fprintf(stderr, "[perf] vCPU threads prefer %d of %d cores\n", cpus_, total_);
     }
 
-    // Pin whatever vCPU threads exist now. Run again on later frames, because the engine
-    // recreates them on a reset; an already-pinned thread just takes the same syscall.
+    static bool is_vcpu_thread(int tid) {
+        if (tid <= 0) return false;
+        char path[64], name[32] = {};
+        snprintf(path, sizeof path, "/proc/self/task/%d/comm", tid);
+        FILE *f = fopen(path, "re");
+        if (!f) return false;
+        if (!fgets(name, sizeof name, f)) name[0] = 0;
+        fclose(f);
+        size_t n = strcspn(name, "\n");
+        name[n] = 0;
+        // QEMU names its vCPU threads "CPU 0/TCG" (see performance_hint.h).
+        return !strncmp(name, "CPU ", 4) && n > 4 && !strcmp(name + n - 4, "/TCG");
+    }
+
+    // Pin whatever vCPU threads exist now. Once discovered, verify the cached TIDs
+    // in O(1) instead of scanning every entry in /proc/self/task every two seconds;
+    // fall back to a full scan only before discovery or after a reset replaces a TID.
     void apply() {
         if (state_ == State::unknown) resolve();
         if (state_ != State::active) return;
+        if (!vcpu_tids_.empty()) {
+            bool all_alive = true;
+            for (int tid : vcpu_tids_) {
+                if (!is_vcpu_thread(tid)) {
+                    all_alive = false;
+                    break;
+                }
+            }
+            if (all_alive) {
+                for (int tid : vcpu_tids_) sched_setaffinity(tid, sizeof mask_, &mask_);
+                return;
+            }
+            vcpu_tids_.clear();
+        }
         DIR *tasks = opendir("/proc/self/task");
         if (!tasks) return;
         int pinned = 0;
         while (dirent *task = readdir(tasks)) {
-            char path[300], name[32] = {};
-            snprintf(path, sizeof path, "/proc/self/task/%s/comm", task->d_name);
-            if (FILE *f = fopen(path, "re")) {
-                if (!fgets(name, sizeof name, f)) name[0] = 0;
-                fclose(f);
-            }
-            size_t n = strcspn(name, "\n");
-            name[n] = 0;
-            // QEMU names its vCPU threads "CPU 0/TCG" (see performance_hint.h).
-            if (strncmp(name, "CPU ", 4) || n <= 4 || strcmp(name + n - 4, "/TCG")) continue;
             int tid = atoi(task->d_name);
-            if (tid <= 0) continue;
+            if (!is_vcpu_thread(tid)) continue;
             if (sched_setaffinity(tid, sizeof mask_, &mask_) != 0) {
                 if (!refused_) {
                     refused_ = true;
@@ -112,6 +132,7 @@ private:
                 }
                 continue;
             }
+            vcpu_tids_.push_back(tid);
             pinned++;
         }
         closedir(tasks);
@@ -123,6 +144,7 @@ private:
 
     State state_ = State::unknown;
     cpu_set_t mask_{};
+    std::vector<int> vcpu_tids_;
     int cpus_ = 0, total_ = 0;
     unsigned frames_ = 0;
     bool logged_ = false, refused_ = false;

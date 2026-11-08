@@ -46,6 +46,10 @@ public:
         owner_=0;++order_;clearContacts();return true;
     }
     bool contactsHeld() const { return !contacts_.empty(); }
+    bool inputPending() const { return input_pending_; }
+    void inputObserved(uint64_t request) {
+        if(request==input_request_)input_pending_=false;
+    }
     bool pendingOwnedRelease() const {
         return owner_!=0 && (!uncertain_releases_.empty() || release_overflow_);
     }

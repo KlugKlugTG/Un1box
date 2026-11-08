@@ -15,11 +15,12 @@ inline bool valid_frame(const lt_frame_info &f) {
 }
 // Metadata fields are individually atomic, including same-process readers.
 // The existing generation bracket makes the whole snapshot coherent. The
-// physical C ABI and readonly-FD layout do not change. Fields and bracket use
-// one sequentially consistent order, so a new field cannot validate against
-// an older even generation in a same-process C++ reader.
+// physical C ABI and readonly-FD layout do not change. Relaxed per-field
+// operations are ordered by the writer's acquire-release/release generation
+// bracket and the reader's acquire load plus acquire fence before re-checking
+// generation, avoiding nine full sequential-consistency barriers per access.
 inline void store_frame_metadata(lt_frame_info &to, const lt_frame_info &f) {
-#define STORE(field) __atomic_store_n(&to.field, f.field, __ATOMIC_SEQ_CST)
+#define STORE(field) __atomic_store_n(&to.field, f.field, __ATOMIC_RELAXED)
     STORE(size);
     STORE(version);
     STORE(width);
@@ -33,7 +34,7 @@ inline void store_frame_metadata(lt_frame_info &to, const lt_frame_info &f) {
 }
 inline lt_frame_info load_frame_metadata(const lt_frame_info &from) {
     lt_frame_info f{};
-#define LOAD(field) f.field = __atomic_load_n(&from.field, __ATOMIC_SEQ_CST)
+#define LOAD(field) f.field = __atomic_load_n(&from.field, __ATOMIC_RELAXED)
     LOAD(size);
     LOAD(version);
     LOAD(width);
@@ -54,12 +55,13 @@ MetadataRead read_frame_metadata(const lt_shared_frame *shared, uint64_t since, 
     if (!shared || shared->size != sizeof(*shared) || shared->version != 1 || shared->capacity != LT_FRAME_CAPACITY)
         return MetadataRead::invalid;
     for (unsigned attempt = 0; attempt < 3; ++attempt) {
-        const auto before = __atomic_load_n(&shared->generation, __ATOMIC_SEQ_CST);
+        const auto before = __atomic_load_n(&shared->generation, __ATOMIC_ACQUIRE);
         if (before & 1)
             continue;
         const auto f = load_frame_metadata(shared->frame);
         observe(attempt);
-        const auto after = __atomic_load_n(&shared->generation, __ATOMIC_SEQ_CST);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        const auto after = __atomic_load_n(&shared->generation, __ATOMIC_RELAXED);
         if (before != after || (after & 1))
             continue;
         // Never diagnose malformed bounds from a torn intermediate record.
@@ -77,14 +79,25 @@ MetadataRead read_frame_metadata(const lt_shared_frame *shared, uint64_t since, 
 inline MetadataRead read_frame_metadata(const lt_shared_frame *shared, uint64_t since, lt_frame_info &out) {
     return read_frame_metadata(shared, since, out, [](unsigned) {});
 }
+inline bool publish_frame_metadata(lt_shared_frame *shared, const lt_frame_info &f) {
+    if (!shared || shared->size != sizeof(*shared) || shared->version != 1 || !valid_frame(f) ||
+        shared->capacity != LT_FRAME_CAPACITY)
+        return false;
+    __atomic_add_fetch(&shared->generation, 1, __ATOMIC_ACQ_REL);
+    __atomic_thread_fence(__ATOMIC_ACQ_REL);
+    store_frame_metadata(shared->frame, f);
+    __atomic_add_fetch(&shared->generation, 1, __ATOMIC_RELEASE);
+    return true;
+}
 inline bool publish_frame(lt_shared_frame *shared, const lt_frame_info &f, const void *pixels, size_t capacity) {
     if (!shared || shared->size != sizeof(*shared) || shared->version != 1 || !valid_frame(f) || !pixels ||
         f.bytes > capacity || shared->capacity != LT_FRAME_CAPACITY)
         return false;
-    __atomic_add_fetch(&shared->generation, 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&shared->generation, 1, __ATOMIC_ACQ_REL);
+    __atomic_thread_fence(__ATOMIC_ACQ_REL);
     store_frame_metadata(shared->frame, f);
     memcpy(reinterpret_cast<uint8_t *>(shared) + sizeof(*shared), pixels, size_t(f.bytes));
-    __atomic_add_fetch(&shared->generation, 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&shared->generation, 1, __ATOMIC_RELEASE);
     return true;
 }
 enum class FrameCopy { copied, small, no_frame, not_ready };
@@ -92,20 +105,38 @@ enum class FrameAcquire { copied, retry, no_frame, not_ready, invalid };
 template <class Copy>
 FrameAcquire acquire_frame(std::vector<uint8_t> &scratch, uint64_t since, lt_frame_info &out, Copy copy) {
     lt_frame_info f{sizeof(f), 1, 0, 0, 0, 0, 0, 0, 0};
-    auto result = copy(nullptr, 0, since, f);
-    if (result == FrameCopy::no_frame)
-        return FrameAcquire::no_frame;
-    if (result == FrameCopy::not_ready)
-        return FrameAcquire::not_ready;
-    if (result != FrameCopy::small || !valid_frame(f))
-        return FrameAcquire::invalid;
+    if (!scratch.empty()) {
+        const auto direct = copy(scratch.data(), scratch.size(), since, f);
+        if (direct == FrameCopy::no_frame)
+            return FrameAcquire::no_frame;
+        if (direct == FrameCopy::not_ready)
+            return FrameAcquire::not_ready;
+        if (!valid_frame(f))
+            return FrameAcquire::invalid;
+        if (direct == FrameCopy::copied) {
+            if (f.bytes > scratch.size())
+                return FrameAcquire::invalid;
+            out = f;
+            return FrameAcquire::copied;
+        }
+        if (direct != FrameCopy::small || f.bytes <= scratch.size())
+            return FrameAcquire::invalid;
+    } else {
+        const auto result = copy(nullptr, 0, since, f);
+        if (result == FrameCopy::no_frame)
+            return FrameAcquire::no_frame;
+        if (result == FrameCopy::not_ready)
+            return FrameAcquire::not_ready;
+        if (result != FrameCopy::small || !valid_frame(f))
+            return FrameAcquire::invalid;
+    }
     for (unsigned attempt = 0; attempt < 3; ++attempt) {
         if (f.bytes > scratch.size()) {
             // Avoid vector's geometric growth exceeding the frame-size bound.
             std::vector<uint8_t> grown(size_t(f.bytes));
             scratch.swap(grown);
         }
-        result = copy(scratch.data(), scratch.size(), since, f);
+        const auto result = copy(scratch.data(), scratch.size(), since, f);
         if (result == FrameCopy::no_frame)
             return FrameAcquire::no_frame;
         if (result == FrameCopy::not_ready)

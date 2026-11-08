@@ -34,6 +34,16 @@ struct FrameCopyCache {
             if (described != LT_OK) return described;
             if (!valid(metadata) || metadata.sequence <= since)
                 return fail("Invalid published guest frame metadata");
+            if (since == 0 && valid(frame) && metadata.sequence == frame.sequence &&
+                metadata.width == frame.width && metadata.height == frame.height &&
+                metadata.stride == frame.stride && metadata.format == frame.format &&
+                metadata.bytes == frame.bytes && frame.bytes <= pixels.size()) {
+                // Surface reattach, scale change, or resume rewinds `since` to 0 to
+                // repaint; reuse the already-cached frame when no newer sequence exists.
+                frame.timestamp_ns = metadata.timestamp_ns;
+                since = frame.sequence;
+                return LT_OK;
+            }
             if (metadata.bytes > pixels.size()) {
                 // Capture may not observe old dimensions against changed storage,
                 // including when allocation or the following copy fails.

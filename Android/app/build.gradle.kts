@@ -24,7 +24,14 @@ android {
     }
     // -Pdebuggable=false makes a debug APK the runtime may compile ahead of time. Phones with the
     // JIT off (GrapheneOS) otherwise interpret a debuggable app's whole UI.
-    buildTypes { getByName("debug") { isDebuggable = providers.gradleProperty("debuggable").orElse("true").get().toBoolean() } }
+    buildTypes {
+        getByName("debug") { isDebuggable = providers.gradleProperty("debuggable").orElse("true").get().toBoolean() }
+        getByName("release") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
     // -Pprofileable=true lets simpleperf attach from adb shell to a non-debuggable build (perf runs only).
     defaultConfig { manifestPlaceholders["profileable"] = providers.gradleProperty("profileable").orElse("false").get() }
     buildFeatures { compose = true; aidl = true; buildConfig = true }

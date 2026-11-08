@@ -351,7 +351,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
             val guestCovered = overlay in listOf(Screen.LOADING, Screen.SETUP, Screen.SETTINGS, Screen.STORE, Screen.DETAILS)
             LaunchedEffect(guestCovered, engine) {
                 val worker = engine ?: return@LaunchedEffect
-                Thread({ try { worker.setPresentVisible(!guestCovered) } catch (_: RemoteException) { } }, "present-visibility").start()
+                pollThread.execute { try { worker.setPresentVisible(!guestCovered) } catch (_: RemoteException) { } }
             }
             val immersive = base == Screen.FULLSCREEN && overlay == null
             LaunchedEffect(immersive) { applyWindowMode(immersive) }
