@@ -20,6 +20,9 @@ class AppSettings(context: Context) {
     private inline fun <reified E : Enum<E>> enumPref(key: String, default: E) =
         mutableStateOf(prefs.getString(key, null)?.let { name -> enumValues<E>().firstOrNull { it.name == name } } ?: default)
 
+    private val languageState = enumPref("language", UiLanguage.AUTO)
+    var language: UiLanguage get() = languageState.value; set(v) { languageState.value = v; prefs.edit().putString("language", v.name).apply() }
+
     private val themeState = enumPref("theme", ThemeMode.SYSTEM)
     var theme: ThemeMode get() = themeState.value; set(v) { themeState.value = v; prefs.edit().putString("theme", v.name).apply() }
 
