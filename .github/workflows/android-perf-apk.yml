@@ -937,15 +937,6 @@ jobs:
           } > ci/PROVENANCE.txt
           cat ci/PROVENANCE.txt
 
-      # A native crash's backtrace names only libqemu-arm.so and offsets: AGP strips the copy
-      # it packages, but the staged library here is the built one. Its symbol list (a few
-      # hundred KB) is what turns "pc 000000000083c06c" into a function.
-      - name: Keep the engine's symbols for a crash report
-        run: |
-          "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
-            --numeric-sort --defined-only ci/engine-build/libqemu-arm.so > ci/engine-symbols.txt
-          wc -l ci/engine-symbols.txt
-
       - name: Upload the APK
         uses: actions/upload-artifact@v4
         with:
@@ -953,7 +944,6 @@ jobs:
           path: |
             ci/Un1box-*-arm64-*.apk
             ci/PROVENANCE.txt
-            ci/engine-symbols.txt
 
       - name: Attach the APK to a pre-release
         if: github.event_name == 'workflow_dispatch' && inputs.create_release == 'true'

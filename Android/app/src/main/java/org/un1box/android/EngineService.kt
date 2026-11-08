@@ -131,6 +131,8 @@ class EngineService : Service() {
             // workflow's release APK does while carrying no debuggable flag. The engine refuses the
             // selection itself when it has no provider compiled in, and that message comes back here.
             check(angleProviderBundled(this@EngineService)) { "No packaged graphics provider in this build" }
+            if (choice != GraphicsProvider.PLATFORM.nativeChoice && !ANGLE_PROVIDER_OFFERED)
+                return "The bundled ANGLE provider is not offered in this build"
             if (started.isConsumed()) return "Graphics provider selection requires a fresh unused worker"
             return Native.debugSelectGraphicsProvider(choice)
         }

@@ -736,6 +736,8 @@ internal object I18nZh {
         put("On", "开")
         put("The phone rings as if this number called. Hang up is the far end ending the call.", "手机就像这个号码打进来一样响铃；「挂断」表示对方结束了通话。")
         put("The guest shows the new level at its next battery poll, a few seconds from now.", "客户机会在下次电量轮询时（几秒后）显示新的电量。")
+        put("No packaged graphics provider in this build", "本构建未内置图形提供者")
+        put("The bundled ANGLE provider is not offered in this build", "本构建不提供内置的 ANGLE 提供者")
     }
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */

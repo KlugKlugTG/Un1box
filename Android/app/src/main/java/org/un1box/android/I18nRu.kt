@@ -736,6 +736,8 @@ internal object I18nRu {
         put("On", "Вкл")
         put("The phone rings as if this number called. Hang up is the far end ending the call.", "Телефон зазвонит, как будто звонит этот номер; «Завершить» — это дальний абонент кладёт трубку.")
         put("The guest shows the new level at its next battery poll, a few seconds from now.", "Гостевая система покажет новый уровень при следующем опросе батареи, через несколько секунд.")
+        put("No packaged graphics provider in this build", "В этой сборке нет встроенного графического провайдера")
+        put("The bundled ANGLE provider is not offered in this build", "В этой сборке встроенный провайдер ANGLE не предлагается")
     }
 
     /** The English match, then the Russian replacement, with $1.. for its groups. */

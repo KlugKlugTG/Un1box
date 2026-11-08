@@ -14,6 +14,12 @@ enum class OverlayGraph(val label: String) { FRAME_TIME("Frame time"), FPS("Fram
 enum class ScreenScaling(val label: String, val native: Int) { SMOOTH("Smooth", 0), SHARP("Sharp", 1) }
 enum class GraphicsProvider(val label: String, val nativeChoice: Int) { PLATFORM("Native GLES", 0), ANGLE("ANGLE", 1) }
 
+/** Whether Settings offers the bundled ANGLE provider. It is staged, selectable and permitted in
+ *  code, but not offered: choosing it boots the guest and then a null GL entry on the engine's
+ *  GL thread kills it (adb tombstone: SIGSEGV, Instruction Abort at 0x0, thread gles-gl). Flip
+ *  this to true when that entry is found and either emulated or refused. */
+const val ANGLE_PROVIDER_OFFERED = false
+
 /** True when this APK carries the bundled provider the angle-gl route dlopens (Android/DEBUG-ANGLE.md):
  *  the staging task writes that receipt for every variant it was given the five properties for. */
 fun angleProviderBundled(context: Context): Boolean = Build.SUPPORTED_ABIS.any { abi ->
@@ -68,9 +74,11 @@ class AppSettings(context: Context) {
     var graphicsProvider: GraphicsProvider get() = graphicsProviderState.value; set(v) { graphicsProviderState.value = v; prefs.edit().putString("graphicsProvider", v.name).apply() }
 
     init {
-        // A build whose APK carries no provider cannot honour a stored ANGLE choice -- the next
-        // start would refuse it -- so the preference falls back to the platform driver.
-        if (!angleProviderBundled && graphicsProviderState.value == GraphicsProvider.ANGLE) graphicsProvider = GraphicsProvider.PLATFORM
+        // A build whose APK carries no provider cannot honour a stored ANGLE choice, and one that
+        // carries it does not offer it yet (ANGLE_PROVIDER_OFFERED): either way the preference
+        // falls back to the platform driver rather than selecting a route that cannot run.
+        if ((!angleProviderBundled || !ANGLE_PROVIDER_OFFERED) && graphicsProviderState.value == GraphicsProvider.ANGLE)
+            graphicsProvider = GraphicsProvider.PLATFORM
     }
 
     private val scalingState = enumPref("scaling", ScreenScaling.SMOOTH)

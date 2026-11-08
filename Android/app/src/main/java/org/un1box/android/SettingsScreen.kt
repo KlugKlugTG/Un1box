@@ -82,8 +82,10 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
                 Group("Performance") {
                     SwitchRow(LtIcons.Speed, "Fewer pauses when opening iOS apps", "Skips large emulator-code cleanups after app changes. Uses more RAM and may slightly lower steady-state game speed; applies after restarting the emulated iPhone.", s.reduceAppSwitchPauses, "reduce_app_switch_pauses") { s.reduceAppSwitchPauses = it }
                 }
-                val graphicsProviders = if (s.angleProviderBundled) GraphicsProvider.entries else listOf(GraphicsProvider.PLATFORM)
-                Group("Graphics") {
+                // Not offered while ANGLE_PROVIDER_OFFERED is false: the staging, the permit, the
+                // stored preference and this row are all that has to come back together.
+                val graphicsProviders = if (s.angleProviderBundled && ANGLE_PROVIDER_OFFERED) GraphicsProvider.entries else listOf(GraphicsProvider.PLATFORM)
+                if (ANGLE_PROVIDER_OFFERED) Group("Graphics") {
                     ChoiceRow(LtIcons.Chip, "GPU driver", graphicsProviders, s.graphicsProvider, { it.label },
                         if (s.angleProviderBundled)
                             "Native GLES runs the guest on Android's own GPU driver. ANGLE runs it on the translator this build carries: it can help or hurt, and it applies on the next fresh guest start."
