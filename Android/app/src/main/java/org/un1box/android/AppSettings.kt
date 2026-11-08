@@ -1,6 +1,7 @@
 package org.un1box.android
 
 import android.content.Context
+import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -11,7 +12,7 @@ enum class OverlayCorner(val label: String, val glyph: String) { TOP_LEFT("Top l
 enum class OverlayGraph(val label: String) { FRAME_TIME("Frame time"), FPS("Frame rate") }
 /** Matches the presenter's PresentScale (un1box_jni.cpp). */
 enum class ScreenScaling(val label: String, val native: Int) { SMOOTH("Smooth", 0), SHARP("Sharp", 1) }
-enum class GraphicsProvider(val label: String, val nativeChoice: Int) { PLATFORM("Android driver", 0), ANGLE("ANGLE (experimental)", 1) }
+enum class GraphicsProvider(val label: String, val nativeChoice: Int) { PLATFORM("Native GLES", 0), ANGLE("ANGLE", 1) }
 
 /** User preferences, as Compose state backed by SharedPreferences. Read on the main thread. */
 class AppSettings(context: Context) {
@@ -53,8 +54,20 @@ class AppSettings(context: Context) {
     private val reduceAppSwitchPausesState = mutableStateOf(prefs.getBoolean("reduceAppSwitchPauses", true))
     var reduceAppSwitchPauses: Boolean get() = reduceAppSwitchPausesState.value; set(v) { reduceAppSwitchPausesState.value = v; prefs.edit().putBoolean("reduceAppSwitchPauses", v).apply() }
 
+    /** True when this APK carries the bundled provider the angle-gl route dlopens (Android/DEBUG-ANGLE.md). */
+    val angleProviderBundled: Boolean = Build.SUPPORTED_ABIS.any { abi ->
+        val metadata = if (abi == "x86_64") "angle-runtime.json" else "angle-runtime-$abi.json"
+        runCatching { context.assets.open("providers/$metadata").close() }.isSuccess
+    }
+
     private val graphicsProviderState = enumPref("graphicsProvider", GraphicsProvider.PLATFORM)
     var graphicsProvider: GraphicsProvider get() = graphicsProviderState.value; set(v) { graphicsProviderState.value = v; prefs.edit().putString("graphicsProvider", v.name).apply() }
+
+    init {
+        // A build whose APK carries no provider cannot honour a stored ANGLE choice -- the next
+        // start would refuse it -- so the preference falls back to the platform driver.
+        if (!angleProviderBundled && graphicsProviderState.value == GraphicsProvider.ANGLE) graphicsProvider = GraphicsProvider.PLATFORM
+    }
 
     private val scalingState = enumPref("scaling", ScreenScaling.SMOOTH)
     var scaling: ScreenScaling get() = scalingState.value; set(v) { scalingState.value = v; prefs.edit().putString("scaling", v.name).apply() }

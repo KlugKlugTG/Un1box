@@ -79,9 +79,14 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
                 Group("Performance") {
                     SwitchRow(LtIcons.Speed, "Fewer pauses when opening iOS apps", "Skips large emulator-code cleanups after app changes. Uses more RAM and may slightly lower steady-state game speed; applies after restarting the emulated iPhone.", s.reduceAppSwitchPauses, "reduce_app_switch_pauses") { s.reduceAppSwitchPauses = it }
                 }
-                if (BuildConfig.DEBUG) Group("Graphics") {
-                    ChoiceRow(LtIcons.Chip, "GPU driver", GraphicsProvider.entries, s.graphicsProvider, { it.label },
-                        "ANGLE uses the bundled graphics translation layer instead of Android's GPU driver. It may improve or reduce speed; applies on the next fresh guest start.", tag = "graphics_provider") { s.graphicsProvider = it }
+                val graphicsProviders = if (s.angleProviderBundled) GraphicsProvider.entries else listOf(GraphicsProvider.PLATFORM)
+                Group("Graphics") {
+                    ChoiceRow(LtIcons.Chip, "GPU driver", graphicsProviders, s.graphicsProvider, { it.label },
+                        if (s.angleProviderBundled)
+                            "Native GLES runs the guest on Android's own GPU driver. ANGLE runs it on the translator this build carries: it can help or hurt, and it applies on the next fresh guest start."
+                        else
+                            "This build carries no bundled ANGLE provider, so Android's GPU driver is the only choice.",
+                        tag = "graphics_provider") { s.graphicsProvider = it }
                 }
                 Group("Performance overlay") {
                     ChoiceRow(LtIcons.Speed, "Detail", OverlayLevel.entries, s.overlay, { it.label }, tag = "overlay_level") { s.overlay = it }
