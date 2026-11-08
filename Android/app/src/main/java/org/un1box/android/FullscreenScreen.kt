@@ -181,13 +181,14 @@ private fun FakeCallDialog(host: GuestHost, onDismiss: () -> Unit) {
     AlertDialog(onDismissRequest = onDismiss, modifier = DialogTags, icon = { Icon(LtIcons.Phone, null) },
         title = { Text("Fake call", style = MaterialTheme.typography.titleMedium) },
         text = { Column {
-            OutlinedTextField(number, { typed -> number = typed.filter { it.isDigit() || it == '+' || it == ' ' || it == '-' }.take(20) },
+            // The modem takes 1-20 digits, optionally after a '+': anything else is refused.
+            OutlinedTextField(number, { typed -> number = typed.filter { it.isDigit() || it == '+' }.take(20) },
                 singleLine = true, label = { Text("Number") }, modifier = Modifier.fillMaxWidth().testTag("fake_call_number"))
             Spacer(Modifier.height(8.dp))
             Text("The phone rings as if this number called. Hang up is the far end ending the call.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } },
-        confirmButton = { Button(onClick = { host.fakeCall(number.filter { !it.isWhitespace() }); onDismiss() },
+        confirmButton = { Button(onClick = { host.fakeCall(number); onDismiss() },
             enabled = number.any { it.isDigit() }, modifier = Modifier.testTag("fake_call_ring")) { Text("Ring") } },
         dismissButton = { Row {
             TextButton(onClick = { host.endFakeCall(); onDismiss() }, modifier = Modifier.testTag("fake_call_hangup")) { Text("Hang up") }
@@ -203,13 +204,13 @@ private fun FakeSmsDialog(host: GuestHost, onDismiss: () -> Unit) {
     AlertDialog(onDismissRequest = onDismiss, modifier = DialogTags, icon = { Icon(LtIcons.Message, null) },
         title = { Text("Fake SMS", style = MaterialTheme.typography.titleMedium) },
         text = { Column {
-            OutlinedTextField(number, { typed -> number = typed.filter { it.isDigit() || it == '+' || it == ' ' || it == '-' }.take(20) },
+            OutlinedTextField(number, { typed -> number = typed.filter { it.isDigit() || it == '+' }.take(20) },
                 singleLine = true, label = { Text("Number") }, modifier = Modifier.fillMaxWidth().testTag("fake_sms_number"))
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(message, { if (it.length <= 160) message = it }, label = { Text("Message") }, minLines = 2,
                 modifier = Modifier.fillMaxWidth().testTag("fake_sms_text"))
         } },
-        confirmButton = { Button(onClick = { host.fakeSms(number.filter { !it.isWhitespace() }, message); onDismiss() },
+        confirmButton = { Button(onClick = { host.fakeSms(number, message); onDismiss() },
             enabled = number.any { it.isDigit() } && message.isNotEmpty(), modifier = Modifier.testTag("fake_sms_send")) { Text("Send") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
