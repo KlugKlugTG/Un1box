@@ -724,6 +724,19 @@ internal object I18nRu {
         put("This phone's microphone becomes the device's input, for Voice Memos, Shazam and anything else that records; iOS asks inside the device the first time an app records. Android asks for the microphone permission when you turn this on. Applies the next time the device starts", "Микрофон телефона становится входом устройства — для «Диктофона», Shazam и всего остального, что записывает звук; при первой записи приложения iOS спросит внутри устройства. Android запросит разрешение на микрофон, когда вы это включите. Применяется при следующем запуске устройства")
         put("The frame block models a transfer's full hardware span (3 ms for a full screen), which the guest waits for as emulated time. Off ends a transfer when its pixels are written, which takes that span out of every frame the display pipeline shows. Applies at the next guest start.", "Блок кадра моделирует полную аппаратную длительность передачи (3 мс для полного экрана), и гостевая система ждёт её как эмулируемое время. Выключено — передача завершается, когда записаны её пиксели, что убирает эту длительность из каждого кадра, показываемого конвейером дисплея. Применяется при следующем запуске гостевой системы.")
         put("With headphones, iOS plays games and music in stereo, unchanged.\n\nOn the speaker, iOS reshapes the sound for the device's small built-in speaker: mono, with the bass cut and a limiter to protect it. That processing runs on the emulated CPU, so games run a little slower, and the sound is closer to an old iPod's speaker than to your phone's.\n\nHeadphones also turn off the speaker's protection limiter. Some games count on it to keep loud sounds in check and can sound distorted without it; if a game crackles or clips, switch this off and restart the device.", "С наушниками iOS воспроизводит игры и музыку в стерео, без обработки.\n\nЧерез динамик iOS перестраивает звук под маленький встроенный динамик устройства: моно, с обрезанными низами и ограничителем для его защиты. Эта обработка идёт на эмулируемом CPU, поэтому игры работают немного медленнее, а звук ближе к динамику старого iPod, чем к вашему телефону.\n\nНаушники также отключают защитный ограничитель динамика. Некоторые игры рассчитывают на него, чтобы сдерживать громкие звуки, и без него могут звучать с искажениями; если игра трещит или клиппует, выключите эту опцию и перезапустите устройство.")
+        put("Fake call", "Фейковый звонок")
+        put("Fake SMS", "Фейковое SMS")
+        put("Fake battery", "Фейковая батарея")
+        put("Number", "Номер")
+        put("Message", "Сообщение")
+        put("Ring", "Позвонить")
+        put("Hang up", "Завершить")
+        put("Send", "Отправить")
+        put("Apply", "Применить")
+        put("Auto", "Авто")
+        put("On", "Вкл")
+        put("The phone rings as if this number called. Hang up is the far end ending the call.", "Телефон зазвонит, как будто звонит этот номер; «Завершить» — это дальний абонент кладёт трубку.")
+        put("The guest shows the new level at its next battery poll, a few seconds from now.", "Гостевая система покажет новый уровень при следующем опросе батареи, через несколько секунд.")
     }
 
     /** The English match, then the Russian replacement, with $1.. for its groups. */

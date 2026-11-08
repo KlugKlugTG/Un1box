@@ -49,8 +49,11 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
             }
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings")) {
                 Group("Language") {
+                    // Four languages in one row: the segmented labels drop the row's
+                    // indent and use the smaller label style, or a long name ("Как в
+                    // системе", "Follow system") is cut mid-word on a narrow screen.
                     ChoiceRow(LtIcons.Info, "Language", UiLanguage.entries, s.language, { it.label },
-                        "Applies to the whole app", tag = "ui_language") {
+                        "Applies to the whole app", tag = "ui_language", compact = true) {
                         s.language = it; I18n.choose(it); (context as? Activity)?.recreate()
                     }
                 }
@@ -162,7 +165,7 @@ private fun SwitchRow(icon: ImageVector?, title: String, subtitle: String?, chec
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun <T> ChoiceRow(icon: ImageVector?, title: String, options: List<T>, selected: T, label: (T) -> String,
-                          subtitle: String? = null, tag: String? = null, onSelect: (T) -> Unit) {
+                          subtitle: String? = null, tag: String? = null, compact: Boolean = false, onSelect: (T) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             RowIcon(icon)
@@ -172,10 +175,11 @@ private fun <T> ChoiceRow(icon: ImageVector?, title: String, options: List<T>, s
             }
         }
         Spacer(Modifier.height(8.dp))
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = 38.dp).then(if (tag != null) Modifier.testTag(tag) else Modifier)) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = if (compact) 0.dp else 38.dp).then(if (tag != null) Modifier.testTag(tag) else Modifier)) {
             options.forEachIndexed { i, option ->
                 SegmentedButton(selected = option == selected, onClick = { onSelect(option) }, shape = SegmentedButtonDefaults.itemShape(i, options.size),
-                    icon = {}, label = { Text(label(option), maxLines = 1, style = MaterialTheme.typography.labelMedium) })
+                    icon = {}, label = { Text(label(option), maxLines = 1,
+                        style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium) })
             }
         }
     }

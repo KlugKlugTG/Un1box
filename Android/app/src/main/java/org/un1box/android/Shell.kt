@@ -52,6 +52,11 @@ interface GuestHost {
     fun saveAndStop()
     fun setPaused(paused: Boolean)
     fun button(id: Int, down: Boolean)
+    /** Fake drives for the fullscreen menu: "" when the engine queued the write, else what to show. */
+    fun setBattery(level: Int, charging: Int): String
+    fun fakeCall(number: String): String
+    fun endFakeCall(): String
+    fun fakeSms(number: String, text: String): String
     fun pulse(id: Int)
     fun screenshot()
     fun navigate(screen: Screen)

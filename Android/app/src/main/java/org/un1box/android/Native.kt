@@ -41,6 +41,9 @@ internal object Native {
     external fun debugSelectGraphicsProvider(choice: Int): String
     external fun debugQmpSnapshot(): Array<String>
     external fun button(button: Int, down: Boolean): String
+    /** Fake drives for the fullscreen menu: "" or the engine's refusal. */
+    external fun setBattery(level: Int, charging: Int): String
+    external fun modemCommand(property: String, value: String): String
     external fun touch(time: Long, ids: IntArray, phases: IntArray, xy: FloatArray, width: Int, height: Int, rotation: Int): String
     external fun cancelInput()
     external fun motion(kind: Int, time: Long, xyz: FloatArray, rotation: Int): String

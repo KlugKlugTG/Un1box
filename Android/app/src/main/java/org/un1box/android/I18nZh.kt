@@ -724,6 +724,19 @@ internal object I18nZh {
         put("This phone's microphone becomes the device's input, for Voice Memos, Shazam and anything else that records; iOS asks inside the device the first time an app records. Android asks for the microphone permission when you turn this on. Applies the next time the device starts", "把本机麦克风作为设备的输入，供语音备忘录、Shazam 等录音应用使用；应用首次录音时 iOS 会在设备内询问。打开此选项时 Android 会请求麦克风权限。下次启动设备时生效")
         put("The frame block models a transfer's full hardware span (3 ms for a full screen), which the guest waits for as emulated time. Off ends a transfer when its pixels are written, which takes that span out of every frame the display pipeline shows. Applies at the next guest start.", "帧块按传输的完整硬件耗时建模（满屏约 3 毫秒），客户机以模拟时间等待这段耗时。关闭则在像素写完时结束传输，从而把这段耗时从显示管线呈现的每一帧中移除。下次启动客户机时生效。")
         put("With headphones, iOS plays games and music in stereo, unchanged.\n\nOn the speaker, iOS reshapes the sound for the device's small built-in speaker: mono, with the bass cut and a limiter to protect it. That processing runs on the emulated CPU, so games run a little slower, and the sound is closer to an old iPod's speaker than to your phone's.\n\nHeadphones also turn off the speaker's protection limiter. Some games count on it to keep loud sounds in check and can sound distorted without it; if a game crackles or clips, switch this off and restart the device.", "插入耳机时，iOS 以立体声播放游戏和音乐，不做任何处理。\n\n用扬声器时，iOS 会为设备小巧的内置喇叭重新塑形声音：单声道、削减低频，并加上限幅器保护喇叭。这段处理跑在模拟 CPU 上，所以游戏会稍慢；声音也更接近老 iPod 的喇叭，而不是你手机的。\n\n耳机还会关掉扬声器的保护限幅器。有些游戏靠它压制过响的声音，关掉后可能听起来失真；若某款游戏有爆音或削波，就关掉这个选项并重启设备。")
+        put("Fake call", "伪造来电")
+        put("Fake SMS", "伪造短信")
+        put("Fake battery", "伪造电量")
+        put("Number", "号码")
+        put("Message", "信息")
+        put("Ring", "拨响")
+        put("Hang up", "挂断")
+        put("Send", "发送")
+        put("Apply", "应用")
+        put("Auto", "自动")
+        put("On", "开")
+        put("The phone rings as if this number called. Hang up is the far end ending the call.", "手机就像这个号码打进来一样响铃；「挂断」表示对方结束了通话。")
+        put("The guest shows the new level at its next battery poll, a few seconds from now.", "客户机会在下次电量轮询时（几秒后）显示新的电量。")
     }
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */

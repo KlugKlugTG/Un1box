@@ -1013,6 +1013,23 @@ JNI(button) jstring JNICALL Java_org_un1box_android_Native_button(JNIEnv *env,jo
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
     return string(env,runtime?result(lt_runtime_button(runtime,button,down,&error),error):"No active session");
 }
+JNI(setBattery) jstring JNICALL Java_org_un1box_android_Native_setBattery(JNIEnv *env,jobject,jint level,jint charging) {
+    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
+    if(!runtime)return string(env,"No active session");
+    return string(env,result(lt_runtime_battery(runtime,unsigned(level<0?0:level),unsigned(charging<0?0:charging),&error),error));
+}
+JNI(modemCommand) jstring JNICALL Java_org_un1box_android_Native_modemCommand(JNIEnv *env,jobject,jstring property,jstring value) {
+    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
+    const char *name=property?env->GetStringUTFChars(property,nullptr):nullptr;
+    const char *text=value?env->GetStringUTFChars(value,nullptr):nullptr;
+    std::string out;
+    if(!runtime)out="No active session";
+    else if(!name||!text)out="Missing modem property";
+    else out=result(lt_runtime_modem(runtime,name,text,&error),error);
+    if(name)env->ReleaseStringUTFChars(property,name);
+    if(text)env->ReleaseStringUTFChars(value,text);
+    return string(env,out);
+}
 JNI(cancelInput) void JNICALL Java_org_un1box_android_Native_cancelInput(JNIEnv *,jobject) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
     if(!runtime || lt_runtime_cancel_input(runtime,&error)==LT_OK)display_lease.contactsReleased();

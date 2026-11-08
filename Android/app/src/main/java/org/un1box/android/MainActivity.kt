@@ -427,6 +427,19 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         try { worker.pause(paused) } catch (_: RemoteException) { error = "Guest worker unavailable" }
     }
     override fun button(id: Int, down: Boolean) = sendButton(id, down)
+    override fun setBattery(level: Int, charging: Int): String {
+        val worker = engine ?: return "No active session"
+        return try { worker.setBattery(level, charging) } catch (_: RemoteException) { "Guest worker unavailable" }
+    }
+    /** The modem's own refusal (a bad number, no channel to ring on) reaches the engine's log;
+     *  what comes back here is whether a modem owns the property at all. */
+    private fun modemCommand(property: String, value: String): String {
+        val worker = engine ?: return "No active session"
+        return try { worker.modemCommand(property, value) } catch (_: RemoteException) { "Guest worker unavailable" }
+    }
+    override fun fakeCall(number: String) = modemCommand("incoming-call", number)
+    override fun endFakeCall() = modemCommand("remote-hangup", "on")
+    override fun fakeSms(number: String, text: String) = modemCommand("incoming-sms", "$number|$text")
     override fun screenshot() = capture()
     override fun navigate(screen: Screen) {
         when (screen) {

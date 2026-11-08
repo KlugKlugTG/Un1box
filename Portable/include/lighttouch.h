@@ -322,6 +322,23 @@ typedef struct {
     double acceleration[3], angular_velocity[3];
 } lt_motion;
 lt_status lt_runtime_motion(lt_runtime *, const lt_motion *, lt_error *);
+/* The fake drives the fullscreen menu offers: the board's battery and, on the
+ * iPhones, the cellular modem the guest's CommCenter talks to.
+ *
+ * lt_runtime_battery: the level the gas gauge/PMU reports (0..100) and what the
+ * charging path says: 0 auto (the board's own logic), 1 charging, 2 not charging,
+ * written only where the board models one (the iPad's charging is its USB port's).
+ * The guest shows the new level on its next poll. LT_UNSUPPORTED when the engine
+ * has no drive or the machine no battery.
+ *
+ * lt_runtime_modem: one property of the machine's modem in its string form --
+ * incoming-call or incoming-sms ("<number>|<text>") to fake a call or a message,
+ * remote-answer/remote-hangup for the far end of an outgoing one, and carrier,
+ * mcc-mnc, signal-dbm, registered for the network. The guest sees it on its next
+ * poll (~5 s for the registration fields). LT_UNSUPPORTED without a modem or that
+ * property; queued admission only, the model's own refusal is the engine's log. */
+lt_status lt_runtime_battery(lt_runtime *, uint32_t level, uint32_t charging, lt_error *);
+lt_status lt_runtime_modem(lt_runtime *, const char *property, const char *value, lt_error *);
 /* Display mapping excludes letterboxes; rotation 0/90/180/270 clockwise. */
 /* Sensor frame conversion and clock-domain conversion live in native domain.
  * source_timestamp_ns and source_now_ns use the same adapter clock; monotonic

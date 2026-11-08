@@ -138,6 +138,9 @@ struct Engine {
     decltype(&qemu_ios_ui_attach) attach = nullptr;
     // Optional: engines before the guest-package hypercalls lack it.
     decltype(&qemu_ios_guest_package_report) package_report = nullptr;
+    // Optional together: the engine that has one of the fake drives has both.
+    decltype(&qemu_ios_ui_battery_set) battery_set = nullptr;
+    decltype(&qemu_ios_ui_modem_write) modem_write = nullptr;
     template <class F> F symbol(const char *n) {
         auto p = dlsym(library, n);
         require(p, std::string("engine symbol missing: ") + n, LT_UNSUPPORTED);
@@ -204,6 +207,8 @@ struct Engine {
             camera_state = reinterpret_cast<decltype(camera_state)>(dlsym(library, "qemu_ios_camera_state"));
             package_report =
                 reinterpret_cast<decltype(package_report)>(dlsym(library, "qemu_ios_guest_package_report"));
+            battery_set = reinterpret_cast<decltype(battery_set)>(dlsym(library, "qemu_ios_ui_battery_set"));
+            modem_write = reinterpret_cast<decltype(modem_write)>(dlsym(library, "qemu_ios_ui_modem_write"));
         } catch (...) {
             dlclose(library);
             library = nullptr;
@@ -1067,6 +1072,27 @@ lt_status lt_runtime_motion(lt_runtime *r, const lt_motion *m, lt_error *e) {
         r->motion_clock.commit(m->kinds, m->timestamp_ns);
     });
 }
+lt_status lt_runtime_battery(lt_runtime *r, uint32_t level, uint32_t charging, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::require(r && r->started && !r->done && !r->stopping, "runtime not active", LT_AGAIN);
+        lt::require(r->engine->battery_set, "this engine has no battery drive", LT_UNSUPPORTED);
+        lt::require(level <= 100 && charging <= 2, "battery level 0..100 and charging 0..2", LT_INVALID);
+        lt::require(r->engine->battery_set(int(level), int(charging)),
+                    "this machine has no battery", LT_UNSUPPORTED);
+    });
+}
+
+lt_status lt_runtime_modem(lt_runtime *r, const char *property, const char *value, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::require(r && r->started && !r->done && !r->stopping, "runtime not active", LT_AGAIN);
+        lt::require(r->engine->modem_write, "this engine has no modem drive", LT_UNSUPPORTED);
+        lt::require(property && *property && strlen(property) < 64, "modem property name", LT_INVALID);
+        lt::require(value && strlen(value) < 256, "modem property value", LT_INVALID);
+        lt::require(r->engine->modem_write(property, value),
+                    "this machine has no modem, or no such property", LT_UNSUPPORTED);
+    });
+}
+
 lt_status lt_map_motion(uint32_t rotation, uint64_t timestamp, uint64_t source_now, const lt_motion *raw,
                         lt_motion *out, lt_error *e) {
     return lt::guard(e, [&] {

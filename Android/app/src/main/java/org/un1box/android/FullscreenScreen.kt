@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import kotlin.math.roundToInt
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
@@ -43,6 +44,11 @@ import kotlinx.coroutines.delay
 internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifier) -> Unit) = DarkTheme {
     BackHandler { host.navigate(Screen.HOME) }
     var confirmStop by remember { mutableStateOf(false) }
+    var fakeCall by remember { mutableStateOf(false) }
+    var fakeSms by remember { mutableStateOf(false) }
+    var fakeBattery by remember { mutableStateOf(false) }
+    // The cellular drives need a modem: the iPhone boards have one, the iPods and the iPad not.
+    val cellular = host.selected?.board in setOf("m68ap", "n82ap", "n88ap", "n90ap")
     val skin = DeviceSkin.forBoard(host.selected?.board)
     val aspect = skin.screenWidth / skin.screenHeight
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black).semantics { testTagsAsResourceId = true }) {
@@ -77,6 +83,9 @@ internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifi
         ErrorBanner(host.error, host::dismissError, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp))
     }
     if (confirmStop) StopDialog(host) { confirmStop = false }
+    if (fakeCall) FakeCallDialog(host) { fakeCall = false }
+    if (fakeSms) FakeSmsDialog(host) { fakeSms = false }
+    if (fakeBattery) FakeBatteryDialog(host) { fakeBattery = false }
 }
 
 @Composable
@@ -107,6 +116,14 @@ private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Uni
                         onClick = { menu = false; host.setPaused(!host.paused) }, enabled = host.status in listOf("running", "paused"))
                     DropdownMenuItem(text = { Text("Screenshot") }, leadingIcon = { Icon(LtIcons.Camera, null) },
                         onClick = { menu = false; host.screenshot() }, enabled = host.status in listOf("running", "paused"))
+                    if (cellular) {
+                        DropdownMenuItem(text = { Text("Fake call") }, leadingIcon = { Icon(LtIcons.Phone, null) },
+                            onClick = { menu = false; fakeCall = true }, enabled = host.status in listOf("running", "paused"), modifier = Modifier.testTag("fake_call"))
+                        DropdownMenuItem(text = { Text("Fake SMS") }, leadingIcon = { Icon(LtIcons.Message, null) },
+                            onClick = { menu = false; fakeSms = true }, enabled = host.status in listOf("running", "paused"), modifier = Modifier.testTag("fake_sms"))
+                    }
+                    DropdownMenuItem(text = { Text("Fake battery") }, leadingIcon = { Icon(LtIcons.Battery, null) },
+                        onClick = { menu = false; fakeBattery = true }, enabled = host.status in listOf("running", "paused"), modifier = Modifier.testTag("fake_battery"))
                     DropdownMenuItem(text = { Text("Inspect frames") }, leadingIcon = { Icon(LtIcons.Timeline, null) },
                         onClick = { menu = false; host.openHitch() }, enabled = host.status in listOf("running", "paused"))
                     DropdownMenuItem(text = { Text("Performance overlay: ${host.settings.overlay.label}") }, leadingIcon = { Icon(LtIcons.Speed, null) },
@@ -152,4 +169,72 @@ private fun HomeKey(host: GuestHost, enabled: Boolean, onInteract: () -> Unit, s
         contentAlignment = Alignment.Center) {
         Box(Modifier.size(size * 0.3f).border(1.5.dp, Color.White.copy(alpha = if (enabled) 0.6f else 0.2f), RoundedCornerShape(size * 0.07f)))
     }
+}
+
+/**
+ * A fake incoming call: the number rings the phone as if it had called, and Hang up is
+ * the far end ending it -- the only way to take the ring screen down from here.
+ */
+@Composable
+private fun FakeCallDialog(host: GuestHost, onDismiss: () -> Unit) {
+    var number by remember { mutableStateOf("5551234") }
+    AlertDialog(onDismissRequest = onDismiss, modifier = DialogTags, icon = { Icon(LtIcons.Phone, null) },
+        title = { Text("Fake call", style = MaterialTheme.typography.titleMedium) },
+        text = { Column {
+            OutlinedTextField(number, { typed -> number = typed.filter { it.isDigit() || it == '+' || it == ' ' || it == '-' }.take(20) },
+                singleLine = true, label = { Text("Number") }, modifier = Modifier.fillMaxWidth().testTag("fake_call_number"))
+            Spacer(Modifier.height(8.dp))
+            Text("The phone rings as if this number called. Hang up is the far end ending the call.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } },
+        confirmButton = { Button(onClick = { host.fakeCall(number.filter { !it.isWhitespace() }); onDismiss() },
+            enabled = number.any { it.isDigit() }, modifier = Modifier.testTag("fake_call_ring")) { Text("Ring") } },
+        dismissButton = { Row {
+            TextButton(onClick = { host.endFakeCall(); onDismiss() }, modifier = Modifier.testTag("fake_call_hangup")) { Text("Hang up") }
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        } })
+}
+
+/** A fake SMS: it arrives as a real one would, on the lock screen and in Messages. */
+@Composable
+private fun FakeSmsDialog(host: GuestHost, onDismiss: () -> Unit) {
+    var number by remember { mutableStateOf("5551234") }
+    var message by remember { mutableStateOf("") }
+    AlertDialog(onDismissRequest = onDismiss, modifier = DialogTags, icon = { Icon(LtIcons.Message, null) },
+        title = { Text("Fake SMS", style = MaterialTheme.typography.titleMedium) },
+        text = { Column {
+            OutlinedTextField(number, { typed -> number = typed.filter { it.isDigit() || it == '+' || it == ' ' || it == '-' }.take(20) },
+                singleLine = true, label = { Text("Number") }, modifier = Modifier.fillMaxWidth().testTag("fake_sms_number"))
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(message, { if (it.length <= 160) message = it }, label = { Text("Message") }, minLines = 2,
+                modifier = Modifier.fillMaxWidth().testTag("fake_sms_text"))
+        } },
+        confirmButton = { Button(onClick = { host.fakeSms(number.filter { !it.isWhitespace() }, message); onDismiss() },
+            enabled = number.any { it.isDigit() } && message.isNotEmpty(), modifier = Modifier.testTag("fake_sms_send")) { Text("Send") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+
+/** A fake battery: what the gas gauge/PMU reports, and what the charging path says. */
+@Composable
+private fun FakeBatteryDialog(host: GuestHost, onDismiss: () -> Unit) {
+    var level by remember { mutableIntStateOf(80) }
+    var charging by remember { mutableIntStateOf(0) }
+    val modes = listOf("Auto", "On", "Off")
+    AlertDialog(onDismissRequest = onDismiss, modifier = DialogTags, icon = { Icon(LtIcons.Battery, null) },
+        title = { Text("Fake battery", style = MaterialTheme.typography.titleMedium) },
+        text = { Column {
+            Text("$level%", style = MaterialTheme.typography.titleLarge)
+            Slider(level.toFloat(), { level = it.roundToInt() }, valueRange = 0f..100f, modifier = Modifier.testTag("fake_battery_level"))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                modes.forEachIndexed { index, mode ->
+                    FilterChip(selected = charging == index, onClick = { charging = index }, label = { Text(mode) })
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("The guest shows the new level at its next battery poll, a few seconds from now.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } },
+        confirmButton = { Button(onClick = { host.setBattery(level, charging); onDismiss() },
+            modifier = Modifier.testTag("fake_battery_apply")) { Text("Apply") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }

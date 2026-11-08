@@ -300,6 +300,13 @@ class EngineService : Service() {
             if (result.isNotEmpty()) { error = result; buttonRejections.incrementAndGet() }
             else if (button in 0..1) (if (down) buttonDownAdmissions else buttonUpAdmissions).incrementAndGet(button)
         }
+        /** Fake drives: "" when the engine queued the write, else what to show. */
+        override fun setBattery(level: Int, charging: Int): String = Native.setBattery(level, charging).also {
+            if (it.isNotEmpty()) error = it
+        }
+        override fun modemCommand(property: String, value: String): String = Native.modemCommand(property, value).also {
+            if (it.isNotEmpty()) error = it
+        }
         override fun touch(timestampNanos: Long, ids: IntArray, phases: IntArray, coordinates: FloatArray, width: Int, height: Int, rotation: Int): String =
             admitTouch(null, 0L, timestampNanos, ids, phases, coordinates, width, height, rotation).also { displayCancellations.record(it) }
         override fun touchDisplay(lease: Long, inputGeneration: Long, timestampNanos: Long, ids: IntArray, phases: IntArray, coordinates: FloatArray, width: Int, height: Int, rotation: Int): String =

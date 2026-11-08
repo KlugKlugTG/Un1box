@@ -26,6 +26,9 @@ interface IEngine {
     void pause(boolean paused);
     void stop();
     void button(int button, boolean down);
+    /** Fake battery and cellular drives: "" or the refusal to show. */
+    String setBattery(int level, int charging);
+    String modemCommand(String property, String value);
     String touch(long timestampNanos, in int[] ids, in int[] phases, in float[] coordinates, int width, int height, int rotation);
     void cancelInput();
     oneway void motion(int kind, long timestampNanos, in float[] xyz, int rotation);
