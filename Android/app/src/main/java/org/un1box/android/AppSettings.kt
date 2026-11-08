@@ -3,6 +3,7 @@ package org.un1box.android
 import android.content.Context
 import android.os.Build
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
@@ -69,6 +70,12 @@ class AppSettings(context: Context) {
 
     /** True when this APK carries the bundled provider (see [angleProviderBundled]). */
     val angleProviderBundled: Boolean = angleProviderBundled(context)
+
+    /** The fake battery the menu last applied: the dialog opens on it, not on the model's default. */
+    private val fakeBatteryLevelState = mutableIntStateOf(prefs.getInt("fakeBatteryLevel", 80))
+    var fakeBatteryLevel: Int get() = fakeBatteryLevelState.value; set(v) { fakeBatteryLevelState.value = v; prefs.edit().putInt("fakeBatteryLevel", v).apply() }
+    private val fakeBatteryChargingState = mutableIntStateOf(prefs.getInt("fakeBatteryCharging", 0))
+    var fakeBatteryCharging: Int get() = fakeBatteryChargingState.value; set(v) { fakeBatteryChargingState.value = v; prefs.edit().putInt("fakeBatteryCharging", v).apply() }
 
     private val graphicsProviderState = enumPref("graphicsProvider", GraphicsProvider.PLATFORM)
     var graphicsProvider: GraphicsProvider get() = graphicsProviderState.value; set(v) { graphicsProviderState.value = v; prefs.edit().putString("graphicsProvider", v.name).apply() }

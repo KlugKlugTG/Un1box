@@ -44,6 +44,8 @@ internal object Native {
     /** Fake drives for the fullscreen menu: "" or the engine's refusal. */
     external fun setBattery(level: Int, charging: Int): String
     external fun modemCommand(property: String, value: String): String
+    /** What the modem refused for the last [modemCommand]: "" when it accepted it. */
+    external fun modemError(): String
     external fun touch(time: Long, ids: IntArray, phases: IntArray, xy: FloatArray, width: Int, height: Int, rotation: Int): String
     external fun cancelInput()
     external fun motion(kind: Int, time: Long, xyz: FloatArray, rotation: Int): String

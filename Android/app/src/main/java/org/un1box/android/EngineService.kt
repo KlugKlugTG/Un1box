@@ -309,9 +309,17 @@ class EngineService : Service() {
         override fun setBattery(level: Int, charging: Int): String = Native.setBattery(level, charging).also {
             if (it.isNotEmpty()) error = it
         }
-        override fun modemCommand(property: String, value: String): String = Native.modemCommand(property, value).also {
-            if (it.isNotEmpty()) error = it
+        override fun modemCommand(property: String, value: String): String {
+            val result = Native.modemCommand(property, value)
+            if (result.isNotEmpty()) { error = result; return result }
+            // The write runs on the QEMU thread: give its bottom half a moment, then report what
+            // the model refused (a sender it will not accept, a modem not ready for an SMS).
+            Thread.sleep(80)
+            val refusal = Native.modemError()
+            if (refusal.isNotEmpty()) error = refusal
+            return refusal
         }
+        override fun modemError(): String = Native.modemError()
         override fun touch(timestampNanos: Long, ids: IntArray, phases: IntArray, coordinates: FloatArray, width: Int, height: Int, rotation: Int): String =
             admitTouch(null, 0L, timestampNanos, ids, phases, coordinates, width, height, rotation).also { displayCancellations.record(it) }
         override fun touchDisplay(lease: Long, inputGeneration: Long, timestampNanos: Long, ids: IntArray, phases: IntArray, coordinates: FloatArray, width: Int, height: Int, rotation: Int): String =

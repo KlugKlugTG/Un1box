@@ -218,8 +218,10 @@ private fun FakeSmsDialog(host: GuestHost, onDismiss: () -> Unit) {
 /** A fake battery: what the gas gauge/PMU reports, and what the charging path says. */
 @Composable
 private fun FakeBatteryDialog(host: GuestHost, onDismiss: () -> Unit) {
-    var level by remember { mutableIntStateOf(80) }
-    var charging by remember { mutableIntStateOf(0) }
+    // What the last Apply set, so reopening the dialog shows the fake battery in force
+    // rather than the model's own default.
+    var level by remember { mutableIntStateOf(host.settings.fakeBatteryLevel) }
+    var charging by remember { mutableIntStateOf(host.settings.fakeBatteryCharging) }
     val modes = listOf("Auto", "On", "Off")
     AlertDialog(onDismissRequest = onDismiss, modifier = DialogTags, icon = { Icon(LtIcons.Battery, null) },
         title = { Text("Fake battery", style = MaterialTheme.typography.titleMedium) },
@@ -235,7 +237,9 @@ private fun FakeBatteryDialog(host: GuestHost, onDismiss: () -> Unit) {
             Text("The guest shows the new level at its next battery poll, a few seconds from now.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } },
-        confirmButton = { Button(onClick = { host.setBattery(level, charging); onDismiss() },
-            modifier = Modifier.testTag("fake_battery_apply")) { Text("Apply") } },
+        confirmButton = { Button(onClick = {
+            host.settings.fakeBatteryLevel = level; host.settings.fakeBatteryCharging = charging
+            host.setBattery(level, charging); onDismiss()
+        }, modifier = Modifier.testTag("fake_battery_apply")) { Text("Apply") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }

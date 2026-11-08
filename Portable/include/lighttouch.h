@@ -339,6 +339,11 @@ lt_status lt_runtime_motion(lt_runtime *, const lt_motion *, lt_error *);
  * property; queued admission only, the model's own refusal is the engine's log. */
 lt_status lt_runtime_battery(lt_runtime *, uint32_t level, uint32_t charging, lt_error *);
 lt_status lt_runtime_modem(lt_runtime *, const char *property, const char *value, lt_error *);
+/* The last lt_runtime_modem write's refusal, as text the caller can show: "" when the
+ * write was accepted. The model answers on the engine's thread, so read this a moment
+ * after the write (the app waits, then shows what the modem refused). LT_UNSUPPORTED
+ * from an engine that has the drives but not this channel. */
+lt_status lt_runtime_modem_error(lt_runtime *, char *text, uint32_t capacity, lt_error *);
 /* Display mapping excludes letterboxes; rotation 0/90/180/270 clockwise. */
 /* Sensor frame conversion and clock-domain conversion live in native domain.
  * source_timestamp_ns and source_now_ns use the same adapter clock; monotonic

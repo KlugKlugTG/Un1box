@@ -1030,6 +1030,12 @@ JNI(modemCommand) jstring JNICALL Java_org_un1box_android_Native_modemCommand(JN
     if(text)env->ReleaseStringUTFChars(value,text);
     return string(env,out);
 }
+JNI(modemError) jstring JNICALL Java_org_un1box_android_Native_modemError(JNIEnv *env,jobject) {
+    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
+    if(!runtime)return string(env,"");
+    char text[512];
+    return string(env,result(lt_runtime_modem_error(runtime,text,sizeof text,&error),error));
+}
 JNI(cancelInput) void JNICALL Java_org_un1box_android_Native_cancelInput(JNIEnv *,jobject) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
     if(!runtime || lt_runtime_cancel_input(runtime,&error)==LT_OK)display_lease.contactsReleased();
