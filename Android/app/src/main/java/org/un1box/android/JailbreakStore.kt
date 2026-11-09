@@ -233,7 +233,10 @@ internal class JailbreakStore(
     fun archiveRoot(indexUrl: String): String {
         val dists = indexUrl.indexOf("/dists/")
         if (dists > 0) return indexUrl.substring(0, dists)
-        return indexUrl.substringBeforeLast('/', "")
+        val scheme = indexUrl.indexOf("//")
+        val slash = indexUrl.lastIndexOf('/')
+        if (slash <= scheme + 1) return indexUrl          // "http://repo.example": the host is the root
+        return indexUrl.substring(0, slash)
     }
 
     /** The .deb's own URL: `Filename` relative to the archive root, or absolute as it is. */
@@ -447,8 +450,12 @@ internal object JailbreakIcons {
      * file follows -- a source typed as its index URL still has its icon at the root, not beside the
      * index in dists/.
      */
-    fun repositoryIcon(source: String): String =
-        JailbreakStore().archiveRoot(source.trimEnd('/')).trimEnd('/') + "/CydiaIcon.png"
+    fun repositoryIcon(source: String): String {
+        val trimmed = source.trimEnd('/')
+        val root = if (trimmed.endsWith("Packages") || trimmed.endsWith("Packages.gz") ||
+            trimmed.endsWith("Packages.bz2")) JailbreakStore().archiveRoot(trimmed) else trimmed
+        return root.trimEnd('/') + "/CydiaIcon.png"
+    }
 
     /** A package's icon as a URL: absolute as the control file gives it, else under the archive root. */
     fun packageIcon(pkg: JailbreakPackage, indexUrl: String): String {
