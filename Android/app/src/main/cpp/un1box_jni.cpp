@@ -1,5 +1,4 @@
 #include "lighttouch.h"
-#include "Network.hpp"
 #include <filesystem>
 #include <jni.h>
 #if defined(__aarch64__)
