@@ -516,17 +516,18 @@ jobs:
       # lines of C with no dependencies beyond libc, pinned with its patch in build-support, so it is built
       # here from that pin and staged like the other executables: the Gradle build packages
       # ci/firmwarekit/android/iBoot32Patcher as libiBoot32Patcher.so, and FirmwareService names it in the
-      # child's environment. The same step builds the env(1) firmwarekit launches it through: it passes a bare
-      # "env", which Android's posix_spawn resolves against the working directory only (FirmwareService starts
-      # firmwarekit in nativeLibraryDir, where this file sits). Only the NDK's compiler, readelf and the patch in
-      # this repository are used.
+      # child's environment. The same step builds the spawn shim: the recipe launches the patcher as "env <path>
+      # ...", a bare name that Android's posix_spawn resolves against the working directory only and /usr/bin does
+      # not exist to satisfy, so the shim is preloaded into firmwarekit, runs the patcher directly in env's place
+      # and logs every access and spawn it sees (FirmwareService names the log). Only the NDK's compiler, readelf
+      # and the sources in this repository are used.
       #
       # The reused firmwarekit (v0.0.10) spawns that path directly and reads FIRMWAREKIT_IBOOT_PATCHER --
       # checked in its strings, not assumed. Packages/FirmwareKit's own K48IBoot.patchIBoot runs it through
       # /usr/bin/env instead, which Android has no such path for: a firmwarekit built from this tree, or
       # reused from a newer tag, must stop spawning that (run the tool directly, or use /bin/env, which
       # Android's toybox does provide) or the iPad path breaks again the moment the reuse tag moves.
-      - name: Build iBoot32Patcher and env for arm64 Android
+      - name: Build iBoot32Patcher and the spawn shim for arm64 Android
         run: |
           python3 - <<'PY' > /tmp/iboot32patcher-pin
           import json
@@ -546,13 +547,14 @@ jobs:
           chmod 755 ci/firmwarekit/android/iBoot32Patcher
           "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/iBoot32Patcher | grep -q 'AArch64'
           python3 build-support/stage-iboot32patcher-notice.py ci/firmwarekit/android/licenses "/tmp/$DIR/LICENSE"
-          # The patcher is launched as "env <patcher> <in> <out> --rsa ...": a bare name, which macOS resolves on
-          # PATH and Android does not (bionic's posix_spawn searches nothing). This APK carries its own env next
-          # to firmwarekit and FirmwareService starts firmwarekit in that directory, so the name resolves there.
-          "$TOOLS/aarch64-linux-android29-clang" -O2 -o ci/firmwarekit/android/env Packages/FirmwareKit/build-support/env.c
-          chmod 755 ci/firmwarekit/android/env
-          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/env | grep -q 'AArch64'
-          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/env
+          # The recipe launches the patcher as "env <patcher> <in> <out> --rsa ...": a bare name, which macOS
+          # resolves on PATH and Android does not (bionic's posix_spawn searches nothing). This library is put in
+          # front of that spawn with LD_PRELOAD: it runs the patcher directly where env was asked for, and logs
+          # every access and spawn the process makes, so a failure names the path that was actually wanted.
+          "$TOOLS/aarch64-linux-android29-clang" -O2 -fPIC -shared -Wl,-soname,libspawnshim.so \
+            -o ci/firmwarekit/android/spawn-shim.so Packages/FirmwareKit/build-support/spawn-shim.c -ldl
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/spawn-shim.so | grep -q 'AArch64'
+          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so
 
       # The patches carry changes to the engine's own build scripts (0012 adds
       # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for

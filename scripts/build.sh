@@ -242,9 +242,10 @@ print(p["url"], p["sha256"], p["directory"])' "$REPO/build-support/dependencies.
     "$NDK_BIN/aarch64-linux-android29-clang" -O2 -Wno-multichar -Wno-int-conversion -I"$IBP_SRC" \
         -Wl,-z,max-page-size=16384 "$IBP_SRC"/src/*.c -o "$OUT/firmwarekit/android/iBoot32Patcher"
     # firmwarekit launches that patcher as "env <patcher> ...": a bare name, which Android's posix_spawn resolves
-    # against the working directory only, and FirmwareService starts firmwarekit in this directory.
-    "$NDK_BIN/aarch64-linux-android29-clang" -O2 -o "$OUT/firmwarekit/android/env" \
-        "$REPO/Packages/FirmwareKit/build-support/env.c"
+    # against the working directory only. This shim is preloaded into firmwarekit and runs the patcher directly
+    # where env was asked for, logging the access and spawn calls a failure needs.
+    "$NDK_BIN/aarch64-linux-android29-clang" -O2 -fPIC -shared -Wl,-soname,libspawnshim.so \
+        -o "$OUT/firmwarekit/android/spawn-shim.so" "$REPO/Packages/FirmwareKit/build-support/spawn-shim.c" -ldl
     python3 "$REPO/Packages/FirmwareKit/build-support/stage-notices.py" "$OUT/firmwarekit/android/licenses" \
         --checkouts "$REPO/Packages/FirmwareKit/.build-android/checkouts" \
         --swift-license "$LT_SWIFT_ANDROID_BUNDLE/swift-android/swift-resources/usr/share/swift/LICENSE.txt" \

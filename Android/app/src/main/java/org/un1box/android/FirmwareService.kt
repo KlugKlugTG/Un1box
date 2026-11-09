@@ -112,7 +112,7 @@ class FirmwareService : Service() {
      */
     private fun diagnosis(libs: File): String {
         val patcher = File(libs, "libiBoot32Patcher.so")
-        val env = File(libs, "env")
+        val shim = File(libs, "libspawnshim.so")
         val spawn = try {
             val child = ProcessBuilder(patcher.path).redirectErrorStream(true).start()
             child.inputStream.readBytes()
@@ -122,7 +122,15 @@ class FirmwareService : Service() {
             "failed: ${error.message ?: error.javaClass.simpleName}"
         }
         return "tools: iBoot32Patcher ${if (patcher.canExecute()) "present" else "missing"}, " +
-            "env ${if (env.canExecute()) "present" else "missing"}; app ran the patcher: $spawn"
+            "spawn shim ${if (shim.isFile) "present" else "missing"}; app ran the patcher: $spawn" + shimLog()
+    }
+
+    /** The spawn shim's log, which names the path firmwarekit actually tried; empty when it wrote none. */
+    private fun shimLog(): String {
+        val log = File(filesDir, "spawn-shim.log")
+        if (!log.isFile) return ""
+        val lines = log.readLines().takeLast(6)
+        return if (lines.isEmpty()) "" else "\nspawn shim:\n" + lines.joinToString("\n")
     }
 
     /**
@@ -149,6 +157,13 @@ class FirmwareService : Service() {
             put("LD_LIBRARY_PATH", libs.path)
             put("HOME", filesDir.path); put("TMPDIR", cacheDir.path)
             put("PATH", libs.path + ":/system/bin:/system/xbin")
+            // The iPad 1 recipe launches the patcher through a bare "env", which Android cannot resolve. The shim
+            // runs the patcher in env's place and records the access and spawn calls it sees, so a failure says
+            // which path was wanted instead of only that something was missing.
+            File(libs, "libspawnshim.so").takeIf { it.isFile }?.let {
+                put("LD_PRELOAD", it.path)
+                put("SPAWN_SHIM_LOG", File(filesDir, "spawn-shim.log").path)
+            }
             // firmwarekit's k48 (iPad 1) recipe shells out to iBoot32Patcher. On macOS it sits next to the
             // app's executable; here it is one of the executables in nativeLibraryDir, which firmwarekit does
             // not look in by name, so it is named explicitly. K48IBoot.patcher reads this override after the two
