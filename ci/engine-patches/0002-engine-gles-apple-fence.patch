@@ -1,0 +1,285 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Un1box <un1box@localhost>
+Date: Sun, 25 Oct 2026 18:38:58 +0000
+Subject: [PATCH] gles: APPLE_fence as a real EGL fence sync on EGL hosts
+
+The bridge answered every glSetFenceAPPLE, glTestFenceAPPLE and
+glFinishFenceAPPLE with a glFinish(), so the SGX-era pattern of setting a
+fence after a frame (or an upload) and testing it in the next one drained the
+GPU twice a frame and never let the CPU and the GPU overlap.
+
+On an EGL host the fence is now an EGL fence sync (EGL_KHR_fence_sync):
+setting inserts a marker, testing polls it without waiting, and only finishing
+waits -- for that fence, not for the whole pipeline. Hosts and drivers without
+the extension, and any run with LT_GLES_APPLE_FENCE=glfinish, keep the old
+barrier. glTestObjectAPPLE and glFinishObjectAPPLE keep it too: they name a
+buffer or a texture, so their contract covers all commands touching it.
+
+---
+diff --git a/hw/arm/gles-host-fence.c.inc b/hw/arm/gles-host-fence.c.inc
+index b51b4f4..4188be0 100644
+--- a/hw/arm/gles-host-fence.c.inc
++++ b/hw/arm/gles-host-fence.c.inc
+@@ -1,33 +1,250 @@
+ /* SPDX-License-Identifier: GPL-2.0-or-later
+- * APPLE_fence portability. A synchronous completion barrier is conservative
+- * and preserves ordering on EGL drivers without the Apple extension.
++ * APPLE_fence portability.
++ *
++ * A fence is a marker in the command stream, not a sync point: setting one is meant to be cheap,
++ * testing one is meant never to wait, and only finishing one waits for the GPU to reach it. On an
++ * EGL host the marker is a real fence sync (EGL_KHR_fence_sync -- Adreno, Mali, PowerVR and the
++ * desktop's Mesa all provide it), so the guest's own pipelining survives the bridge.
++ *
++ * This used to be a glFinish() per call. The SGX-era pattern is to set a fence after a frame or
++ * an upload and test it in the next one, which drained the GPU twice a frame and never let the
++ * CPU and the GPU overlap. LT_GLES_APPLE_FENCE=glfinish restores that barrier for an A/B run;
++ * hosts and drivers without the extension (WGL, or an EGL stack that hands out no sync) keep it.
++ *
++ * glTestObjectAPPLE and glFinishObjectAPPLE name a buffer or a texture rather than a fence, and
++ * their contract covers every command that touches that object, so they stay a glFinish().
+  */
+ static GHashTable *gles_egl_fences;
+ static GLuint gles_egl_next_fence;
++
++#ifdef GLES_HOST_EGL
++typedef EGLSyncKHR (*GlesFenceCreate)(EGLDisplay, EGLenum, const EGLint *);
++typedef EGLint (*GlesFenceClientWait)(EGLDisplay, EGLSyncKHR, EGLint, uint64_t);
++typedef EGLBoolean (*GlesFenceDestroySync)(EGLDisplay, EGLSyncKHR);
++
++#ifndef EGL_SYNC_FENCE_KHR
++#define EGL_SYNC_FENCE_KHR 0x30F9
++#endif
++#ifndef EGL_SYNC_FLUSH_COMMANDS_BIT_KHR
++#define EGL_SYNC_FLUSH_COMMANDS_BIT_KHR 0x0001
++#endif
++#ifndef EGL_CONDITION_SATISFIED_KHR
++#define EGL_CONDITION_SATISFIED_KHR 0x30F6
++#endif
++#ifndef EGL_FOREVER_KHR
++#define EGL_FOREVER_KHR 0xFFFFFFFFFFFFFFFFull
++#endif
++
++/* A fence name's marker: its sync while it is outstanding, EGL_NO_SYNC_KHR once finished. */
++typedef struct GlesAppleFence {
++    EGLSyncKHR sync;
++} GlesAppleFence;
++
++static struct {
++    int state;                  /* -1 not asked yet, 0 a synchronous barrier, 1 real fence syncs */
++    GlesFenceCreate create;
++    GlesFenceClientWait wait;
++    GlesFenceDestroySync destroy;
++} gles_fence_api = { .state = -1 };
++
++static bool gles_fence_sync_ready(void)
++{
++    const char *mode;
++
++    if (gles_fence_api.state >= 0) {
++        return gles_fence_api.state > 0;
++    }
++    mode = getenv("LT_GLES_APPLE_FENCE");
++    if (mode && !strcmp(mode, "glfinish")) {
++        gles_fence_api.state = 0;
++        return false;
++    }
++    if (gles_egl_display == EGL_NO_DISPLAY) {
++        return false;   /* no display yet: ask again when there is one */
++    }
++    gles_fence_api.create = (GlesFenceCreate)eglGetProcAddress("eglCreateSyncKHR");
++    gles_fence_api.wait = (GlesFenceClientWait)eglGetProcAddress("eglClientWaitSyncKHR");
++    gles_fence_api.destroy = (GlesFenceDestroySync)eglGetProcAddress("eglDestroySyncKHR");
++    gles_fence_api.state = gles_fence_api.create && gles_fence_api.wait && gles_fence_api.destroy;
++    return gles_fence_api.state > 0;
++}
++
++/* The hash table's value destructor: the name outlives the entry, the sync does not. */
++static void gles_fence_value_free(gpointer value)
++{
++    GlesAppleFence *fence = value;
++
++    if (fence->sync != EGL_NO_SYNC_KHR && gles_fence_api.destroy) {
++        gles_fence_api.destroy(gles_egl_display, fence->sync);
++    }
++    g_free(fence);
++}
++
++static GlesAppleFence *gles_fence_entry(GLuint name, bool create)
++{
++    GlesAppleFence *fence;
++
++    if (!gles_egl_fences) {
++        if (!create) {
++            return NULL;
++        }
++        gles_egl_fences = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
++                                               gles_fence_value_free);
++    }
++    fence = g_hash_table_lookup(gles_egl_fences, GUINT_TO_POINTER(name));
++    if (!fence && create) {
++        fence = g_new0(GlesAppleFence, 1);
++        fence->sync = EGL_NO_SYNC_KHR;
++        g_hash_table_insert(gles_egl_fences, GUINT_TO_POINTER(name), fence);
++    }
++    return fence;
++}
++
++/* Drop the marker a name holds, if any: the name stays a fence with nothing left to wait for. */
++static void gles_fence_drop(GLuint name)
++{
++    GlesAppleFence *fence = gles_fence_entry(name, false);
++
++    if (fence && fence->sync != EGL_NO_SYNC_KHR) {
++        gles_fence_api.destroy(gles_egl_display, fence->sync);
++        fence->sync = EGL_NO_SYNC_KHR;
++    }
++}
++
++static void gles_egl_gen_fences(GLsizei n, GLuint *names)
++{
++    for (GLsizei i = 0; i < n; i++) {
++        names[i] = ++gles_egl_next_fence;
++        gles_fence_entry(names[i], true);
++    }
++}
++
++static void gles_egl_delete_fences(GLsizei n, const GLuint *names)
++{
++    if (!gles_egl_fences) return;
++    for (GLsizei i = 0; i < n; i++) {
++        g_hash_table_remove(gles_egl_fences, GUINT_TO_POINTER(names[i]));
++    }
++}
++
++static GLboolean gles_egl_is_fence(GLuint name)
++{
++    return gles_egl_fences && g_hash_table_contains(gles_egl_fences, GUINT_TO_POINTER(name));
++}
++
++/* Set: insert a marker. Inserting costs a submission, not a wait. */
++static void gles_egl_set_fence(GLuint name)
++{
++    GlesAppleFence *fence = gles_fence_entry(name, true);
++    EGLSyncKHR sync;
++
++    /* A fence that is set again is a new marker; the previous one can no longer be waited for. */
++    gles_fence_drop(name);
++    if (!gles_fence_sync_ready()) {
++        glFinish();
++        return;
++    }
++    sync = gles_fence_api.create(gles_egl_display, EGL_SYNC_FENCE_KHR, NULL);
++    if (sync == EGL_NO_SYNC_KHR) {
++        glFinish();     /* the driver refused: stay conservative rather than lose the ordering */
++        return;
++    }
++    fence->sync = sync;
++}
++
++/* Test: never waits. The flush lets an unsubmitted frame reach the GPU so the answer advances. */
++static GLboolean gles_egl_test_fence(GLuint name)
++{
++    GlesAppleFence *fence;
++
++    if (!gles_egl_is_fence(name)) {
++        return GL_FALSE;
++    }
++    if (!gles_fence_sync_ready()) {
++        glFinish();
++        return GL_TRUE;
++    }
++    fence = gles_fence_entry(name, false);
++    if (!fence || fence->sync == EGL_NO_SYNC_KHR) {
++        return GL_TRUE;     /* never set, or already finished */
++    }
++    return gles_fence_api.wait(gles_egl_display, fence->sync, EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, 0) ==
++           EGL_CONDITION_SATISFIED_KHR;
++}
++
++/* Finish: the one call that waits, and it waits for this fence only. */
++static void gles_egl_finish_fence(GLuint name)
++{
++    GlesAppleFence *fence;
++
++    if (!gles_egl_is_fence(name)) {
++        glFinish();     /* not a fence name: there is no marker to wait for */
++        return;
++    }
++    if (!gles_fence_sync_ready()) {
++        glFinish();
++        return;
++    }
++    fence = gles_fence_entry(name, false);
++    if (!fence || fence->sync == EGL_NO_SYNC_KHR) {
++        return;         /* never set, or already finished */
++    }
++    gles_fence_api.wait(gles_egl_display, fence->sync, EGL_SYNC_FLUSH_COMMANDS_BIT_KHR,
++                        EGL_FOREVER_KHR);
++    gles_fence_drop(name);  /* a finished fence stays true, as it does on the device */
++}
++
++/* Object fences cover every command that touches the object: keep the full barrier. */
++static GLboolean gles_egl_test_object(GLenum object, GLuint name) { glFinish(); return GL_TRUE; }
++static void gles_egl_finish_object(GLenum object, GLint name) { glFinish(); }
++
++#else /* no EGL: a synchronous completion barrier is conservative and preserves ordering */
++
+ static void gles_egl_gen_fences(GLsizei n, GLuint *names)
+ {
+-    if (!gles_egl_fences) gles_egl_fences=g_hash_table_new(g_direct_hash,g_direct_equal);
+-    for (GLsizei i=0;i<n;i++) {
+-        names[i]=++gles_egl_next_fence;
+-        g_hash_table_add(gles_egl_fences,GUINT_TO_POINTER(names[i]));
++    if (!gles_egl_fences) {
++        gles_egl_fences = g_hash_table_new(g_direct_hash, g_direct_equal);
++    }
++    for (GLsizei i = 0; i < n; i++) {
++        names[i] = ++gles_egl_next_fence;
++        g_hash_table_add(gles_egl_fences, GUINT_TO_POINTER(names[i]));
+     }
+ }
++
+ static void gles_egl_delete_fences(GLsizei n, const GLuint *names)
+ {
+-    if (gles_egl_fences) for (GLsizei i=0;i<n;i++)
+-        g_hash_table_remove(gles_egl_fences,GUINT_TO_POINTER(names[i]));
++    if (!gles_egl_fences) return;
++    for (GLsizei i = 0; i < n; i++) {
++        g_hash_table_remove(gles_egl_fences, GUINT_TO_POINTER(names[i]));
++    }
+ }
++
+ static GLboolean gles_egl_is_fence(GLuint name)
+-{ return gles_egl_fences && g_hash_table_contains(gles_egl_fences,GUINT_TO_POINTER(name)); }
++{
++    return gles_egl_fences && g_hash_table_contains(gles_egl_fences, GUINT_TO_POINTER(name));
++}
++
+ static void gles_egl_finish_fence(GLuint name) { glFinish(); }
+ static GLboolean gles_egl_test_fence(GLuint name) { glFinish(); return gles_egl_is_fence(name); }
+ static GLboolean gles_egl_test_object(GLenum object, GLuint name) { glFinish(); return GL_TRUE; }
+ static void gles_egl_finish_object(GLenum object, GLint name) { glFinish(); }
+-#define glGenFencesAPPLE gles_egl_gen_fences
+-#define glDeleteFencesAPPLE gles_egl_delete_fences
++
+ #define glSetFenceAPPLE gles_egl_finish_fence
+-#define glIsFenceAPPLE gles_egl_is_fence
+ #define glTestFenceAPPLE gles_egl_test_fence
+ #define glFinishFenceAPPLE gles_egl_finish_fence
+ #define glTestObjectAPPLE gles_egl_test_object
+ #define glFinishObjectAPPLE gles_egl_finish_object
++
++#endif
++
++#ifdef GLES_HOST_EGL
++#define glSetFenceAPPLE gles_egl_set_fence
++#define glTestFenceAPPLE gles_egl_test_fence
++#define glFinishFenceAPPLE gles_egl_finish_fence
++#define glTestObjectAPPLE gles_egl_test_object
++#define glFinishObjectAPPLE gles_egl_finish_object
++#endif
++
++#define glGenFencesAPPLE gles_egl_gen_fences
++#define glDeleteFencesAPPLE gles_egl_delete_fences
++#define glIsFenceAPPLE gles_egl_is_fence

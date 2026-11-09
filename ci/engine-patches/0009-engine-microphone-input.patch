@@ -1,0 +1,460 @@
+From 3fd66df960cce139cff88bcfe2ee15785c387230 Mon Sep 17 00:00:00 2001
+From: Un1box <un1box@localhost>
+Date: Sun, 25 Oct 2026 20:26:49 +0000
+Subject: [PATCH] hw/arm: the frontend's microphone into a capture port
+
+The guest's capture path is already here and already checked: CDMA 0x1b reads
+i2s0's RX FIFO, and on the iPad it recorded a 1000 Hz tone at 44025 frames/s
+with no discontinuities, and Shazam recorded through it. What it reads comes
+from a QEMU input voice, and on a phone there is none: the engine runs its
+audio backend as `driver=none`, so `audio_be_open_in` returns nothing and a
+recording app in the guest hears silence.
+
+This is the input counterpart of the output capture tap the portable library
+already installs, with the same shape: the frontend pushes what its microphone
+recorded into a bounded ring, and the capture port hands it to the guest
+instead of silence. The app records at 44100 (what iOS uses, and what
+AudioRecord opens at), the port reads at its own frame rate, and a 16.16
+accumulator converts between them, nearest neighbour: exact at 44.1 kHz,
+pitch-correct at any other rate.
+
+The ring has its own mutex, never blocks either side, and holds 4096 stereo
+frames (93 ms); a full ring drops the app's block, and an app that has been
+quiet for 250 ms gives the port silence rather than replaying its tail. A
+stopped capture flushes, so a recording's unread frames cannot turn up at the
+head of the next one.
+
+The ring is asked BEFORE the port's own input voice, and that ordering is the
+difference between a working capture and silence. `driver=none` does open an
+input voice -- audio/noaudio.c declares max_voices_in, initializes it, and
+no_read() returns silence paced at the port's rate -- so a ring placed behind it
+as a fallback is never reached and the guest records silence. host_mic_read_frame()
+returns false when the frontend pushed nothing, which is every case on the Mac
+and every case with the Android switch off; only then does the voice's ring
+answer, exactly as before.
+
+Nothing about the guest's side changes: the same RX FIFO, the same CDMA chain,
+the same pacing. The test-only `tone-hz` property still wins over both.
+
+  hw/arm/host-mic.c, include/hw/arm/host-mic.h   the ring, its resampler, counters
+  hw/arm/s5l8930_i2s.c                           the RX FIFO reads it, the port's rate is handed to it
+  contrib/macos-app/qemu-macos-extras.c/.h       qemu_ios_microphone_write/flush/state (API 2.4)
+  hw/arm/meson.build                             host-mic.c for the S5L8920/S5L8930 family
+
+The boards that use this model are the ones with a microphone in the hardware:
+iPhone 3GS, iPhone 4, iPad 1 -- and the iPod touch 4G, whose iOS 6 may still
+offer input. The iPod touch 2G and 3G have no microphone and keep their own I2S
+model, which hands out silence.
+---
+ contrib/macos-app/qemu-macos-extras.c |  42 ++++++++
+ contrib/macos-app/qemu-macos-extras.h |  14 ++-
+ hw/arm/host-mic.c                     | 150 ++++++++++++++++++++++++++
+ hw/arm/meson.build                    |   2 +-
+ hw/arm/s5l8930_i2s.c                  |  39 +++++--
+ include/hw/arm/host-mic.h             |  54 ++++++++++
+ 6 files changed, 293 insertions(+), 8 deletions(-)
+ create mode 100644 hw/arm/host-mic.c
+ create mode 100644 include/hw/arm/host-mic.h
+
+diff --git a/contrib/macos-app/qemu-macos-extras.c b/contrib/macos-app/qemu-macos-extras.c
+index 8ed22af..d08cfe1 100644
+--- a/contrib/macos-app/qemu-macos-extras.c
++++ b/contrib/macos-app/qemu-macos-extras.c
+@@ -38,6 +38,7 @@
+ 
+ #include "qemu-macos-extras.h"
+ #include "hw/misc/ios_vibrator.h"
++#include "hw/arm/host-mic.h"
+ 
+ /*
+  * system/main.c (replaced by qemu-ios-entry.c) defined this; ui/cocoa.m still
+@@ -1069,3 +1070,44 @@ void qemu_ios_audio_capture_stop(uint64_t generation)
+     *request = generation;
+     aio_bh_schedule_oneshot(qemu_get_aio_context(), recording_audio_stop_bh, request);
+ }
++
++/*
++ * The microphone is the one entry point here that is not a bottom half. The
++ * capture tap below has to schedule its work on the QEMU thread because it
++ * registers a voice with the audio backend; this is a bounded ring the app
++ * writes and a capture port reads on the vCPU thread, so a recorder thread can
++ * push from where it already is. Pushing before a machine exists is harmless:
++ * the frames wait, and a port that never starts lets them drop.
++ */
++int qemu_ios_microphone_write(const void *frames, int bytes)
++{
++    if (!frames || bytes < 4) {
++        return 0;
++    }
++    return (int)host_mic_push(frames, (size_t)(bytes / 4) * 4);
++}
++
++void qemu_ios_microphone_flush(void)
++{
++    host_mic_flush();
++}
++
++int qemu_ios_microphone_state(uint32_t *rate, uint32_t *queued, uint64_t *pushed, uint64_t *dropped)
++{
++    HostMicState state;
++
++    host_mic_state(&state);
++    if (rate) {
++        *rate = state.rate;
++    }
++    if (queued) {
++        *queued = state.queued;
++    }
++    if (pushed) {
++        *pushed = state.pushed;
++    }
++    if (dropped) {
++        *dropped = state.dropped;
++    }
++    return state.capturing ? 1 : 0;
++}
+diff --git a/contrib/macos-app/qemu-macos-extras.h b/contrib/macos-app/qemu-macos-extras.h
+index e2aaa0f..4e31244 100644
+--- a/contrib/macos-app/qemu-macos-extras.h
++++ b/contrib/macos-app/qemu-macos-extras.h
+@@ -80,6 +80,18 @@ int qemu_ios_audio_capture_read(uint64_t generation, void *buffer, int capacity,
+ double qemu_ios_audio_capture_time(uint64_t generation);
+ void qemu_ios_audio_capture_stop(uint64_t generation);
+ 
++/* The host's microphone into the guest's capture port (hw/arm/host-mic.h): interleaved stereo S16 at
++ * HOST_MIC_RATE (44100), mono sources duplicated by the caller, `bytes` a multiple of 4. Returns the
++ * frames accepted; a shorter count means the guest was not reading and the ring dropped the rest. The
++ * guest hears silence while nothing is pushed, and a stopped capture leaves nothing for the next one.
++ * Any thread. API 2.4. */
++int qemu_ios_microphone_write(const void *frames, int bytes);
++void qemu_ios_microphone_flush(void);
++/* 1 while a capture port has asked for input since the last flush, else 0. rate is the port's rate
++ * (0 before one starts), queued the frames waiting, pushed/dropped the totals since the process
++ * began; every out pointer may be NULL. */
++int qemu_ios_microphone_state(uint32_t *rate, uint32_t *queued, uint64_t *pushed, uint64_t *dropped);
++
+ /* Queue UTF-8 text for the guest pasteboard (machine property "pasteboard"). */
+ void qemu_ios_ui_paste(const char *utf8);
+ /* The text last copied inside the guest (UTF-8, at most 64 KiB - 1 bytes: the guest agent's cap), when the
+@@ -115,7 +127,7 @@ const char *qemu_ios_build_id(void);
+ /* This C API's version, major << 16 | minor. A minor bump only adds entry points;
+  * a major bump removes or changes one, and a host built for another major refuses
+  * the dylib. */
+-#define QEMU_IOS_API_VERSION ((2u << 16) | 3u)
++#define QEMU_IOS_API_VERSION ((2u << 16) | 4u)
+ uint32_t qemu_ios_api_version(void);
+ 
+ /* Machine controls. */
+diff --git a/hw/arm/host-mic.c b/hw/arm/host-mic.c
+new file mode 100644
+index 0000000..97386ad
+--- /dev/null
++++ b/hw/arm/host-mic.c
+@@ -0,0 +1,150 @@
++/*
++ * The frontend's microphone: a bounded ring between the host app and an audio
++ * device's capture port. See include/hw/arm/host-mic.h for the shape of the
++ * path and why the phone's engine needs it (`driver=none` has no input voice).
++ *
++ * Rates. The app records at HOST_MIC_RATE; a port reads at its own frame rate.
++ * A 16.16 accumulator picks the source frame for each output frame, nearest
++ * neighbour: an exact pass-through at 44.1 kHz, and pitch-correct (aliased
++ * rather than filtered) at any other rate. Linear interpolation would need the
++ * ring to hold one more frame than the reader has consumed, which the
++ * single-frame interface here cannot express; the guest's own HAL resamples
++ * after this point anyway.
++ *
++ * Locking. The app pushes from its recorder thread and the port reads on the
++ * vCPU thread under the BQL, so the ring has its own mutex. Neither side ever
++ * waits for the other: a full ring drops the app's block, an empty one hands
++ * the port silence.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"        /* stw_le_p: osdep does not pull it in (system/memory.h does) */
++#include "hw/arm/host-mic.h"
++
++#include <pthread.h>
++
++/* The app has stopped: after this much quiet the port gets silence instead of
++ * the ring's tail, so a stopped recording does not loop the last 93 ms. */
++#define HOST_MIC_STALE_US 250000
++
++static pthread_mutex_t host_mic_lock = PTHREAD_MUTEX_INITIALIZER;
++static int16_t host_mic_ring[HOST_MIC_FRAMES][2];
++static uint32_t host_mic_head, host_mic_level;
++static unsigned host_mic_rate = HOST_MIC_RATE;
++/* Source frames consumed per output frame, 16.16. */
++static uint32_t host_mic_step = 1 << 16;
++static uint32_t host_mic_acc;
++static int64_t host_mic_last_push_us = -1;
++static uint32_t host_mic_capturing;
++static uint64_t host_mic_pushed, host_mic_dropped;
++
++static void host_mic_reset_locked(void)
++{
++    host_mic_head = host_mic_level = 0;
++    host_mic_acc = 0;
++    host_mic_last_push_us = -1;
++}
++
++uint32_t host_mic_push(const void *frames, size_t bytes)
++{
++    const int16_t *in = frames;
++    uint32_t count, taken = 0;
++
++    if (!in || bytes < 4) {
++        return 0;
++    }
++    count = bytes / 4;
++    pthread_mutex_lock(&host_mic_lock);
++    host_mic_last_push_us = g_get_monotonic_time();
++    /* The guest caught up: the frame it reads next is this one, not the
++     * fractional remainder of a position from before the gap. */
++    if (!host_mic_level) {
++        host_mic_acc = 0;
++    }
++    while (taken < count && host_mic_level < HOST_MIC_FRAMES) {
++        uint32_t slot = (host_mic_head + host_mic_level) % HOST_MIC_FRAMES;
++
++        host_mic_ring[slot][0] = in[2 * taken];
++        host_mic_ring[slot][1] = in[2 * taken + 1];
++        host_mic_level++;
++        taken++;
++    }
++    host_mic_pushed += taken;
++    host_mic_dropped += count - taken;
++    pthread_mutex_unlock(&host_mic_lock);
++    return taken;
++}
++
++void host_mic_flush(void)
++{
++    pthread_mutex_lock(&host_mic_lock);
++    host_mic_reset_locked();
++    host_mic_capturing = 0;
++    pthread_mutex_unlock(&host_mic_lock);
++}
++
++void host_mic_set_rate(unsigned rate)
++{
++    if (rate < 8000 || rate > 192000) {
++        rate = HOST_MIC_RATE;
++    }
++    pthread_mutex_lock(&host_mic_lock);
++    host_mic_capturing = 1;
++    if (rate != host_mic_rate) {
++        host_mic_rate = rate;
++        host_mic_step = (uint32_t)(((uint64_t)HOST_MIC_RATE << 16) / rate);
++        if (!host_mic_step) {
++            host_mic_step = 1 << 16;
++        }
++        host_mic_acc = 0;
++    }
++    pthread_mutex_unlock(&host_mic_lock);
++}
++
++bool host_mic_read_frame(uint8_t out[4])
++{
++    int16_t frame[2];
++    bool have = false;
++
++    pthread_mutex_lock(&host_mic_lock);
++    if (host_mic_last_push_us >= 0 &&
++        g_get_monotonic_time() - host_mic_last_push_us > HOST_MIC_STALE_US) {
++        host_mic_reset_locked();
++    }
++    if (host_mic_level) {
++        frame[0] = host_mic_ring[host_mic_head][0];
++        frame[1] = host_mic_ring[host_mic_head][1];
++        /* This frame is the one at the reader's position; the accumulator then decides how far
++         * the position moves for the next one. Consuming before handing out would shift the whole
++         * recording by a frame, and re-reading the head after consuming would double it. */
++        host_mic_acc += host_mic_step;
++        while (host_mic_acc >= (uint32_t)1 << 16 && host_mic_level) {
++            host_mic_acc -= (uint32_t)1 << 16;
++            host_mic_head = (host_mic_head + 1) % HOST_MIC_FRAMES;
++            host_mic_level--;
++        }
++        have = true;
++    }
++    pthread_mutex_unlock(&host_mic_lock);
++    if (!have) {
++        return false;
++    }
++    stw_le_p(out, frame[0]);
++    stw_le_p(out + 2, frame[1]);
++    return true;
++}
++
++void host_mic_state(HostMicState *out)
++{
++    if (!out) {
++        return;
++    }
++    pthread_mutex_lock(&host_mic_lock);
++    out->rate = host_mic_capturing ? host_mic_rate : 0;
++    out->queued = host_mic_level;
++    out->capturing = host_mic_capturing;
++    out->pushed = host_mic_pushed;
++    out->dropped = host_mic_dropped;
++    pthread_mutex_unlock(&host_mic_lock);
++}
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index f8655bf..526734d 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -93,7 +93,7 @@ arm_common_ss.add(when: 'CONFIG_XEN', if_true: files(
+   'xen-pvh.c',
+ ))
+ 
+-arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_dmc.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_iop_core.c', 's5l8930_sdio.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_dart.c', 's5l8930_cdma.c', 's5l8930_bbspi.c', 's5l8930_h2fmi.c', 's5l8930_sha1.c', 's5l8930_ltc4099.c', 's5l8930_hdq.c', 's5l8930_i2s.c', 's5l8930_isp.c'))
++arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_dmc.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_iop_core.c', 's5l8930_sdio.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_dart.c', 's5l8930_cdma.c', 's5l8930_bbspi.c', 's5l8930_h2fmi.c', 's5l8930_sha1.c', 's5l8930_ltc4099.c', 's5l8930_hdq.c', 's5l8930_i2s.c', 's5l8930_isp.c', 'host-mic.c'))
+ arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('s5l8920.c', 's5l8920_pmgr.c', 's5l8920_dart.c', 's5l8920_pwm.c', 's5l8920_vxd.c', 's5l8920_vxd_h264.c', 's5l8920_jpeg.c'))
+ # Synopsys DWC OTG device core, PHY register file and host TCP bridge: shared by the S5L8720 and S5L8930 machines.
+ arm_ss.add(when: 'CONFIG_IPOD_TOUCH_1G', if_true: files('ipod_touch_1g.c', 's5l8900_fmc.c', 's5l8900_nand_ecc.c', 's5l8900_adm.c', 's5l8900_lcd_panel.c', 's5l8900_multitouch_z1.c', 'ipod_touch_wm8758.c', 'ipod_touch_piezo.c'))
+diff --git a/hw/arm/s5l8930_i2s.c b/hw/arm/s5l8930_i2s.c
+index 1a04c2c..93ee98f 100644
+--- a/hw/arm/s5l8930_i2s.c
++++ b/hw/arm/s5l8930_i2s.c
+@@ -25,6 +25,13 @@
+  * "tone-hz" property replaces the input with a synthetic stereo sine at the
+  * port's frame rate, so capture can be checked headless.
+  *
++ * A phone's engine runs the audio backend as `driver=none`, whose input voice
++ * opens and then hands out silence, so the FIFO asks the frontend's own
++ * microphone first (hw/arm/host-mic.c): what it recorded, resampled to the
++ * port's rate, and -- when it pushed nothing, which is every case on the Mac --
++ * the voice's ring, then silence. That is the phone's capture path: the guest
++ * reaches the same CDMA chains and the same RX FIFO either way.
++ *
+  * Use `-audio driver=wav,path=out.wav` (or coreaudio): the card resolves
+  * its backend from the default audiodev list, as the iPod's I2S does.
+  */
+@@ -38,6 +45,7 @@
+ #include "hw/core/qdev-properties.h"
+ #include "hw/core/qdev-clock.h"
+ #include "hw/arm/s5l8930.h"
++#include "hw/arm/host-mic.h"
+ #include "qemu/audio.h"
+ #include "migration/vmstate.h"
+ 
+@@ -203,6 +211,11 @@ static void i2s_set_in_rate(S5L8930I2SState *s, unsigned rate)
+         .freq = rate, .nchannels = 2, .fmt = AUDIO_FORMAT_S16, .big_endian = false,
+     };
+ 
++    if (!s->tone_hz) {
++        /* The frontend resamples what it recorded to this rate, and is told even where a host
++         * input voice exists: it is the port's rate that decides which frames it hands out. */
++        host_mic_set_rate(rate);
++    }
+     if (rate == s->in_rate || s->tone_hz) {
+         s->in_rate = rate;
+         return;
+@@ -225,15 +238,25 @@ static void i2s_next_frame(S5L8930I2SState *s)
+         stw_le_p(s->rx_frame + 2, v);
+         return;
+     }
+-    if (s->in_level < 4) {
+-        memset(s->rx_frame, 0, 4);
++    /* The frontend's microphone comes first, not as a fallback. A phone's engine has no real input
++     * voice -- the audio backend is `driver=none` -- but that backend's input voice still OPENS
++     * (audio/noaudio.c: max_voices_in, no_init_in, no_read) and then hands out silence paced at the
++     * port's rate, so the voice's ring below is never empty and a capture read out of it hears
++     * nothing. host_mic_read_frame() is false when the frontend pushed nothing (the Mac, where
++     * coreaudio -- not this ring -- is the input, or a phone with the switch off), and only then is
++     * the voice's ring, exactly as before. */
++    if (host_mic_read_frame(s->rx_frame)) {
+         return;
+     }
+-    for (int i = 0; i < 4; i++) {
+-        s->rx_frame[i] = s->in_ring[s->in_tail];
+-        s->in_tail = (s->in_tail + 1) % I2S_RING;
++    if (s->in_level >= 4) {
++        for (int i = 0; i < 4; i++) {
++            s->rx_frame[i] = s->in_ring[s->in_tail];
++            s->in_tail = (s->in_tail + 1) % I2S_RING;
++        }
++        s->in_level -= 4;
++        return;
+     }
+-    s->in_level -= 4;
++    memset(s->rx_frame, 0, 4);
+ }
+ 
+ static uint64_t i2s_rx_read(S5L8930I2SState *s, unsigned size)
+@@ -400,6 +423,10 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
+         if (run) {
+             i2s_set_in_rate(s, s5l8930_i2s_rate(s->port));
+             s->rx_pos = 0;
++        } else {
++            /* A stopped recording's unread frames would play back as a burst at the head of the
++             * next one, a second or a day later. */
++            host_mic_flush();
+         }
+         if (s->voice_in) {
+             audio_be_set_active_in(s->audio_be, s->voice_in, run);
+diff --git a/include/hw/arm/host-mic.h b/include/hw/arm/host-mic.h
+new file mode 100644
+index 0000000..f146165
+--- /dev/null
++++ b/include/hw/arm/host-mic.h
+@@ -0,0 +1,54 @@
++/*
++ * The frontend's microphone, as an audio device's capture port sees it.
++ *
++ * The engine on a phone runs its audio backend as `driver=none`, so a capture
++ * port's input voice never opens and a recording app in the guest hears
++ * silence. This is the input counterpart of the output capture tap the portable
++ * library installs: the frontend pushes the frames its microphone recorded and
++ * a port hands them to the guest as if an input voice had queued them.
++ *
++ *   host app -> host_mic_push() -> ring -> host_mic_read_frame() -> RX FIFO
++ *
++ * The capture port asks this ring BEFORE its own input voice: the phone's
++ * engine has no real input voice, but `driver=none`'s silence-producing one
++ * opens anyway (audio/noaudio.c), so a fallback behind it would never run.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef HW_ARM_HOST_MIC_H
++#define HW_ARM_HOST_MIC_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++/* The rate the frontend records at: what iOS uses, and what AudioRecord opens
++ * at on every Android device. A capture port at another rate is resampled. */
++#define HOST_MIC_RATE 44100
++
++/* Frames of stereo S16 the ring holds: 93 ms at 44.1 kHz, enough to cover the
++ * app's block (23 ms) and a burst on the guest side, and small enough that a
++ * guest which stops reading costs a fraction of a second of audio. */
++#define HOST_MIC_FRAMES 4096
++
++typedef struct HostMicState {
++    uint32_t rate;          /* the capture port's rate; 0 before one starts */
++    uint32_t queued;        /* frames waiting for the guest */
++    uint32_t capturing;     /* a port has asked for input since the last flush */
++    uint64_t pushed;        /* frames the frontend handed over */
++    uint64_t dropped;       /* frames the ring had no room for */
++} HostMicState;
++
++/* Frames the frontend recorded: interleaved stereo S16, HOST_MIC_RATE, `bytes`
++ * a multiple of 4. Returns the frames accepted; the rest did not fit. */
++uint32_t host_mic_push(const void *frames, size_t bytes);
++/* Forget everything: a port started, stopped, or the app stopped recording. */
++void host_mic_flush(void);
++/* The rate the capture port reads at, from its own configuration. */
++void host_mic_set_rate(unsigned rate);
++/* One stereo S16 frame at the port's rate, little-endian, as the RX FIFO holds
++ * it. False when the app has nothing for the guest (which then reads silence). */
++bool host_mic_read_frame(uint8_t out[4]);
++void host_mic_state(HostMicState *out);
++
++#endif
+-- 
+2.39.5
+

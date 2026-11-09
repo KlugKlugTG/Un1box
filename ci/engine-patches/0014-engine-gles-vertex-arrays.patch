@@ -1,0 +1,371 @@
+From 2a596b584ea2d40401a84af4a3e5b4e7c95d1d46 Mon Sep 17 00:00:00 2001
+From: Un1box <un1box@localhost>
+Date: Mon, 2 Nov 2026 17:31:43 +0000
+Subject: [PATCH] gles-host: vertex array objects, in the state the draws
+ already read
+
+An app that keeps its arrays in a VAO reached the bridge's default and was
+refused: glGenVertexArraysOES (id 839), glBindVertexArrayOES (837),
+glDeleteVertexArraysOES (838), glIsVertexArrayOES (840) and the same four
+under their EXT spelling (550-553) each printed "[gles] UNHANDLED ...
+returning 0; the guest will render wrong". Generate handing back 0 is the
+part that costs the frame: the app binds the name it was given, which is 0 --
+the default state -- so every pointer it set through that VAO belongs to
+nothing, and the draw runs with the arrays off.
+
+A VAO is a name for the array state this context already keeps, not a host
+object. What it owns is what GL says it owns: the four ES1 client arrays, the
+eight texture-coordinate ones, the sixteen generic attributes with their
+normalized flags, and the element-array binding -- the things gl*Pointer and
+glBindBuffer(GL_ELEMENT_ARRAY_BUFFER) write while the VAO is bound. A bind
+stores the current state into the record it came from and loads the named
+one's; deleting the bound name falls back to the default, as GL specifies;
+generate only hands out names, because GL makes the object exist at its first
+bind, which is what is-then reports.
+
+The host's own VAO would be the wrong tool on every backend this file builds
+for. The Android host runs two contexts, ES 1.1 for guest-api=1 and ES 3.2 for
+guest-api=2, so an ES3 entry point is not valid on one of them; the ES2 draw
+path re-applies each attribute's enable and pointer on every draw, and the ES1
+path compares the state now wanted against a per-context mirror and issues
+only what changed, so a host VAO would duplicate a cache that is already
+maintained and would have to be kept in step with it; and it would need
+ARB_vertex_array_object resolved per backend, where this needs no host call at
+all and so works on WGL/glew, EGL/ES, ANGLE and macOS's <OpenGL/gl.h> alike.
+
+What stays with the context is everything the host side of an array carries:
+the fetch scratch, whose contents are refreshed every draw, the client-state
+enum, and that mirror, which GLESArray already calls its own. A bind therefore
+re-issues exactly the host calls the new state needs. GL_ARRAY_BUFFER is not
+part of a VAO either -- the binding in force when gl*Pointer ran is, and
+`vbo` already is that capture.
+
+A record holds a reference to each buffer it names, through the same
+gles_buffer_bind() the arrays use, so a buffer cannot go away while a VAO
+remembers it; gles_context_free releases the records after the context's own
+arrays and before the legacy context is zeroed. VAOs are per context, not per
+sharegroup, as in GL. glGetIntegerv(GL_VERTEX_ARRAY_BINDING_OES) now answers
+the bound name instead of being refused.
+
+gles-names.h is untouched: it already carried these ids in both spellings,
+with the flags that suit them (bind is batchable, generate and delete carry a
+guest list and are not), so the guest package this builds against is
+unchanged.
+
+tests/gles/vao.c slices the record types' functions out of this file and
+drives them: names, the state a bind swaps, the references that move with it,
+deleting the bound one, and the two things that must not travel.
+---
+ hw/arm/gles-host.c | 254 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 254 insertions(+)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 553485a..f946925 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -343,6 +343,41 @@ typedef struct {
+     const void *host_pointer;
+ } GLESArray;
+ 
++/*
++ * OES_vertex_array_object: a name for the array state the draws already read
++ * here. What a VAO owns is exactly what this context keeps per array -- the ES1
++ * client arrays, the ES2 generic attributes and the element-array binding -- so
++ * a VAO is that state under a name, and no host object is involved. The host's
++ * own VAO would only duplicate a cache the draw path re-applies on every draw,
++ * and asking for one would tie these four slots to the backends that have
++ * ARB_vertex_array_object, which an ES 1.1 host context and the desktop ones do
++ * not.
++ *
++ * Everything the host side of an array carries stays with the context: the
++ * scratch a fetch grows (buf/fbuf), the client-state enum, and the mirror of
++ * what the host was last told. The scratch's contents are refreshed every draw
++ * even when its address stays the same, and the mirror is compared against the
++ * state now wanted, so a bind re-issues exactly the host calls the new state
++ * needs and no stale copy survives the switch. GL_ARRAY_BUFFER is deliberately
++ * not part of it: GL captures the binding in force per array at gl*Pointer time,
++ * which `vbo` already is, and leaves the array-buffer binding itself outside.
++ */
++#define GLES_VAO_ARRAYS  (4u + GLES_MAX_TEXUNITS + GLES_MAX_ATTRIBS)
++#define GLES_VAO_BINDING 0x85B5   /* GL_VERTEX_ARRAY_BINDING_OES */
++
++/* One array's guest-visible state, and a reference to the buffer it names. */
++typedef struct {
++    uint32_t enabled, size, type, stride, ptr;
++    bool normalized;            /* the generic attributes' one extra field */
++    GLESBuffer *vbo;
++} GlesArrayState;
++
++typedef struct {
++    GlesArrayState array[GLES_VAO_ARRAYS];
++    GLESBuffer *element_buffer;
++} GlesVertexArray;
++/* The functions that move this state are with the buffer ones below. */
++
+ typedef struct {
+     uint32_t base, stride, width, height, format, uv, uvstride;
+     GLenum target;
+@@ -614,6 +649,13 @@ typedef struct {
+      * A nonzero program is what sends a draw down the ES 2.0 path. */
+     GLESArray attr[GLES_MAX_ATTRIBS];
+     bool attr_normalized[GLES_MAX_ATTRIBS];
++    /* OES_vertex_array_object: the array state under a name. Per context, not
++     * per sharegroup -- GL does not share VAOs, and the arrays they name belong
++     * to this context. The table is made at the first bind of a name. */
++    GHashTable *vaos;           /* name -> GlesVertexArray */
++    uint32_t next_vao_name;     /* append-only: a deleted name is not reused */
++    GLuint vao;                 /* the bound name; 0 is the default state below */
++    GlesVertexArray vao_default;
+     GLuint program;             /* guest id; nonzero = ES 2.0 draws */
+     GHashTable *glsl;           /* shader/program names, without a group */
+     uint32_t glsl_next;
+@@ -2334,6 +2376,7 @@ static unsigned gles_query_count(uint32_t pname)
+     case GL_NORMAL_ARRAY_BUFFER_BINDING:
+     case GL_COLOR_ARRAY_BUFFER_BINDING:
+     case GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING:
++    case GLES_VAO_BINDING:
+     case 0x8B9A: /* GL_IMPLEMENTATION_COLOR_READ_TYPE_OES */
+     case 0x8B9B: /* GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES */
+     case 0x8CA6: /* GL_FRAMEBUFFER_BINDING_OES */
+@@ -4419,6 +4462,196 @@ static void gles_buffer_bind(GLESBuffer **slot, GLESBuffer *b)
+     *slot = b;
+ }
+ 
++/* ------------------------------------------------- vertex array objects ---- */
++
++/*
++ * The arrays a VAO owns, in one order: the four ES1 client arrays, the texture
++ * coordinate ones, then the ES2 generic attributes (whose normalized flag
++ * travels with them). Both store and load walk this list, so the two can never
++ * disagree about which array is which.
++ */
++static unsigned gles_vao_arrays(GLESArray **array, bool **normalized)
++{
++    unsigned n = 0;
++
++    array[n] = &gh.vertex;    normalized[n++] = NULL;
++    array[n] = &gh.color;     normalized[n++] = NULL;
++    array[n] = &gh.normal;    normalized[n++] = NULL;
++    array[n] = &gh.pointsize; normalized[n++] = NULL;
++    for (unsigned i = 0; i < GLES_MAX_TEXUNITS; i++) {
++        array[n] = &gh.texcoord[i];
++        normalized[n++] = NULL;
++    }
++    for (unsigned i = 0; i < GLES_MAX_ATTRIBS; i++) {
++        array[n] = &gh.attr[i];
++        normalized[n++] = &gh.attr_normalized[i];
++    }
++    return n;
++}
++
++/* Drop a record's buffer references; the record itself belongs to the caller. */
++static void gles_vao_release(GlesVertexArray *v)
++{
++    for (unsigned i = 0; i < GLES_VAO_ARRAYS; i++) {
++        gles_buffer_bind(&v->array[i].vbo, NULL);
++    }
++    gles_buffer_bind(&v->element_buffer, NULL);
++}
++
++static void gles_vao_destroy(gpointer data)
++{
++    GlesVertexArray *v = data;
++
++    gles_vao_release(v);
++    g_free(v);
++}
++
++/*
++ * The record for a name. Name 0 is the default state, which lives in the
++ * context: it is what a bind of 0 comes back to, and what deleting the bound one
++ * falls back to. NULL for a name that is not a VAO and is not to become one.
++ */
++static GlesVertexArray *gles_vao_record(uint32_t name, bool create)
++{
++    GlesVertexArray *v;
++
++    if (!name) {
++        return &gh.vao_default;
++    }
++    if (!gh.vaos) {
++        if (!create) {
++            return NULL;
++        }
++        gh.vaos = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
++                                        gles_vao_destroy);
++    }
++    v = g_hash_table_lookup(gh.vaos, GUINT_TO_POINTER(name));
++    if (!v && create) {
++        v = g_new0(GlesVertexArray, 1);     /* every array off, no element array */
++        g_hash_table_insert(gh.vaos, GUINT_TO_POINTER(name), v);
++    }
++    return v;
++}
++
++static void gles_vao_store(GlesVertexArray *v)
++{
++    GLESArray *array[GLES_VAO_ARRAYS];
++    bool *normalized[GLES_VAO_ARRAYS];
++    unsigned n = gles_vao_arrays(array, normalized);
++
++    for (unsigned i = 0; i < n; i++) {
++        GlesArrayState *s = &v->array[i];
++
++        gles_buffer_bind(&s->vbo, array[i]->vbo);   /* the record's old reference goes first */
++        s->enabled = array[i]->enabled;
++        s->size = array[i]->size;
++        s->type = array[i]->type;
++        s->stride = array[i]->stride;
++        s->ptr = array[i]->ptr;
++        s->normalized = normalized[i] ? *normalized[i] : false;
++    }
++    gles_buffer_bind(&v->element_buffer, gh.element_buffer);
++}
++
++static void gles_vao_load(const GlesVertexArray *v)
++{
++    GLESArray *array[GLES_VAO_ARRAYS];
++    bool *normalized[GLES_VAO_ARRAYS];
++    unsigned n = gles_vao_arrays(array, normalized);
++
++    for (unsigned i = 0; i < n; i++) {
++        const GlesArrayState *s = &v->array[i];
++
++        gles_buffer_bind(&array[i]->vbo, s->vbo);
++        array[i]->enabled = s->enabled;
++        array[i]->size = s->size;
++        array[i]->type = s->type;
++        array[i]->stride = s->stride;
++        array[i]->ptr = s->ptr;
++        if (normalized[i]) {
++            *normalized[i] = s->normalized;
++        }
++    }
++    gles_buffer_bind(&gh.element_buffer, v->element_buffer);
++}
++
++/* glGenVertexArrays{n, guest GLuint*}: names only, for the OES and the EXT
++ * spelling alike. GL makes the object exist at its first bind, so a name
++ * generated and never bound is not a VAO -- which glIsVertexArray then reports. */
++static int64_t gles_vao_gen(CPUState *cpu, uint32_t n, uint32_t gptr)
++{
++    g_autofree uint32_t *ids = NULL;
++
++    if (!n) {
++        return 0;
++    }
++    if (n > GLES_MAX_NAMES) {
++        gles_refuse("cap:glGenVertexArraysOES");
++        return -1;
++    }
++    ids = g_new0(uint32_t, n);
++    for (uint32_t i = 0; i < n; i++) {
++        ids[i] = ++gh.next_vao_name;
++    }
++    if (gptr && gles_guest_rw(cpu, gptr, ids, n * sizeof(uint32_t), 1) != 0) {
++        return -1;
++    }
++    return 0;
++}
++
++/* glDeleteVertexArraysOES(n, guest const GLuint*). Deleting the bound one is as
++ * though 0 had been bound; 0 itself is the default state and is never deleted. */
++static int64_t gles_vao_delete(CPUState *cpu, uint32_t n, uint32_t gptr)
++{
++    g_autofree uint32_t *ids = NULL;
++
++    if (!n || !gptr || !gh.vaos) {
++        return 0;
++    }
++    if (n > GLES_MAX_NAMES) {
++        gles_refuse("cap:glDeleteVertexArraysOES");
++        return -1;
++    }
++    ids = g_new0(uint32_t, n);
++    if (gles_guest_rw(cpu, gptr, ids, n * sizeof(uint32_t), 0) != 0) {
++        return -1;
++    }
++    for (uint32_t i = 0; i < n; i++) {
++        if (!ids[i]) {
++            continue;
++        }
++        g_hash_table_remove(gh.vaos, GUINT_TO_POINTER(ids[i]));
++        if (gh.vao == ids[i]) {
++            gh.vao = 0;
++            gles_vao_load(&gh.vao_default);
++        }
++    }
++    return 0;
++}
++
++/* glBindVertexArrayOES(id): what is current goes to the record it came from and
++ * the named one's state comes in. A name never generated binds an empty record,
++ * the way ES 1.1 lets an app bind a buffer name it never generated. Binding the
++ * name already bound only writes the current state back, so a driver that kicks
++ * it twice changes nothing. */
++static int64_t gles_vao_bind(uint32_t name)
++{
++    GlesVertexArray *from = gles_vao_record(gh.vao, false);
++    GlesVertexArray *to = gles_vao_record(name, true);
++
++    gles_vao_store(from ? from : &gh.vao_default);
++    if (name != gh.vao) {
++        gh.vao = name;
++        gles_vao_load(to);
++    }
++    return 0;
++}
++
++static int64_t gles_vao_is(uint32_t name)
++{
++    return name && gles_vao_record(name, false) ? 1 : 0;
++}
++
+ /*
+  * The buffer with this name, created empty if the guest has not seen it before.
+  *
+@@ -6289,6 +6522,20 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
+         break;
+     }
+     case 821: break;                            /* glReleaseShaderCompiler */
++
++    /* Vertex array objects, ids from gles-names.h: the array state this context
++     * already keeps, under a name. The EXT and the OES spellings are the same four
++     * entry points; generate and delete carry a guest list, and only generate's is
++     * written to. */
++    case 550: *r = gles_vao_bind(a[0]); break;                  /* glBindVertexArrayEXT */
++    case 551: *r = gles_vao_delete(cpu, a[0], a[1]); break;     /* glDeleteVertexArraysEXT */
++    case 552: *r = gles_vao_gen(cpu, a[0], a[1]); break;        /* glGenVertexArraysEXT */
++    case 553: *r = gles_vao_is(a[0]); break;                    /* glIsVertexArrayEXT */
++    case 837: *r = gles_vao_bind(a[0]); break;                  /* glBindVertexArrayOES */
++    case 838: *r = gles_vao_delete(cpu, a[0], a[1]); break;     /* glDeleteVertexArraysOES */
++    case 839: *r = gles_vao_gen(cpu, a[0], a[1]); break;        /* glGenVertexArraysOES */
++    case 840: *r = gles_vao_is(a[0]); break;                    /* glIsVertexArrayOES */
++
+     default:
+         return false;
+     }
+@@ -7271,6 +7518,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+         case GL_ELEMENT_ARRAY_BUFFER_BINDING:
+             v.i[0] = gh.element_buffer ? gh.element_buffer->name : 0;
+             break;
++        case GLES_VAO_BINDING:
++            v.i[0] = gh.vao;
++            break;
+         case GL_VERTEX_ARRAY_BUFFER_BINDING:
+             v.i[0] = gh.vertex.vbo ? gh.vertex.vbo->name : 0;
+             break;
+@@ -8377,6 +8627,10 @@ static void gles_context_free(GLESHost *state)
+         gles_buffer_destroy(state->attr[i].vbo);
+         g_free(state->attr[i].buf); g_free(state->attr[i].fbuf);
+     }
++    /* Before the legacy context is zeroed below: the records hold references the
++     * arrays above have just dropped their own of. */
++    if (state->vaos) g_hash_table_destroy(state->vaos);
++    gles_vao_release(&state->vao_default);
+     gles_buffer_destroy(state->array_buffer);
+     gles_buffer_destroy(state->element_buffer);
+     g_free(state->ibuf); g_free(state->txbuf); g_free(state->zerobuf);
+-- 
+2.39.5
+
