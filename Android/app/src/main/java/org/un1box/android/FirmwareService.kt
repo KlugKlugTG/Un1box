@@ -12,7 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * One preparation per process, independent of a running QEMU worker: firmwarekit (Packages/FirmwareKit, the
  * preparer every Un1box port shares) builds the device from its IPSW, with its build-time boots through
  * lighttouch-oneshot and the APK's engine, into a device folder that the device worker moves into its library.
- * Both ship as executables in nativeLibraryDir (libfirmwarekit.so, liblighttouch_oneshot.so).
+ * Both ship as executables in nativeLibraryDir (libfirmwarekit.so, liblighttouch_oneshot.so), and so does
+ * iBoot32Patcher (libiBoot32Patcher.so), which the iPad 1 recipe runs through firmwarekit.
  */
 class FirmwareService : Service() {
     private val consumed = AtomicBoolean(false)
@@ -114,6 +115,12 @@ class FirmwareService : Service() {
             put("LTM_QEMU_DYLIB", File(libs, "libqemu-arm.so").path)
             put("LD_LIBRARY_PATH", libs.path)
             put("HOME", filesDir.path); put("TMPDIR", cacheDir.path)
+            // firmwarekit's k48 (iPad 1) recipe shells out to iBoot32Patcher. On macOS it sits next to the
+            // app's executable; here it is one of the executables in nativeLibraryDir, which firmwarekit
+            // does not look in by name, so it is named explicitly. K48IBoot.patcher reads this override
+            // after the two directories it derives, so a build without the tool keeps firmwarekit's own
+            // "iBoot32Patcher ... not runnable" error rather than being pointed at nothing.
+            File(libs, "libiBoot32Patcher.so").takeIf { it.canExecute() }?.let { put("FIRMWAREKIT_IBOOT_PATCHER", it.path) }
         }
         check(!cancelling) { "Cancelled" }
         val child = builder.start().also { process = it }

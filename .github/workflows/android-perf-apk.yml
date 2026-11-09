@@ -509,6 +509,36 @@ jobs:
           ninja --version
           meson/bin/meson --version
 
+      # firmwarekit's iPad 1 (k48) recipe shells out to iBoot32Patcher for the iBoot RSA/debug/boot-args
+      # patches and looks for it next to its own executable (or at FIRMWAREKIT_IBOOT_PATCHER). On macOS it
+      # is in the app bundle; on Android nothing carried it, so preparing an iPad died with
+      # "iBoot32Patcher (/iBoot32Patcher) not runnable: ... The file doesn't exist." It is a few hundred
+      # lines of C with no dependencies beyond libc, pinned with its patch in build-support, so it is built
+      # here from that pin and staged like the other executables: the Gradle build packages
+      # ci/firmwarekit/android/iBoot32Patcher as libiBoot32Patcher.so, and FirmwareService names it in the
+      # child's environment. Only the NDK's compiler, readelf and the patch in this repository are used.
+      - name: Build iBoot32Patcher for arm64 Android
+        run: |
+          python3 - <<'PY' > /tmp/iboot32patcher-pin
+          import json
+          package = next(p for p in json.load(open('build-support/dependencies.json'))['packages']
+                         if p['name'] == 'iBoot32Patcher')
+          print(package['url'], package['sha256'], package['directory'])
+          PY
+          read -r URL SHA DIR < /tmp/iboot32patcher-pin
+          curl -fsSL --retry 3 -o /tmp/iboot32patcher.tar.gz "$URL"
+          echo "$SHA  /tmp/iboot32patcher.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/iboot32patcher.tar.gz -C /tmp
+          patch -p1 -d "/tmp/$DIR" < build-support/patches/iBoot32Patcher-ltm.patch
+          TOOLS="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # 16 KiB LOAD alignment, like every other executable this APK carries (Android/scripts/check-apk.py).
+          "$TOOLS/aarch64-linux-android29-clang" -O2 -Wno-multichar -Wno-int-conversion -I"/tmp/$DIR" \
+            -Wl,-z,max-page-size=16384 "/tmp/$DIR"/src/*.c -o ci/firmwarekit/android/iBoot32Patcher
+          chmod 755 ci/firmwarekit/android/iBoot32Patcher
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/iBoot32Patcher | grep -q 'AArch64'
+          python3 build-support/stage-iboot32patcher-notice.py ci/firmwarekit/android/licenses "/tmp/$DIR/LICENSE"
+          ls -la ci/firmwarekit/android/iBoot32Patcher
+
       # The patches carry changes to the engine's own build scripts (0012 adds
       # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for
       # this engine), so they go on before the recipes are fingerprinted and the dependencies are

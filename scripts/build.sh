@@ -223,10 +223,29 @@ build_firmwarekit_android() {
     "$NDK_BIN/llvm-strip" "$OUT/firmwarekit/android/firmwarekit"
     "$NDK_BIN/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Werror -o "$OUT/firmwarekit/android/lighttouch-oneshot" \
         "$REPO/Portable/oneshot/lighttouch-oneshot.c"
+    # The iPad 1 (k48) recipe runs iBoot32Patcher: on macOS it ships in the app bundle, on Android it has to
+    # be built for the device and named in the child's environment (FIRMWAREKIT_IBOOT_PATCHER, set by
+    # FirmwareService). The pin lives in build-support/dependencies.json, the patch beside it.
+    log "iBoot32Patcher (android arm64)"
+    read -r IBP_URL IBP_SHA IBP_DIR < <(python3 -c '
+import json, sys
+p = next(x for x in json.load(open(sys.argv[1]))["packages"] if x["name"] == "iBoot32Patcher")
+print(p["url"], p["sha256"], p["directory"])' "$REPO/build-support/dependencies.json")
+    IBP_SRC="$OBJ/iboot32patcher/$IBP_DIR"
+    if [ ! -d "$IBP_SRC" ]; then
+        mkdir -p "$OBJ/iboot32patcher"
+        curl -fsSL --retry 3 -o "$OBJ/iboot32patcher/$IBP_DIR.tar.gz" "$IBP_URL"
+        echo "$IBP_SHA  $OBJ/iboot32patcher/$IBP_DIR.tar.gz" | sha256sum -c -
+        tar -xzf "$OBJ/iboot32patcher/$IBP_DIR.tar.gz" -C "$OBJ/iboot32patcher"
+        patch -p1 -d "$IBP_SRC" < "$REPO/build-support/patches/iBoot32Patcher-ltm.patch"
+    fi
+    "$NDK_BIN/aarch64-linux-android29-clang" -O2 -Wno-multichar -Wno-int-conversion -I"$IBP_SRC" \
+        -Wl,-z,max-page-size=16384 "$IBP_SRC"/src/*.c -o "$OUT/firmwarekit/android/iBoot32Patcher"
     python3 "$REPO/Packages/FirmwareKit/build-support/stage-notices.py" "$OUT/firmwarekit/android/licenses" \
         --checkouts "$REPO/Packages/FirmwareKit/.build-android/checkouts" \
         --swift-license "$LT_SWIFT_ANDROID_BUNDLE/swift-android/swift-resources/usr/share/swift/LICENSE.txt" \
         --source-reference "${LT_SOURCE_REFERENCE:-https://github.com/blake-lucas/LightTouch/tree/$(git -C "$REPO" branch --show-current)}"
+    python3 "$REPO/build-support/stage-iboot32patcher-notice.py" "$OUT/firmwarekit/android/licenses" "$IBP_SRC/LICENSE"
     ls -la "$OUT/firmwarekit/android"
 }
 
