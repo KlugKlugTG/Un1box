@@ -740,6 +740,13 @@ internal object I18nZh {
         put("The guest shows the new level at its next battery poll, a few seconds from now.", "客户机会在下次电量轮询时（几秒后）显示新的电量。")
         put("No packaged graphics provider in this build", "本构建未内置图形提供者")
         put("The bundled ANGLE provider is not offered in this build", "本构建不提供内置的 ANGLE 提供者")
+        put("Jailbreak", "越狱")
+        put("Sources", "源")
+        put("Add a source", "添加源")
+        put("Add", "添加")
+        put("Restart the device", "重启设备")
+        put("The device is not running. Start it to install packages; browsing works without it.", "设备未运行。安装软件包需要先启动；浏览无需启动。")
+        put("Packages are downloaded by the phone and installed by the device's own Cydia at its next start.", "软件包由手机下载，设备下次启动时由其自带的 Cydia 安装。")
     }
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */
@@ -918,16 +925,5 @@ internal object I18nZh {
         val month = months.indexOf(match.groupValues[1])
         if (month < 0) return text
         return "${match.groupValues[2]} 年 ${month + 1} 月"
-        put("Jailbreak", "越狱")
-        put("Sources", "源")
-        put("Add a source", "添加源")
-        put("Add", "添加")
-        put("Search", "搜索")
-        put("Install", "安装")
-        put("Close", "关闭")
-        put("Dismiss", "忽略")
-        put("Restart the device", "重启设备")
-        put("The device is not running. Start it to install packages; browsing works without it.", "设备未运行。安装软件包需要先启动；浏览无需启动。")
-        put("Packages are downloaded by the phone and installed by the device's own Cydia at its next start.", "软件包由手机下载，设备下次启动时由其自带的 Cydia 安装。")
     }
 }

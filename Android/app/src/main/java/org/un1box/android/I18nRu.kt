@@ -740,6 +740,13 @@ internal object I18nRu {
         put("The guest shows the new level at its next battery poll, a few seconds from now.", "Гостевая система покажет новый уровень при следующем опросе батареи, через несколько секунд.")
         put("No packaged graphics provider in this build", "В этой сборке нет встроенного графического провайдера")
         put("The bundled ANGLE provider is not offered in this build", "В этой сборке встроенный провайдер ANGLE не предлагается")
+        put("Jailbreak", "Джейлбрейк")
+        put("Sources", "Источники")
+        put("Add a source", "Добавить источник")
+        put("Add", "Добавить")
+        put("Restart the device", "Перезапустить устройство")
+        put("The device is not running. Start it to install packages; browsing works without it.", "Устройство не запущено. Запусти его, чтобы ставить пакеты; список работает и без него.")
+        put("Packages are downloaded by the phone and installed by the device's own Cydia at its next start.", "Пакеты скачивает телефон, а ставит собственный Cydia устройства при следующем запуске.")
     }
 
     /** The English match, then the Russian replacement, with $1.. for its groups. */
@@ -918,16 +925,5 @@ internal object I18nRu {
         val month = months.indexOf(match.groupValues[1].lowercase())
         if (month < 0) return text
         return "${months[month]} ${match.groupValues[2]} г."
-        put("Jailbreak", "Джейлбрейк")
-        put("Sources", "Источники")
-        put("Add a source", "Добавить источник")
-        put("Add", "Добавить")
-        put("Search", "Поиск")
-        put("Install", "Установить")
-        put("Close", "Закрыть")
-        put("Dismiss", "Скрыть")
-        put("Restart the device", "Перезапустить устройство")
-        put("The device is not running. Start it to install packages; browsing works without it.", "Устройство не запущено. Запусти его, чтобы ставить пакеты; список работает и без него.")
-        put("Packages are downloaded by the phone and installed by the device's own Cydia at its next start.", "Пакеты скачивает телефон, а ставит собственный Cydia устройства при следующем запуске.")
     }
 }
