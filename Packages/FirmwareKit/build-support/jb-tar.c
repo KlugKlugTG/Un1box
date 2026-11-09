@@ -15,7 +15,7 @@
 // cydiahttpatch.tar: ustar, gzip or not, directories, files, symbolic links, one hard link, five
 // set-user-ID files, no PAX or GNU long names) -- and it is deliberately not a general tar.
 //
-// Where it differs from GNU tar, and why. Two differences, both deliberate:
+// Where it differs from GNU tar, and why. Three differences, all deliberate:
 //
 //  1. An entry the volume already has is kept, and the run exits 0. GNU tar's -k calls that an error
 //     ("Cannot open: File exists", exit 2). The recipe extracts onto a stock iOS root, where
