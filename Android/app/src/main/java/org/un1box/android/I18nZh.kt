@@ -763,6 +763,15 @@ internal object I18nZh {
         put("Reload", "刷新")
         put("Open", "打开")
         put("Install anyway", "仍然安装")
+        put("Add Source", "添加源")
+        put("Remove", "删除")
+        put("Refresh", "刷新")
+        put("Information", "信息")
+        put("Package", "软件包")
+        put("Architecture", "架构")
+        put("Checking .deb", "正在检查 .deb")
+        put("Package name or description", "软件包名称或说明")
+        put("Section", "分类")
     }
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */

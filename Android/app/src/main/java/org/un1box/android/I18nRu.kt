@@ -763,6 +763,15 @@ internal object I18nRu {
         put("Reload", "Обновить")
         put("Open", "Открыть")
         put("Install anyway", "Всё равно установить")
+        put("Add Source", "Добавить источник")
+        put("Remove", "Удалить")
+        put("Refresh", "Обновить")
+        put("Information", "Информация")
+        put("Package", "Пакет")
+        put("Architecture", "Архитектура")
+        put("Checking .deb", "Проверка .deb")
+        put("Package name or description", "Имя пакета или описание")
+        put("Section", "Раздел")
     }
 
     /** The English match, then the Russian replacement, with $1.. for its groups. */

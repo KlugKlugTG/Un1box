@@ -277,8 +277,11 @@ def the_catalogues_cover_the_tab():
         text = read(ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / catalogue)
         for string in ("Jailbreak", "Sources", "Install", "Search", "Restart the device"):
             require(f'put("{string}"' in text, f"{catalogue} has no translation for \"{string}\"")
+    # The screen is titled by the list it shows (Cydia's own headers), so "Jailbreak" itself is the
+    # navigation bar's label; what the screen passes to Text is these.
     screen = read(SCREEN_KT)
-    for english in ("Jailbreak", "Sources", "Install", "Search", "Restart the device"):
+    for english in ("Cydia", "Sources", "Changes", "Installed", "Search", "Install", "Restart the device",
+                    "Add Source", "Information"):
         require(f'"{english}"' in screen, f"the screen does not use the string \"{english}\" the catalogues translate")
     return "both catalogues carry the tab's strings"
 

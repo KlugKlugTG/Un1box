@@ -42,6 +42,17 @@ internal object JailbreakSources {
         return list.ifEmpty { DEFAULTS }
     }
 
+    /** What a source is called on its own card: the repositories' own names where they are known. */
+    fun displayName(url: String): String = when {
+        url.contains("apt.saurik.com") -> "Cydia/Telesphoreo"
+        url.contains("thebigboss.org") -> "BigBoss"
+        url.contains("modmyi.com") -> "ModMyi"
+        url.contains("zodttd.com") -> "ZodTTD"
+        url.contains("repo.bingner.com") -> "Bingner"
+        url.contains("chariz.com") -> "Chariz"
+        else -> url.substringAfter("//").substringBefore('/').ifEmpty { url }
+    }
+
     fun write(context: Context, sources: List<String>) {
         val array = JSONArray()
         sources.map { it.trim() }.filter { it.isNotEmpty() }.distinct().forEach { array.put(it) }
@@ -59,6 +70,8 @@ internal data class JailbreakPackage(
     val summary: String,
     val source: String,
     val section: String = "",
+    val author: String = "",
+    val description: String = "",
 ) {
     val title get() = name
     val detail get() = listOfNotNull(version.takeIf { it.isNotBlank() }, sizeText).joinToString(" · ")
@@ -165,6 +178,8 @@ internal class JailbreakStore {
                     summary = fields["description"].orEmpty().lineSequence().firstOrNull().orEmpty(),
                     source = source,
                     section = fields["section"].orEmpty(),
+                    author = (fields["author"] ?: fields["maintainer"]).orEmpty(),
+                    description = fields["description"].orEmpty(),
                 )
             }
             fields = HashMap()
@@ -314,6 +329,18 @@ internal class JailbreakCatalog {
     }
 
     fun packages(): List<JailbreakPackage> = byName.values.sortedBy { it.name.lowercase() }
+
+    /** How many packages each source offered, for its own card. */
+    fun counts(): Map<String, Int> = byName.values.groupingBy { it.source }.eachCount()
+
+    private val indexes = HashMap<String, String>()
+
+    fun rememberIndex(source: String, indexUrl: String) {
+        indexes[source] = indexUrl
+    }
+
+    /** The index URL a source answered at, which is what a package's file name is relative to. */
+    fun indexOf(source: String): String = indexes[source] ?: "${source.trimEnd('/')}/Packages"
 
     /** What the list can be grouped by, with how many packages each has: Cydia's own section list. */
     fun sections(): List<Pair<String, Int>> = byName.values
