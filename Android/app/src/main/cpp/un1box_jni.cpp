@@ -264,9 +264,14 @@ std::string result(lt_status status, const lt_error &error) {
     return status == LT_OK ? "" : (error.message[0] ? error.message : "Native operation failed");
 }
 struct Viewport { double left, top, width, height; };
+// A scan wider than tall stands a quarter-turn from upright: the iPad's panel scans landscape with its portrait UI
+// turned a quarter clockwise into it (see present). The box fits the upright size it is shown at, not the scan's.
+bool scan_turned(const lt_frame_info &source) { return source.width > source.height; }
 Viewport viewport(int width, int height, const lt_frame_info &source) {
-    const double scale = std::min(double(width) / std::max(source.width, 1u), double(height) / std::max(source.height, 1u));
-    double w = source.width * scale, h = source.height * scale;
+    const bool turned = scan_turned(source);
+    const double source_width = turned ? source.height : source.width, source_height = turned ? source.width : source.height;
+    const double scale = std::min(double(width) / std::max(source_width, 1.0), double(height) / std::max(source_height, 1.0));
+    double w = source_width * scale, h = source_height * scale;
     return {(width-w)/2, (height-h)/2, w, h};
 }
 Viewport viewport(int width, int height) { return viewport(width, height, latest_frame_meta); }
@@ -340,6 +345,29 @@ void present() {
     uint64_t configured_generation = 0;
     int configured_scale=-1;
     uint32_t configured_width=0,configured_height=0;
+    // The iPad's panel scans landscape with its portrait UI turned a quarter clockwise into it, so the scan is
+    // turned upright before it is scaled: screen (u,v) reads scan (v, 1-u), and result[dy][dx] = scan[h-1-dx][dy].
+    static thread_local std::vector<uint8_t> turned_pixels;
+    auto turn_scan = [](const uint8_t *scan, uint32_t width, uint32_t height, size_t stride, std::vector<uint8_t> &out) {
+        const size_t out_stride = size_t(height) * 4;
+        out.resize(out_stride * width);
+        constexpr uint32_t tile = 16;
+        for (uint32_t dy0 = 0; dy0 < width; dy0 += tile) {
+            const uint32_t dy1 = std::min(dy0 + tile, width);
+            for (uint32_t dx0 = 0; dx0 < height; dx0 += tile) {
+                const uint32_t dx1 = std::min(dx0 + tile, height);
+                for (uint32_t dy = dy0; dy < dy1; ++dy) {
+                    const uint8_t *column = scan + size_t(dy) * 4;
+                    auto *row = reinterpret_cast<uint32_t *>(out.data() + size_t(dy) * out_stride);
+                    for (uint32_t dx = dx0; dx < dx1; ++dx)
+                        row[dx] = *reinterpret_cast<const uint32_t *>(column + size_t(height - 1 - dx) * stride);
+                }
+            }
+        }
+    };
+    // The frame as shown: a turned scan swapped upright, and the pixels that go with it.
+    lt_frame_info shown = LT_INIT(lt_frame_info);
+    const uint8_t *shown_pixels = nullptr;
     uint64_t woken_sequence = 0;
     uint64_t phase_generation=0,phase_epoch=0;
     uint64_t withdrawn_generation=0;
@@ -420,6 +448,12 @@ void present() {
                 if (copy_status == LT_OK && frame.width && frame.height && frame.stride >= frame.width * 4 && frame.bytes <= pixels.size()) {
                     begin=monotonic_ns();
                     source=frame;
+                    shown=source;shown_pixels=pixels.data();
+                    if(scan_turned(source)) {
+                        turn_scan(pixels.data(),source.width,source.height,source.stride,turned_pixels);
+                        shown.width=source.height;shown.height=source.width;shown.stride=shown.width*4;
+                        shown_pixels=turned_pixels.data();
+                    }
                     copied_valid=true;
                 }
             }
@@ -455,7 +489,7 @@ void present() {
             int geometry_code=0, geometry_width=0, geometry_height=0, geometry_format=0;
             const int scale=present_scale.load(std::memory_order_relaxed);
             const bool configure=configured_generation!=snapshot->generation() || scale!=configured_scale ||
-                source.width!=configured_width || source.height!=configured_height;
+                shown.width!=configured_width || shown.height!=configured_height;
             if(configure) {
                 present_stage(PresentPhase::Configure,phase_generation,phase_epoch);
                 // Only this presenter configures or draws the window. Binder
@@ -466,13 +500,13 @@ void present() {
                 geometry_width=ANativeWindow_getWidth(target_window);
                 geometry_height=ANativeWindow_getHeight(target_window);
                 geometry_format=ANativeWindow_getFormat(target_window);
-                if(!geometry_code && scale!=ScaleCpu && source.width && source.height) {
-                    const int factor=scale==ScaleSharp?std::max(1,std::min(geometry_width/int(source.width),geometry_height/int(source.height))):1;
-                    geometry_code=ANativeWindow_setBuffersGeometry(target_window,int(source.width)*factor,int(source.height)*factor,WINDOW_FORMAT_RGBA_8888);
+                if(!geometry_code && scale!=ScaleCpu && shown.width && shown.height) {
+                    const int factor=scale==ScaleSharp?std::max(1,std::min(geometry_width/int(shown.width),geometry_height/int(shown.height))):1;
+                    geometry_code=ANativeWindow_setBuffersGeometry(target_window,int(shown.width)*factor,int(shown.height)*factor,WINDOW_FORMAT_RGBA_8888);
                 }
                 request_guest_frame_rate(target_window);
                 configured_generation=snapshot->generation();configured_scale=scale;
-                configured_width=source.width;configured_height=source.height;
+                configured_width=shown.width;configured_height=shown.height;
             }
             ANativeWindow_Buffer target{};
             present_stage(PresentPhase::WindowLock,phase_generation,phase_epoch);
@@ -488,7 +522,7 @@ void present() {
                     (target.format==WINDOW_FORMAT_RGBA_8888 || target.format==WINDOW_FORMAT_RGBX_8888);
                 if(valid_buffer) {
                     present_stage(PresentPhase::Scale,phase_generation,phase_epoch);
-                    const auto view=viewport(target.width,target.height,source);
+                    const auto view=viewport(target.width,target.height,shown);
                     // This thread is the sole pixels/frame writer and only
                     // grows storage in its next guarded iteration. Capture reads under guard. Those concurrent
                     // reads are safe; the next write waits until this iteration
@@ -502,10 +536,10 @@ void present() {
                     // The window buffer is the guest's own size here whenever the scale is the
                     // default (guest-sized geometry): every row is converted straight across via
                     // NEON, even when gralloc pads target.stride wider than target.width.
-                    if(int(source.width)==target.width && int(source.height)==target.height) {
+                    if(int(shown.width)==target.width && int(shown.height)==target.height) {
                         for(int y=0;y<target.height;++y)
                             convert_row_rgba(static_cast<uint32_t *>(target.bits)+size_t(y)*target.stride,
-                                             pixels.data()+size_t(y)*source.stride,target.width);
+                                             shown_pixels+size_t(y)*shown.stride,target.width);
                     } else {
                         static thread_local std::vector<uint32_t> columns;
                         static thread_local std::vector<uint32_t> converted_row;
@@ -532,7 +566,7 @@ void present() {
                                 memcpy(row,previous,size_t(target.width)*4);
                                 continue;
                             }
-                            convert_row_rgba(converted_row.data(),pixels.data()+size_t(sy)*source.stride,int(source.width));
+                            convert_row_rgba(converted_row.data(),shown_pixels+size_t(sy)*shown.stride,int(shown.width));
                             if(exact_2x) {
                                 duplicate_row_2x(row,converted_row.data(),int(source.width));
                             } else {
@@ -1055,6 +1089,9 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
     jint id[LT_MAX_CONTACTS], phase[LT_MAX_CONTACTS];jfloat coords[LT_MAX_CONTACTS*2];
     env->GetIntArrayRegion(ids,0,count,id);env->GetIntArrayRegion(phases,0,count,phase);env->GetFloatArrayRegion(xy,0,count*2,coords);
     lt_touch_batch batch=LT_INIT(lt_touch_batch);batch.timestamp_ns=time;batch.count=count;
+    // A scan wider than tall is shown turned upright (present): the contact goes back into the scan's own axes,
+    // which is the space the engine takes touches in.
+    const bool turned=scan_turned(frame);
     const auto view=viewport(width,height);lt_error error=LT_INIT(lt_error);
     for(jsize i=0;i<count;++i) {
         batch.contacts[i]=lt_contact LT_INIT(lt_contact);batch.contacts[i].id=id[i];batch.contacts[i].phase=phase[i];
@@ -1064,7 +1101,7 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
         if(std::isfinite(px) && std::isfinite(py)) {
             px=std::clamp(px,view.left,view.left+view.width);py=std::clamp(py,view.top,view.top+view.height);
         }
-        auto status=lt_map_contact(px,py,view.left,view.top,view.width,view.height,0,&batch.contacts[i].x,&batch.contacts[i].y);
+        auto status=lt_map_contact(px,py,view.left,view.top,view.width,view.height,turned?90:0,&batch.contacts[i].x,&batch.contacts[i].y);
         if(status!=LT_OK) {
             const auto cancellation=release_input();
             return string(env,touch_mapping_rejection(status,cancellation));
@@ -1072,6 +1109,7 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
     }
     // Guest portrait is kept upright within Android's rotated view. Mapping receives
     // view-local pixels; applying display rotation again would rotate contacts twice.
+    // The quarter turn above is the scan's own (the iPad's), not the display's.
     (void)rotation;
     refresh_display_release();
     auto status=lt_runtime_touch(runtime,&batch,&error);
