@@ -574,6 +574,39 @@ jobs:
       # /usr/bin/env instead, which Android has no such path for: a firmwarekit built from this tree, or
       # reused from a newer tag, must stop spawning that (run the tool directly, or use /bin/env, which
       # Android's toybox does provide) or the iPad path breaks again the moment the reuse tag moves.
+      # The app-service helper is what carries a package into the guest (its push and pull actions),
+      # and the one in the base release predates them: without this, the Jailbreak tab's Install says
+      # "Unknown argument" and nothing is staged. Android/native-services/lt_appservice.c is built here
+      # with the pinned libraries Android/packaging/build-mobile-android.py fetches by hash; the
+      # extracted copy stays as the fallback, and the built one is checked for the actions themselves
+      # (strings is what a host can ask an Android binary).
+      - name: Cache the guest app services built here
+        uses: actions/cache@v4
+        with:
+          path: ci/mobile-services-built
+          key: lt-mobile-services-${{ hashFiles('Android/native-services/lt_appservice.c', 'Android/packaging/build-mobile-android.py', 'build-support/dependencies.json') }}
+
+      - name: Build the guest app services for arm64 Android
+        continue-on-error: true
+        run: |
+          if [ -f ci/mobile-services-built/arm64-v8a/liblt_appservice.so ]; then
+            echo "restored from the cache"
+          else
+            python3 Android/packaging/build-mobile-android.py ci/mobile-services-built \
+              --ndk "$ANDROID_NDK_ROOT" --jobs "$LT_JOBS"
+          fi
+          for name in liblt_appservice.so libusbmuxd_qemu.so; do
+            file="ci/mobile-services-built/arm64-v8a/$name"
+            [ -f "$file" ] || { echo "::error::the services build left no $name"; exit 1; }
+          done
+          if strings ci/mobile-services-built/arm64-v8a/liblt_appservice.so | grep -q 'push|pull'; then
+            cp ci/mobile-services-built/arm64-v8a/*.so ci/mobile-services/arm64-v8a/
+            echo "the APK will carry this build's app-service helper"
+          else
+            echo "::error::the helper built here has no push/pull: the APK would keep the base release's"
+            exit 1
+          fi
+
       - name: Build iBoot32Patcher and the spawn shim for arm64 Android
         run: |
           python3 - <<'PY' > /tmp/iboot32patcher-pin

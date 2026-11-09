@@ -747,6 +747,7 @@ internal object I18nRu {
         put("Restart the device", "Перезапустить устройство")
         put("The device is not running. Start it to install packages; browsing works without it.", "Устройство не запущено. Запусти его, чтобы ставить пакеты; список работает и без него.")
         put("Packages are downloaded by the phone and installed by the device's own Cydia at its next start.", "Пакеты скачивает телефон, а ставит собственный Cydia устройства при следующем запуске.")
+        put("This package is built for 64-bit iOS and cannot be installed on this device.", "Этот пакет собран только для 64-битной iOS и не установится на это устройство.")
     }
 
     /** The English match, then the Russian replacement, with $1.. for its groups. */

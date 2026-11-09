@@ -105,6 +105,42 @@ class JailbreakStoreTest {
     }
 
     @Test
+    fun `the installed list comes from dpkg's own status, and only for packages that are installed`() {
+        val status = """
+            Package: com.example.first
+            Status: install ok installed
+            Version: 1.2.3
+
+            Package: com.example.second
+            Status: deinstall ok config-files
+            Version: 2.0
+
+            Package: com.example.third
+            Status: install ok installed
+            Version: 3.1
+
+        """.trimIndent()
+        val installed = store.installedFromStatus(status)
+        assertEquals(mapOf("com.example.first" to "1.2.3", "com.example.third" to "3.1"), installed)
+    }
+
+    @Test
+    fun `a package knows the section it is filed under, and a 64-bit only one is flagged`() {
+        val withSection = """
+            Package: com.example.tweak
+            Version: 1.0
+            Section: Tweaks
+            Architecture: iphoneos-arm
+            Filename: debs/tweak.deb
+
+        """.trimIndent()
+        val tweak = store.parseIndex(withSection, "http://repo.example/")[0]
+        assertEquals("Tweaks", tweak.section)
+        assertEquals(false, tweak.wrongArchitecture)
+        assertEquals(true, tweak.copy(architecture = "iphoneos-arm64").wrongArchitecture)
+    }
+
+    @Test
     fun `a file name that is not a name cannot leave the install folder`() {
         val pkg = JailbreakPackage("x", "1", "iphoneos-arm", 1, "debs/../../etc/passwd", "", "http://repo.example/")
         val staged = store.stagedPath(pkg)

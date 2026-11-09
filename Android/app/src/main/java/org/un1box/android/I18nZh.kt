@@ -747,6 +747,7 @@ internal object I18nZh {
         put("Restart the device", "重启设备")
         put("The device is not running. Start it to install packages; browsing works without it.", "设备未运行。安装软件包需要先启动；浏览无需启动。")
         put("Packages are downloaded by the phone and installed by the device's own Cydia at its next start.", "软件包由手机下载，设备下次启动时由其自带的 Cydia 安装。")
+        put("This package is built for 64-bit iOS and cannot be installed on this device.", "此软件包仅适用于 64 位 iOS，无法安装到本设备。")
     }
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */

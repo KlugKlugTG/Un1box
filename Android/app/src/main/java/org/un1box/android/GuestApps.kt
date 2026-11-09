@@ -53,6 +53,17 @@ internal class GuestApps(private val context: Context) {
             timeoutSeconds, cancelled, event)
     }
 
+    /**
+     * Takes one file of the guest's onto the phone, over AFC: the other direction of [push], and how
+     * the Jailbreak tab learns what a device already has (dpkg's own status file).
+     */
+    fun pull(socket: String, remotePath: String, local: File, timeoutSeconds: Long = 120,
+             cancelled: () -> Boolean = { false }, event: (JSONObject) -> Unit = {}): JSONObject {
+        local.parentFile?.mkdirs()
+        return run(socket, listOf("pull", "--local", local.absolutePath, "--remote", remotePath),
+            timeoutSeconds, cancelled, event)
+    }
+
     /** Streams each JSON event to [event]; returns the final "result" object or throws its "error". */
     fun run(socket: String, args: List<String>, timeoutSeconds: Long, cancelled: () -> Boolean = { false }, event: (JSONObject) -> Unit = {}): JSONObject {
         if (!available) throw Failure("Guest app services are not included in this build.")

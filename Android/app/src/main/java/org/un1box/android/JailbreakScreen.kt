@@ -81,6 +81,8 @@ internal fun JailbreakScreen(
     var newSource by remember { mutableStateOf("") }
     var staged by remember { mutableStateOf("") }
     var open by remember { mutableStateOf<String?>(null) }   // the package whose details are showing
+    var installed by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var onlyInstalled by remember { mutableStateOf(false) }
 
     fun load(source: String) {
         chosenSource = source
@@ -107,6 +109,12 @@ internal fun JailbreakScreen(
     }
 
     LaunchedEffect(sources.toList()) { sources.firstOrNull()?.let { if (packages.isEmpty() && error.isEmpty()) load(it) } }
+    // What the device already has, read from its own dpkg state (Cydia's "Installed" list).
+    LaunchedEffect(running, socket) {
+        if (running && socket.isNotEmpty()) {
+            installed = withContext(Dispatchers.IO) { JailbreakInstaller(context) { socket }.installed() }
+        }
+    }
 
     BackHandler(enabled = true, onBack = onClose)
     Surface(Modifier.fillMaxSize().testTag("jailbreak").semantics { testTagsAsResourceId = true },
@@ -177,11 +185,18 @@ internal fun JailbreakScreen(
                 Text(note, Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            OutlinedTextField(filter, { filter = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                singleLine = true, label = { Text("Search") })
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(filter, { filter = it }, Modifier.weight(1f), singleLine = true,
+                    label = { Text("Search") })
+                Spacer(Modifier.width(8.dp))
+                Text(if (onlyInstalled) "All" else "Installed ${installed.size}",
+                    Modifier.clickable { onlyInstalled = !onlyInstalled }, color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelMedium)
+            }
 
-            val shown = if (filter.isBlank()) packages
-                else packages.filter { it.name.contains(filter, true) || it.summary.contains(filter, true) }
+            val shown = packages
+                .filter { !onlyInstalled || installed.containsKey(it.name) }
+                .filter { filter.isBlank() || it.name.contains(filter, true) || it.summary.contains(filter, true) }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(shown, key = { it.name + it.version }) { pkg ->
@@ -194,16 +209,26 @@ internal fun JailbreakScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                             if (pkg.summary.isNotEmpty()) Text(pkg.summary, style = MaterialTheme.typography.bodySmall,
                                 maxLines = if (expanded) 8 else 2)
+                            installed[pkg.name]?.let { version ->
+                                Text("Installed $version", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
                             if (!expanded) {
                                 Spacer(Modifier.height(4.dp))
                                 Text("Details", style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary)
                             } else {
                                 Spacer(Modifier.height(6.dp))
-                                Text(pkg.architecture, style = MaterialTheme.typography.labelSmall,
+                                Text(listOfNotNull(pkg.architecture.takeIf { it.isNotBlank() }, pkg.section.takeIf { it.isNotBlank() })
+                                    .joinToString(" · "), style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(pkg.source, style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (pkg.wrongArchitecture) {
+                                    Text("This package is built for 64-bit iOS and cannot be installed on this device.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.error)
+                                }
                             }
                             Spacer(Modifier.height(6.dp))
                             Text("Install", Modifier.clickable(enabled = busy.isEmpty()) {

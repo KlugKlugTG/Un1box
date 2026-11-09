@@ -248,6 +248,28 @@ def the_tab_may_speak_cleartext():
     return "cleartext allowed, plain index tried, a web page reported as one"
 
 
+def the_apk_carries_this_build_s_helper():
+    """The helper in the base release predates push/pull: the APK's Install would answer "Unknown
+    argument" and stage nothing, which is exactly what the first device run showed."""
+    workflow = read(WORKFLOW)
+    require("Android/packaging/build-mobile-android.py" in workflow,
+            "the workflow reuses the base release's app-service helper, which has no push/pull: the "
+            "Jailbreak tab's Install cannot work with it")
+    require("mobile-services-built" in workflow and "push|pull" in workflow,
+            "the helper built here is not checked for the actions the tab needs (strings on the "
+            "binary is what a host can ask an Android one)")
+    require("ci/mobile-services/arm64-v8a" in workflow,
+            "the built helper is not put where -PmobileServicesArm64 stages the APK from")
+    helper = read(HELPER_C)
+    for action in ('"push"', '"pull"'):
+        require(f"strcmp(action, {action})" in helper, f"the helper has no {action} action")
+    require('"private/var/lib/dpkg/status"' in read(STORE_KT) or "private/var/lib/dpkg/status" in read(STORE_KT),
+            "the tab does not read dpkg's status, so nothing can be marked as installed")
+    require("fun pull(" in read(GUESTAPPS_KT) and "fun push(" in read(GUESTAPPS_KT),
+            "GuestApps has no push and pull pair, so the helper's file transfer is unreachable")
+    return "built here, checked for push/pull, staged into the APK"
+
+
 def the_catalogues_cover_the_tab():
     """The app draws English sources and translates them; a missing entry is an English word on a
     Chinese or Russian screen."""
@@ -274,5 +296,6 @@ CHECKS = [
     ("jailbreak tab: the browsing and the download happen on the phone", the_store_browses_on_the_phone),
     ("jailbreak tab: the helper stages the file in the guest", the_helper_can_put_a_file_into_the_guest),
     ("jailbreak tab: it may speak cleartext, and reads a plain index", the_tab_may_speak_cleartext),
+    ("jailbreak tab: the APK carries the helper built here", the_apk_carries_this_build_s_helper),
     ("jailbreak tab: the catalogues carry its strings", the_catalogues_cover_the_tab),
 ]

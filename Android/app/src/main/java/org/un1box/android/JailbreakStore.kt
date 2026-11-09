@@ -58,9 +58,13 @@ internal data class JailbreakPackage(
     val filename: String,
     val summary: String,
     val source: String,
+    val section: String = "",
 ) {
     val title get() = name
     val detail get() = listOfNotNull(version.takeIf { it.isNotBlank() }, sizeText).joinToString(" · ")
+
+    /** A package built for 64-bit iOS only cannot be installed on any device this app prepares. */
+    val wrongArchitecture get() = architecture.contains("arm64", ignoreCase = true)
     val sizeText get() = when {
         bytes >= 1 shl 20 -> "%.1f MB".format(bytes / 1048576.0)
         bytes >= 1 shl 10 -> "%.0f KB".format(bytes / 1024.0)
@@ -160,6 +164,7 @@ internal class JailbreakStore {
                     filename = filename,
                     summary = fields["description"].orEmpty().lineSequence().firstOrNull().orEmpty(),
                     source = source,
+                    section = fields["section"].orEmpty(),
                 )
             }
             fields = HashMap()
@@ -234,6 +239,35 @@ internal class JailbreakStore {
     }
 
     /**
+     * The packages a device already has, read out of dpkg's own status file (the pinned bootstrap
+     * keeps it at private/var/lib/dpkg/status). Cydia shows the same list under "Installed", and
+     * without it every package looks uninstalled.
+     */
+    fun installedFromStatus(status: String): Map<String, String> {
+        val installed = HashMap<String, String>()
+        var name: String? = null
+        var version = ""
+        var state = ""
+        fun flush() {
+            if (name != null && state.startsWith("install ok installed")) installed[name!!] = version
+            name, version, state = null, "", ""
+        }
+        for (line in status.lineSequence()) {
+            when {
+                line.isBlank() -> flush()
+                line.startsWith("Package:") -> name = line.substringAfter(':').trim()
+                line.startsWith("Version:") -> version = line.substringAfter(':').trim()
+                line.startsWith("Status:") -> state = line.substringAfter(':').trim()
+            }
+        }
+        flush()
+        return installed
+    }
+
+    /** The guest file a device's installed packages are read from. */
+    val statusPath get() = "/private/var/lib/dpkg/status"
+
+    /**
      * Where the guest's own Cydia startup job installs from. Not a guess: the pinned bootstrap's
      * /usr/libexec/cydia/startup installs the .deb files of /var/root/Media/Cydia/AutoInstall with
      * dpkg, so that folder -- root's Media, not mobile's -- is where a package has to land. (No glob
@@ -257,6 +291,22 @@ internal class JailbreakStore {
  */
 internal class JailbreakInstaller(private val context: Context, private val socket: () -> String) {
     class Failure(message: String) : Exception(message)
+
+    /** The device's installed packages (name -> version), or an empty map when it has no dpkg state. */
+    fun installed(): Map<String, String> {
+        val socket = socket()
+        if (socket.isEmpty()) return emptyMap()
+        val store = JailbreakStore()
+        val file = File(context.cacheDir, "jailbreak/status")
+        return try {
+            GuestApps(context).pull(socket, store.statusPath, file, timeoutSeconds = 60)
+            store.installedFromStatus(file.readText())
+        } catch (_: Exception) {
+            emptyMap()   // a device that was never jailbroken has no status file: not an error here
+        } finally {
+            file.delete()
+        }
+    }
 
     /** Returns the guest path the package is waiting at. */
     fun install(pkg: JailbreakPackage, indexUrl: String, progress: (String, Int) -> Unit): String {
