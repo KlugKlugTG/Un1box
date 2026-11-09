@@ -89,8 +89,26 @@ def the_state_lives_and_dies_with_the_machine():
     return "created, reset, saved (version 2), and a driver-asked join starts over"
 
 
+def the_resolver_caches_what_the_phone_answered():
+    """A phone's resolver can take seconds behind a VPN, and Cydia asks for the same names again."""
+    patch = ROOT / "ci" / "engine-patches" / "0003-engine-dns-cache.patch"
+    body = read(patch)
+    require("dns_cache_lookup" in body and "dns_cache_store" in body,
+            "the Android resolver still asks the phone's resolver for every query: with a slow DNS "
+            "(seconds per name) the guest feels dead")
+    require("DNS_CACHE_TTL_S" in body and "DNS_CACHE_FAILURE_TTL_S" in body,
+            "the cache has no lifetime: an answer would be reused for ever")
+    require("G_LOCK" in body,
+            "the cache is shared between the jobs' own threads with no lock")
+    require("dns_cache_lookup(j, name, qtype)" in body,
+            "the resolver does not consult the cache before asking")
+    return "cached with a TTL, locked, and consulted first"
+
+
 CHECKS = [
     ("the patch: every association arms the check", the_watchdog_is_armed_by_every_association),
     ("the patch: the guest's own traffic is the signal", the_guest_s_own_traffic_is_the_signal),
     ("the patch: the state is created, reset and saved", the_state_lives_and_dies_with_the_machine),
+]
+    ("the engine: the Android resolver caches its answers", the_resolver_caches_what_the_phone_answered),
 ]
