@@ -59,6 +59,7 @@ import kotlinx.coroutines.withContext
  * Sources are kept as the user typed them (JailbreakSources); a source that answers with nothing
  * says so under its row rather than failing the screen.
  */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)   // testTagsAsResourceId, as the other screens
 @Composable
 internal fun JailbreakScreen(
     running: Boolean,

@@ -930,6 +930,9 @@ jobs:
         run: |
           python3 tests/branding/run.py
           python3 tests/idle/run.py
+          # The catalogues: every English key the screens pass to Text, and how much of the UI each
+          # translation covers (tests/i18n/run.py, the check the catalogues' own docstrings name).
+          python3 tests/i18n/run.py
 
       # The guest's Wi-Fi link: the dongle model's association watchdog, sliced out of the engine and
       # driven with a fake clock (tests/network/run.py). iOS 5 drops a join that lands in the middle of
