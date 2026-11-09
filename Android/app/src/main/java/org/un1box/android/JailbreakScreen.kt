@@ -234,6 +234,9 @@ internal fun JailbreakScreen(
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
 
+            // The lists scroll inside a weighted box: without the weight a LazyColumn takes the whole
+            // column and the tab bar below it lands off-screen, which is exactly what happened.
+            Box(Modifier.weight(1f).fillMaxWidth()) {
             when (val shown = page) {
                 JailbreakPage.Lists -> ListsPage(list, catalog, installed, updates, sources, fetchedAt, query,
                     { query = it }, { refresh() }, { page = JailbreakPage.Source(it) },
@@ -252,8 +255,8 @@ internal fun JailbreakScreen(
                 is JailbreakPage.Package -> PackagePage(shown.package_, installed, running && socket.isNotEmpty(),
                     catalog.indexOf(shown.package_.source), ::install)
             }
+            }
 
-            Spacer(Modifier.weight(1f))
             JailbreakBar(list) { chosen -> list = chosen; page = JailbreakPage.Lists }
         }
     }
