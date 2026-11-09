@@ -87,11 +87,17 @@ internal data class JailbreakPackage(
     }
 }
 
-internal class JailbreakStore {
+internal class JailbreakStore(
+    /** How a .bz2 index is decompressed: the tool the app ships, or null in a build without it. */
+    private val bunzip2: ((ByteArray) -> ByteArray?)? = null,
+) {
     class Failure(message: String) : Exception(message)
 
-    /** How an index may be packed, in the order the tab tries it. */
-    private val indexes = listOf("Packages.gz", "Packages")
+    /**
+     * How an index may be packed, in the order the tab tries it. bz2 is last and needs the app's own
+     * decompressor (Android has no bzip2 at all): BigBoss serves nothing else, which is why it is here.
+     */
+    private val indexes = listOf("Packages.gz", "Packages", "Packages.bz2")
 
     private fun open(url: String): HttpURLConnection {
         val connection = URL(url).openConnection() as HttpURLConnection
@@ -126,8 +132,19 @@ internal class JailbreakStore {
                 val status = connection.responseCode
                 if (status != 200) { last = "HTTP $status at ${candidate.substringAfter("//")}"; continue }
                 val raw = connection.inputStream.use { it.readBytes() }
-                val body = if (raw.size > 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte())
-                    GZIPInputStream(BufferedInputStream(raw.inputStream())).use { it.readBytes() } else raw
+                val body = when {
+                    raw.size > 2 && raw[0] == 0x42.toByte() && raw[1] == 0x5a.toByte() -> {   // "BZ"
+                        val unpacked = bunzip2?.invoke(raw)
+                        if (unpacked == null) {
+                            last = "only a .bz2 index, which this build cannot decompress"
+                            continue
+                        }
+                        unpacked
+                    }
+                    raw.size > 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte() ->
+                        GZIPInputStream(BufferedInputStream(raw.inputStream())).use { it.readBytes() }
+                    else -> raw
+                }
                 val complaint = notAnIndex(body, candidate)
                 if (complaint != null) { last = complaint; continue }
                 return candidate to body
@@ -471,6 +488,45 @@ internal object JailbreakCaches {
  * next boot. Nothing runs in the guest: its 2010 TLS stack and its emulated CPU are what made
  * Cydia slow, and neither is on this path.
  */
+/**
+ * The app's own bunzip2 (libjbBz2.so, built from Packages/FirmwareKit/build-support/jb-bunzip2.c).
+ *
+ * Android has no bzip2 at all, and half of these repositories serve their package indexes as .bz2 --
+ * BigBoss's 9 973 packages are only there. The tool is run as a child process, like the engine's own
+ * helpers: one index at a time, into the cache, and its output read back.
+ */
+internal class JailbreakBunzip2(private val context: Context) {
+    private val tool get() = File(context.applicationInfo.nativeLibraryDir, "libjbBz2.so")
+
+    /** The decompressed bytes, or null when this build has no tool or it would not read the file. */
+    fun decompress(bytes: ByteArray): ByteArray? {
+        val binary = tool
+        if (!binary.canExecute()) return null
+        val work = File(context.cacheDir, "jailbreak").apply { mkdirs() }
+        val packed = File(work, "index.bz2")
+        val plain = File(work, "index")
+        return try {
+            packed.writeBytes(bytes)
+            val process = ProcessBuilder(binary.absolutePath, packed.absolutePath, plain.absolutePath)
+                .redirectErrorStream(true).start()
+            process.inputStream.readBytes()   // its own diagnostics: read so the pipe cannot fill
+            if (!process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                null
+            } else if (process.exitValue() != 0) {
+                null
+            } else {
+                plain.takeIf { it.isFile && it.length() > 0 }?.readBytes()
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            packed.delete()
+            plain.delete()
+        }
+    }
+}
+
 internal class JailbreakInstaller(private val context: Context, private val socket: () -> String) {
     class Failure(message: String) : Exception(message)
 

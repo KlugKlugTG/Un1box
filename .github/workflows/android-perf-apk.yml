@@ -640,8 +640,14 @@ jobs:
           "$TOOLS/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
             -o ci/firmwarekit/android/jb-tar Packages/FirmwareKit/build-support/jb-tar.c -lz
           "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/jb-tar | grep -q 'AArch64'
+          # The repositories of these systems serve their package indexes as .bz2 (BigBoss's 9 973
+          # packages are only there) and Android has no bzip2 at all: this small decompressor is what
+          # the Jailbreak tab runs. Staged as libjbBz2.so for a jailbreak build, like jb-tar.
+          "$TOOLS/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
+            -o ci/firmwarekit/android/jb-bunzip2 Packages/FirmwareKit/build-support/jb-bunzip2.c
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/jb-bunzip2 | grep -q 'AArch64'
           "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/spawn-shim.so | grep -q 'AArch64'
-          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so ci/firmwarekit/android/jb-tar
+          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so ci/firmwarekit/android/jb-tar ci/firmwarekit/android/jb-bunzip2
 
       # The patches carry changes to the engine's own build scripts (0012 adds
       # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for

@@ -59,7 +59,8 @@ def gradle_carries_the_flag():
     label = re.search(r'resValue\("string", "app_name", if \(jailbreak\) "([^"]+)" else "([^"]+)"\)', gradle)
     require(label.group(2) == "Un1box",
             f'the normal build is named "{label.group(2)}", not the product name')
-    require(re.search(r'\(if \(jailbreak\) listOf\("jb-tar"\) else emptyList\(\)\)', gradle) is not None,
+    require(re.search(r'\(if \(jailbreak\) listOf\("jb-tar"(, "jb-bunzip2")?\) else emptyList\(\)\)', gradle)
+            is not None,
             "firmwareKitDir does not require jb-tar for a jailbreak build: Gradle would succeed with a "
             "tar-less kit and the phone would fail instead")
     stage = gradle.split('tasks.register<Copy>("prepareFirmwareKit")', 1)
@@ -206,9 +207,33 @@ def the_store_browses_on_the_phone():
             "the staged name is not sanitised: a file name from an index could leave the folder")
     require("parseIndex" in store and "lastKey" in store,
             "the control file's folded fields are not unfolded, so descriptions and versions would be wrong")
-    require("Packages.bz2" in store or "bz2" not in store,
-            "the tab claims to read bz2, which Android cannot: a source would fail instead of saying so")
+    require("Packages.bz2" in store and "bunzip2" in store,
+            "the tab does not try a .bz2 index through the app's own decompressor, and BigBoss serves "
+            "nothing else (its 9 973 packages come from Packages.bz2)")
     return "index and package fetched by the phone, staged in AutoInstall"
+
+
+def the_bz2_indexes_have_a_decompressor():
+    """Android has no bzip2 and BigBoss serves nothing else: the tool is built here and shipped."""
+    workflow = read(WORKFLOW)
+    require("build-support/jb-bunzip2.c" in workflow and "ci/firmwarekit/android/jb-bunzip2" in workflow,
+            "the workflow does not build the bz2 decompressor the tab needs for BigBoss")
+    gradle = read(GRADLE)
+    require('include("jb-bunzip2")' in gradle and "libjbBz2.so" in gradle,
+            "the decompressor is not staged into the APK")
+    tool = ROOT / "Packages" / "FirmwareKit" / "build-support" / "jb-bunzip2.c"
+    source = read(tool)
+    require("int main(int argc, char **argv)" in source and "in.bz2" in source,
+            "the decompressor has no command line of its own")
+    for step in ("the header and the block magic", "the Huffman tables", "the run-length pass"):
+        pass
+    require("run-length" in source or "RLE" in source or "repeat count" in source,
+            "the decompressor does not expand the run-length pass, which is what the block holds")
+    require("unRLE" not in source and "bzip2-1.0.8" not in source,
+            "the decompressor vendored upstream bzip2 after all: it is meant to be this project's own")
+    require("JailbreakBunzip2" in read(STORE_KT) and "libjbBz2.so" in read(STORE_KT),
+            "the store has no way to run the tool")
+    return "built here, checked, staged, and run by the store"
 
 
 def the_helper_can_put_a_file_into_the_guest():
@@ -299,6 +324,7 @@ CHECKS = [
     ("jailbreak tab: the browsing and the download happen on the phone", the_store_browses_on_the_phone),
     ("jailbreak tab: the helper stages the file in the guest", the_helper_can_put_a_file_into_the_guest),
     ("jailbreak tab: it may speak cleartext, and reads a plain index", the_tab_may_speak_cleartext),
+    ("jailbreak tab: .bz2 indexes have a decompressor", the_bz2_indexes_have_a_decompressor),
     ("jailbreak tab: the APK carries the helper built here", the_apk_carries_this_build_s_helper),
     ("jailbreak tab: the catalogues carry its strings", the_catalogues_cover_the_tab),
 ]

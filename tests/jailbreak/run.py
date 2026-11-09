@@ -45,6 +45,7 @@ sys.path.insert(0, str(HERE))
 
 import wiring  # noqa: E402  (the layer-to-layer checks, kept beside this file)
 TAR_SOURCE = ROOT / "Packages" / "FirmwareKit" / "build-support" / "jb-tar.c"
+BZ2_SOURCE = ROOT / "Packages" / "FirmwareKit" / "build-support" / "jb-bunzip2.c"
 SHIM_SOURCE = ROOT / "Packages" / "FirmwareKit" / "build-support" / "spawn-shim.c"
 CYDA = ROOT / "Packages" / "FirmwareKit" / "Sources" / "FirmwareKit" / "SystemEdits" / "Cydia.swift"
 WORKFLOW = ROOT / ".github" / "workflows" / "android-perf-apk.yml"
@@ -427,6 +428,42 @@ def a_refused_hard_link_becomes_a_copy(tmp, tar, archives):
     return f"{name}: {source} -> {target} copied, {entries} entries otherwise the host tar's"
 
 
+def bz2_indexes_decompress(tmp, bunzip2, archives):
+    """The decompressor BigBoss needs: Android has no bzip2, and its index is served only as .bz2."""
+    import bz2 as bz2_module
+
+    cases = {
+        "small": b"Package: a\nVersion: 1\n\n",
+        "runs": b"A" * 100000 + b"\x00" * 50000 + b"B" * 259 + b"CD",
+        "incompressible": bytes(range(256)) * 4096,
+        "empty": b"",
+        "packages": b"".join(b"Package: x%d\nVersion: 1.%d\nSize: %d\n\n" % (i, i, i * 7) for i in range(4000)),
+    }
+    checked = 0
+    for name, data in cases.items():
+        packed = tmp / (name + ".bz2")
+        packed.write_bytes(bz2_module.compress(data))
+        plain = tmp / (name + ".out")
+        ran = run([str(bunzip2), str(packed), str(plain)])
+        require(ran.returncode == 0, f"{name}: the decompressor failed: {ran.stderr.strip()[-200:]}")
+        require(plain.read_bytes() == data,
+                f"{name}: {plain.stat().st_size} bytes out against {len(data)} in")
+        checked += 1
+
+    # The one that matters: the real index, when a checkout has it (LT_JAILBREAK_BIGBOSS or a copy
+    # beside this suite). BigBoss is the source whose 9 973 packages only exist as .bz2.
+    real = os.environ.get("LT_JAILBREAK_BIGBOSS")
+    real = Path(real) if real else HERE / "archives" / "bigboss-Packages.bz2"
+    if real.is_file():
+        plain = tmp / "bigboss.out"
+        ran = run([str(bunzip2), str(real), str(plain)])
+        require(ran.returncode == 0, f"{real.name}: the decompressor failed: {ran.stderr.strip()[-200:]}")
+        text = plain.read_text(errors="ignore")
+        require(text.startswith("Package: "), f"{real.name} did not decompress to a control file")
+        checked += 1
+    return f"{checked} archives, byte for byte"
+
+
 def a_damaged_header_and_an_escaping_member_are_refused(tmp, tar):
     damaged = fixture(tmp, "damaged.tar", tarfile.USTAR_FORMAT)
     raw = bytearray(damaged.read_bytes())
@@ -532,6 +569,8 @@ def main():
                    lambda: a_refused_hard_link_becomes_a_copy(scratch, tar, archives))
         report.run("a damaged header and an escaping member are refused",
                    lambda: a_damaged_header_and_an_escaping_member_are_refused(scratch, tar))
+        bunzip2 = build(BZ2_SOURCE, scratch / "jb-bunzip2", TAR_FLAGS)
+        report.run("a .bz2 package index decompresses", lambda: bz2_indexes_decompress(scratch, bunzip2, archives))
 
         print("the shim that points firmwarekit at it")
         shim = build(SHIM_SOURCE, scratch / "libspawnshim.so", SHIM_FLAGS)

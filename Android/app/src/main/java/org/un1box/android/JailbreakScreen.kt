@@ -94,7 +94,7 @@ internal fun JailbreakScreen(
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
-    val store = remember { JailbreakStore() }
+    val store = remember { JailbreakStore(JailbreakBunzip2(context)::decompress) }
     val visit = remember { JailbreakCaches.current }
     val catalog = remember { visit.catalog ?: JailbreakCatalog().also { visit.catalog = it } }
     val scope = rememberCoroutineScope()
