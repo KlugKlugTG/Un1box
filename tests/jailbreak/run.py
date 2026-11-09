@@ -64,6 +64,11 @@ def pinned_by_the_recipe():
 ARCHIVES = pinned_by_the_recipe()
 EXCLUDES = ["--exclude", "./private/var/Keychains", "--exclude", "private/var/Keychains"]
 EXCLUDED_DIR = "private/var/Keychains"
+# The host tar is asked for --same-permissions in the extraction comparisons. A plain `tar -x` applies
+# the process umask and drops set-user-ID, which on a phone (Android apps run with umask 0077) would
+# leave the guest's Cydia at 0700 and its cydo without its bits; jb-tar restores the archive's modes the
+# way -p does, and -p is also what makes the reference the same whether the test runs as root or not.
+HOST_EXTRACT = ["tar", "-xpkf"]
 
 # Same command line as the workflows': the tar strict, the shim as Android compiles it (no -Werror;
 # on glibc three warnings about headers Android does not have would stop it).
@@ -196,8 +201,23 @@ def tree(root):
     return records
 
 
-def compare_trees(ours, theirs, what):
+def members_of(path):
+    """The archive's own entry paths, as the extraction lays them out (no ./, no trailing /)."""
+    with tarfile.open(path) as archive:
+        return {member.name.removeprefix("./").rstrip("/") for member in archive.getmembers()}
+
+
+def compare_trees(ours, theirs, what, keys=None):
+    """The two trees, entry for entry -- all of them, or only those the archive names.
+
+    `keys` is for the directories a tar invents to hold a member whose parents the archive does not
+    list: the host tar makes those with the umask (0700 under a phone's 0077), jb-tar makes them 0755
+    because they end up in the guest, and that difference is asserted separately rather than compared.
+    """
     mine, host = tree(ours), tree(theirs)
+    if keys is not None:
+        mine = {name: record for name, record in mine.items() if name in keys}
+        host = {name: record for name, record in host.items() if name in keys}
     require(mine.keys() == host.keys(),
             f"{what}: the trees differ in which entries exist: {sorted(mine.keys() ^ host.keys())[:4]}")
     differing = [name for name in mine if mine[name] != host[name]]
@@ -205,6 +225,18 @@ def compare_trees(ours, theirs, what):
             f"{what}: {len(differing)} entries differ from the host tar's, first {differing[:2]}: "
             f"{[(mine[name], host[name]) for name in differing[:1]]}")
     return len(mine)
+
+
+def invented_directories_are_readable(ours, members, what, ignore=()):
+    """Every directory the extraction made, that the archive does not name, must be enterable."""
+    seen = tree(ours)
+    invented = [name for name, record in seen.items()
+                if name not in members and name not in ignore and record[0] == "dir"]
+    wrong = [name for name in invented if seen[name][1] != oct(0o755)]
+    require(not wrong,
+            f"{what}: {wrong[:3]} were created with a mode the guest's users may not enter; the phone's "
+            "umask (0077) must not reach the volume")
+    return len(invented)
 
 
 # --- what firmwarekit's parser reads out of -tv -----------------------------------------------------
@@ -266,19 +298,35 @@ def the_verbose_lines_are_what_the_recipe_parses(tar, archives):
 
 
 def an_extraction_is_the_host_tars_tree(tmp, tar, archives):
-    entries = 0
+    entries, modes = 0, 0
     for name, path in archives:
-        ours, theirs = tmp / "extract-ours", tmp / "extract-theirs"
+        ours, theirs = tmp / f"extract-ours-{name}", tmp / f"extract-theirs-{name}"
         for directory in (ours, theirs):
             shutil.rmtree(directory, ignore_errors=True)
             directory.mkdir(parents=True)
         mine = run([str(tar), "-xkf", str(path), "-C", str(ours), *EXCLUDES])
-        host = run(["tar", "-xkf", str(path), "-C", str(theirs), *EXCLUDES])
+        host = run([*HOST_EXTRACT, str(path), "-C", str(theirs), *EXCLUDES])
         require(host.returncode == 0, f"{name}: the host's tar failed to extract: {host.stderr.strip()[-300:]}")
         require(mine.returncode == 0, f"{name}: extraction failed: {mine.stderr.strip()[-400:]}")
         require(not (ours / EXCLUDED_DIR).exists(), f"{name}: --exclude did not keep {EXCLUDED_DIR} out")
-        entries += compare_trees(ours, theirs, name)
-    return f"{entries} entries identical to the host tar's, the excluded directory absent"
+        members = members_of(path)
+        entries += compare_trees(ours, theirs, name, keys=members)
+        invented_directories_are_readable(ours, members, name)
+        # What -tvf reports and what is on disk must agree: the recipe reads the set-user-ID modes out of
+        # the listing and its volume builder reads the files, so a pair that disagreed would either make
+        # Cydia's helpers unusable or set a bit the guest's file system does not have.
+        listing = run([str(tar), "-tvf", str(path)])
+        for entry_path, mode in verbose_contract(listing.stdout):
+            landed = ours / entry_path.removeprefix("./")
+            if not landed.exists():
+                continue   # excluded, or it was not a member of this package's set
+            got = stat.S_IMODE(os.stat(landed).st_mode)
+            require(got == int(mode, 8),
+                    f"{name}: {entry_path} landed as {oct(got)}, and the -tv listing the recipe parses "
+                    f"says {mode}: the archive's modes are not being restored")
+            modes += 1
+    return (f"{entries} entries identical to the host tar's (asked for --same-permissions), the excluded "
+            f"directory absent, {modes} set-user-ID modes as listed")
 
 
 def an_entry_the_volume_has_is_kept(tmp, tar, archives):
@@ -313,8 +361,9 @@ def an_entry_the_volume_has_is_kept(tmp, tar, archives):
             (target / directory.name.lstrip("./")).mkdir(parents=True, exist_ok=True)
             (target / directory.name.lstrip("./")).chmod(0o700)
         existing = [regular.name.lstrip("./"), link.name.lstrip("./"), directory.name.lstrip("./")] + list(stock)
+        before = set(tree(ours))   # the stock tree is the test's own; only what the extraction makes counts
         mine = run([str(tar), "-xkf", str(path), "-C", str(ours), *EXCLUDES])
-        host = run(["tar", "-xkf", str(path), "-C", str(theirs), *EXCLUDES])
+        host = run([*HOST_EXTRACT, str(path), "-C", str(theirs), *EXCLUDES])
         require(host.returncode != 0,
                 f"{name}: the host's tar accepted a volume whose files it would overwrite: this check no "
                 "longer tests the difference it exists for")
@@ -331,7 +380,8 @@ def an_entry_the_volume_has_is_kept(tmp, tar, archives):
                 f"{name}: {directory.name} changed mode")
         require(all((ours / relative).read_bytes() == data for relative, data in stock.items()),
                 f"{name}: extraction changed a file it was told to keep")
-        entries = compare_trees(ours, theirs, f"{name} stock volume")
+        entries = compare_trees(ours, theirs, f"{name} stock volume", keys=members_of(path))
+        invented_directories_are_readable(ours, members_of(path), f"{name} stock volume", ignore=before)
         added = [m.name for m in members if m.isreg() and (ours / m.name.lstrip("./")).is_file()]
         require(len(added) > 1, f"{name}: the archive's own files were not extracted at all")
         summaries.append(f"{name}: {len(existing)} kept, {entries} entries")
@@ -393,10 +443,10 @@ def a_spawn_of_usr_bin_tar_reaches_this_tar(tmp, tar, archives, shim, harness):
         directory.mkdir()
     mine = subprocess.run([str(harness), "-xkf", str(path), "-C", str(volume), *EXCLUDES],
                           capture_output=True, text=True, env=environment)
-    host = run(["tar", "-xkf", str(path), "-C", str(theirs), *EXCLUDES])
+    host = run([*HOST_EXTRACT, str(path), "-C", str(theirs), *EXCLUDES])
     require(mine.returncode == 0, f"the extraction through the shim failed: {mine.stderr.strip()[-300:]}")
     require(host.returncode == 0, "the host's tar failed the same extraction")
-    entries = compare_trees(volume, theirs, "through the shim")
+    entries = compare_trees(volume, theirs, "through the shim", keys=members_of(path))
     return f"a listing and an extraction ({entries} entries) reached the tar the shim names"
 
 

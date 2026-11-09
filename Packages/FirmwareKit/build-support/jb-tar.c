@@ -15,12 +15,20 @@
 // cydiahttpatch.tar: ustar, gzip or not, directories, files, symbolic links, one hard link, five
 // set-user-ID files, no PAX or GNU long names) -- and it is deliberately not a general tar.
 //
-// Where it differs from GNU tar, and why. GNU tar's -k treats an entry the volume already has as an
-// error: it prints "Cannot open: File exists" and exits 2. The recipe extracts a stock iOS root, where
-// /usr/bin/login, /bin/su and Cydia's own cydo are already present, so that behaviour would fail every
-// jailbreak. Here an existing entry is kept -- which is what -k means and what the recipe's own comment
-// says it gets -- and the run exits 0; the skips are logged to stderr. The one thing the recipe reads
-// out of the listings is -tv: its parser expects the bsdtar/Mac line
+// Where it differs from GNU tar, and why. Two differences, both deliberate:
+//
+//  1. An entry the volume already has is kept, and the run exits 0. GNU tar's -k calls that an error
+//     ("Cannot open: File exists", exit 2). The recipe extracts onto a stock iOS root, where
+//     /usr/bin/login, /bin/su and Cydia's own cydo are already present, so GNU tar's behaviour would
+//     fail every jailbreak; keeping the file and saying so on stderr is what -k means here.
+//  2. Every mode is the archive's, as GNU tar's --same-permissions restores it, not the mode the
+//     process could get away with. A normal `tar -x` as a phone user applies the umask (Android apps
+//     run with 0077) and drops set-user-ID: the bootstrap's directories would arrive 0700 and its cydo
+//     0700, so the guest's own users could not read Cydia and its set-user-ID helpers would not be
+//     set-user-ID. The recipe records exactly these modes for its volume catalog anyway (Cydia.swift's
+//     "which tar, not run as root, doesn't restore"), so the two agree instead of fighting.
+//
+// The one thing the recipe reads out of the listings is -tv: its parser expects the bsdtar/Mac line
 //
 //   -rwsr-sr-x 0 root wheel 133808 Feb 16  2017 ./usr/libexec/cydia/cydo
 //
@@ -394,7 +402,11 @@ static bool make_parents(const char *directory, const char *path, char *full, si
     for (char *at = full + strlen(directory) + 1; *at != '\0'; at++) {
         if (*at != '/') continue;
         *at = '\0';
-        if (mkdir(full, 0755) != 0 && errno != EEXIST) {
+        if (mkdir(full, 0755) == 0) {
+            /* Not the umask's 0700: these are the guest's directories (see the note at the top). */
+            if (chmod(full, 0755) != 0 && errno != EPERM)
+                fprintf(stderr, "%s: %s: cannot set mode: %s\n", program, full, strerror(errno));
+        } else if (errno != EEXIST) {
             fail("%s: %s", full, strerror(errno));
             return false;
         }
