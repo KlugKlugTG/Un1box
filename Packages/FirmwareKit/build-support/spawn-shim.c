@@ -12,6 +12,12 @@
 //     macOS (Darwin spawns through posix_spawnp) and /usr/bin/env exists there anyway; on Android bionic's
 //     posix_spawn searches nothing and /usr/bin does not exist, so a spawn of env(1) runs the program env was
 //     given, with env's arguments, directly.
+//  3. The jailbreak option (firmwarekit create --jailbreak) installs the Cydia bootstrap by running the host's
+//     tar: "-tf", "-tvf" and "-xkf ... -C ... --exclude ..." (SystemEdits/Cydia.swift). /usr/bin has no tar on
+//     Android, and toybox's has neither -k nor --exclude, so those spawns are pointed at libjbTar.so, the
+//     small tar this APK builds from build-support/jb-tar.c. It is run without this shim in front of it
+//     (LD_PRELOAD is dropped for that one spawn: the tool needs nothing redirected, and its own file accesses
+//     would otherwise fill this log).
 //
 // Everything it sees is written to SPAWN_SHIM_LOG (the app names it), and the app appends the tail of that file to
 // a preparation failure, so the log says which path was wanted and what the process did with it.
@@ -25,6 +31,7 @@
 #include <limits.h>
 #include <spawn.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,13 +41,17 @@
 #define SHIM_LOG_LIMIT 400
 #define PATCHER_NAME "iBoot32Patcher"
 #define PATCHER_REAL "libiBoot32Patcher.so"
+#define TAR_PATH "/usr/bin/tar"
+#define TAR_REAL "libjbTar.so"
+#define TAR_ENV "FIRMWAREKIT_TAR"
 
 static int shim_fd = -2;
 static int shim_lines = 0;
 static char shim_dir[PATH_MAX];
+static int shim_quiet = 0;
 
 static void shim_log(const char *format, ...) {
-    if (shim_lines >= SHIM_LOG_LIMIT) return;
+    if (shim_quiet || shim_lines >= SHIM_LOG_LIMIT) return;
     if (shim_fd == -2) {
         const char *path = getenv("SPAWN_SHIM_LOG");
         shim_fd = path && *path ? open(path, O_WRONLY | O_CREAT | O_APPEND, 0644) : -1;
@@ -65,17 +76,21 @@ __attribute__((constructor)) static void shim_loaded(void) {
         char *slash = strrchr(shim_dir, '/');
         if (slash != NULL) *slash = '\0';
     }
+    // The one process this shim is *not* for is the tar it points firmwarekit at: preloaded into it by
+    // inheritance, it would only log the extracted members' own accesses over the messages a failure needs.
+    char exe[PATH_MAX];
+    ssize_t got = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (got > 0) {
+        exe[got] = '\0';
+        const char *base = strrchr(exe, '/');
+        base = base ? base + 1 : exe;
+        if (strcmp(base, TAR_REAL) == 0) shim_quiet = 1;
+    }
+    if (shim_quiet) return;
     char cwd[PATH_MAX];
     shim_log("spawn-shim: loaded into pid %d cwd=%s TMPDIR=%s HOME=%s dir=%s\n", (int) getpid(),
              getcwd(cwd, sizeof cwd) ? cwd : "?", getenv("TMPDIR") ? getenv("TMPDIR") : "(unset)",
              getenv("HOME") ? getenv("HOME") : "(unset)", shim_dir[0] ? shim_dir : "(unknown)");
-}
-
-static int names_patcher(const char *path) {
-    if (path == NULL) return 0;
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    return strcmp(base, PATCHER_NAME) == 0 || strcmp(base, PATCHER_REAL) == 0;
 }
 
 /**
@@ -93,6 +108,15 @@ static const char *redirected(const char *path, char *buffer, size_t size) {
         shim_log("spawn-shim: %s -> %s\n", path, buffer);
         return buffer;
     }
+    if (strcmp(path, TAR_PATH) == 0 || strcmp(path, "/bin/tar") == 0 || strcmp(path, "tar") == 0) {
+        // The app names the copy it staged when it has one; otherwise it is the library beside this shim.
+        const char *named = getenv(TAR_ENV);
+        if (named != NULL && *named != '\0') snprintf(buffer, size, "%s", named);
+        else if (shim_dir[0] != '\0') snprintf(buffer, size, "%s/%s", shim_dir, TAR_REAL);
+        else return path;
+        shim_log("spawn-shim: %s -> %s\n", path, buffer);
+        return buffer;
+    }
     if (shim_dir[0] == '\0') return path;
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
@@ -100,6 +124,38 @@ static const char *redirected(const char *path, char *buffer, size_t size) {
     snprintf(buffer, size, "%s/%s", shim_dir, PATCHER_REAL);
     shim_log("spawn-shim: %s -> %s\n", path, buffer);
     return buffer;
+}
+
+/** Whether a resolved path is the tar this shim points firmwarekit at. */
+static int names_tar_binary(const char *path) {
+    if (path == NULL) return 0;
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    return strcmp(base, TAR_REAL) == 0;
+}
+
+/**
+ * `envp` without LD_PRELOAD, or NULL when there is nothing to strip. This shim is preloaded into firmwarekit
+ * by the app; the tar it spawns inherits that and would rewrite nothing but would log every member it
+ * extracts. It is a copy of the pointers, never of the strings: only the array is this function's to free.
+ */
+static char **without_preload(char *const envp[], char ***allocated) {
+    *allocated = NULL;
+    if (envp == NULL) return NULL;
+    size_t count = 0, kept = 0;
+    while (envp[count] != NULL) {
+        if (strncmp(envp[count], "LD_PRELOAD=", 11) != 0) kept++;
+        count++;
+    }
+    if (kept == count) return NULL;
+    char **copy = malloc((kept + 1) * sizeof *copy);
+    if (copy == NULL) return NULL;   /* inheriting it is better than failing the spawn */
+    size_t at = 0;
+    for (size_t i = 0; i < count; i++)
+        if (strncmp(envp[i], "LD_PRELOAD=", 11) != 0) copy[at++] = envp[i];
+    copy[at] = NULL;
+    *allocated = copy;
+    return copy;
 }
 
 static int names_env(const char *path) {
@@ -251,9 +307,13 @@ int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *
         return real(pid, target, actions, attributes, argv + 1, envp);
     }
     const char *target = redirected(path, buffer, sizeof buffer);
-    int status = real(pid, target, actions, attributes, argv, envp);
-    shim_log("spawn-shim: posix_spawn %s%s (status %d) pid %d\n", target, target == path ? "" : " (redirected)",
-             status, status == 0 && pid != NULL ? (int) *pid : -1);
+    char **filtered = NULL;
+    if (names_tar_binary(target)) without_preload(envp, &filtered);
+    int status = real(pid, target, actions, attributes, argv, filtered != NULL ? filtered : envp);
+    free(filtered);
+    shim_log("spawn-shim: posix_spawn %s%s%s (status %d) pid %d\n", target, target == path ? "" : " (redirected)",
+             filtered != NULL ? " (preload dropped)" : "", status,
+             status == 0 && pid != NULL ? (int) *pid : -1);
     if (status != 0) shim_log("spawn-shim: posix_spawn %s failed: %s\n", target, strerror(status));
     return status;
 }
@@ -270,7 +330,10 @@ int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t 
         return real(pid, target, actions, attributes, argv + 1, envp);
     }
     const char *target = redirected(file, buffer, sizeof buffer);
-    int status = real(pid, target, actions, attributes, argv, envp);
+    char **filtered = NULL;
+    if (names_tar_binary(target)) without_preload(envp, &filtered);
+    int status = real(pid, target, actions, attributes, argv, filtered != NULL ? filtered : envp);
+    free(filtered);
     if (status != 0) shim_log("spawn-shim: posix_spawnp %s failed: %s\n", target, strerror(status));
     return status;
 }
@@ -285,7 +348,10 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
         return real(target, argv + 1, envp);
     }
     const char *target = redirected(path, buffer, sizeof buffer);
-    int status = real(target, argv, envp);
+    char **filtered = NULL;
+    if (names_tar_binary(target)) without_preload(envp, &filtered);
+    int status = real(target, argv, filtered != NULL ? filtered : envp);
+    free(filtered);   /* reached only when execve failed */
     shim_log("spawn-shim: execve %s failed: %s\n", target, strerror(errno));
     return status;
 }

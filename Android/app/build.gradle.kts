@@ -6,6 +6,12 @@ val shutdownGraceMs = Regex("(?m)^#define\\s+LT_SHUTDOWN_GRACE_MS\\s+([0-9]+)u?\
     .find(shutdownPolicyHeader.readText())?.groupValues?.get(1)?.toLong()
     ?: error("Shared LT_SHUTDOWN_GRACE_MS policy is unavailable")
 require(shutdownGraceMs > 0)
+// -Pjailbreak=true builds the jailbreak APK (the jailbreak-apk workflow passes it): every preparation
+// passes --jailbreak, so the device comes up with afc2 (the whole file system over USB), Cydia and
+// Substrate, and the small tar firmwarekit's Cydia step spawns as /usr/bin/tar is staged beside
+// firmwarekit. A normal build carries neither and prepares stock systems. The recipes that don't take
+// the option say so themselves (N45's: "the jailbreak option needs iPhone OS 2.0 or later").
+val jailbreak = providers.gradleProperty("jailbreak").orElse("false").get().toBoolean()
 android {
     namespace = "org.un1box.android"
     compileSdk = 35
@@ -13,11 +19,21 @@ android {
     ndkVersion = "28.2.13676358"
     defaultConfig {
         applicationId = "org.un1box.android"
+        // The jailbreak build is its own application, org.un1box.android.jb: a phone can hold it beside the
+        // normal one (its own data -- devices are prepared again inside it -- its own signing key, and its own
+        // name in a launcher, below), which installing over the normal one could not do.
+        if (jailbreak) applicationIdSuffix = ".jb"
         minSdk = 29
         targetSdk = 35
         versionCode = 13
-        versionName = "0.0.13"
+        // Which build is running, in Settings and in a profile: the jailbreak app id already tells them
+        // apart, and this is what a person reads off the phone.
+        versionName = "0.0.13" + (if (jailbreak) "-jailbreak" else "")
+        // The launcher label, through a resource because a manifest string cannot be renamed per build:
+        // two "Un1box" icons side by side would be a guess, not a choice.
+        resValue("string", "app_name", if (jailbreak) "Un1box JB" else "Un1box")
         buildConfigField("long", "SHUTDOWN_GRACE_MS", "${shutdownGraceMs}L")
+        buildConfigField("boolean", "JAILBREAK", "$jailbreak")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += providers.gradleProperty("targetAbis").orElse("arm64-v8a,x86_64").get().split(",") }
         externalNativeBuild { cmake { arguments += listOf("-DLT_NATIVE_JOBS=" + providers.gradleProperty("nativeJobs").orElse("2").get(), "-DANDROID_STL=c++_shared", "-DLT_PORTABLE_DIR=" + providers.gradleProperty("portableDir").orElse(file("../../Portable").absolutePath).get(), "-DLT_ENGINE_ROOT=" + providers.gradleProperty("engineRoot").orElse("").get(), "-DLIGHTTOUCH_QEMU_SOURCE=" + providers.gradleProperty("qemuSource").orElse("").get()) } }
@@ -131,10 +147,16 @@ val sourceReference = providers.gradleProperty("sourceReference").orElse(
 // "env <patcher> ...", a bare name that Android's posix_spawn resolves against the working directory only, so
 // libspawnshim.so rides along: FirmwareService preloads it into firmwarekit, where it runs the patcher directly
 // in env's place and logs the access and spawn calls a failure needs.
+//
+// A jailbreak build adds jb-tar (build-support/jb-tar.c) as libjbTar.so: firmwarekit's Cydia step installs the
+// bootstrap by running the host's tar ("-tf", "-tvf" and "-xkf ... -C ... --exclude ..."), and Android has no
+// /usr/bin/tar -- toybox's has neither -k nor --exclude. The same shim redirects that path to this copy.
 providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
     val kit = file(input)
-    require(listOf("firmwarekit", "lighttouch-oneshot", "iBoot32Patcher", "spawn-shim.so", "licenses/manifest.json").all { kit.resolve(it).isFile }) {
-        "firmwareKitDir must hold firmwarekit, lighttouch-oneshot, iBoot32Patcher, spawn-shim.so and licenses/ (scripts/build.sh firmwarekit-android)"
+    val required = listOf("firmwarekit", "lighttouch-oneshot", "iBoot32Patcher", "spawn-shim.so", "licenses/manifest.json") +
+        (if (jailbreak) listOf("jb-tar") else emptyList())
+    require(required.all { kit.resolve(it).isFile }) {
+        "firmwareKitDir must hold ${required.joinToString(", ")} (scripts/build.sh firmwarekit-android)"
     }
     val firmwareKitJniLibs = layout.buildDirectory.dir("generated/firmwareKitJniLibs")
     val firmwareKitNotices = layout.buildDirectory.dir("generated/firmwareKitNotices")
@@ -143,6 +165,7 @@ providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
         from(kit) { include("lighttouch-oneshot"); rename { "liblighttouch_oneshot.so" } }
         from(kit) { include("iBoot32Patcher"); rename { "libiBoot32Patcher.so" } }
         from(kit) { include("spawn-shim.so"); rename { "libspawnshim.so" } }
+        if (jailbreak) from(kit) { include("jb-tar"); rename { "libjbTar.so" } }
         into(firmwareKitJniLibs.map { it.dir("arm64-v8a") })
     }
     val notices = tasks.register<Copy>("prepareFirmwareKitNotices") {

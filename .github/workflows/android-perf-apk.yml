@@ -117,6 +117,42 @@ on:
           - "true"
           - "false"
         default: "true"
+  # The jailbreak build's entry point (jailbreak-apk.yml): the same build, with preparation passing
+  # --jailbreak and jb-tar shipped for it. Only the inputs that workflow sets are declared here; the rest
+  # keep the workflow_dispatch defaults above.
+  workflow_call:
+    inputs:
+      engine_repository:
+        type: string
+        default: KlugKlugTG/qemu-ios
+      engine_ref:
+        type: string
+        default: perf
+      base_release_repository:
+        type: string
+        default: blake-lucas/LightTouch
+      base_release_tag:
+        type: string
+        default: v0.0.10
+      variant:
+        type: string
+        default: release
+      debuggable:
+        type: string
+        default: "true"
+      angle_arm64:
+        type: string
+        default: "true"
+      dependency_verification:
+        type: string
+        default: strict
+      create_release:
+        type: string
+        default: "true"
+      jailbreak:
+        description: Build the jailbreak APK (--jailbreak on every preparation, jb-tar shipped)
+        type: string
+        default: "false"
 
 permissions:
   actions: read
@@ -164,6 +200,10 @@ jobs:
       ANGLE_BUNDLE_URL: ${{ inputs.angle_bundle_url || 'https://github.com/KlugKlugTG/Un1box/releases/download/angle-arm64-v8a-4a5ccd7/angle-lighttouch-arm64-v8a.tar.gz' }}
       ANGLE_BUNDLE_SHA256: ${{ inputs.angle_bundle_sha256 || 'c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1' }}
       DECLARED_DEPENDENCY_VERIFICATION: ${{ inputs.dependency_verification || 'strict' }}
+      # The jailbreak build, when this run is the one jailbreak-apk.yml calls. Everything it changes is
+      # gated on this: the Gradle property that carries --jailbreak and stages jb-tar, the names below, and
+      # the release tag. A normal run has "false" and is byte-for-byte the build it was before.
+      DECLARED_JAILBREAK: ${{ inputs.jailbreak || 'false' }}
       MESON: ${{ github.workspace }}/meson/bin/meson
 
     steps:
@@ -553,8 +593,15 @@ jobs:
           # every access and spawn the process makes, so a failure names the path that was actually wanted.
           "$TOOLS/aarch64-linux-android29-clang" -O2 -fPIC -shared -Wl,-soname,libspawnshim.so \
             -o ci/firmwarekit/android/spawn-shim.so Packages/FirmwareKit/build-support/spawn-shim.c -ldl
+          # firmwarekit's jailbreak option installs Cydia by running the host's tar ("-tf", "-tvf" and
+          # "-xkf ... -C ... --exclude ..."). Android has no /usr/bin/tar and toybox's has neither -k nor
+          # --exclude, so this small tar is built for arm64 and the same shim redirects that path to it.
+          # The Gradle build stages it as libjbTar.so only when -Pjailbreak=true.
+          "$TOOLS/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
+            -o ci/firmwarekit/android/jb-tar Packages/FirmwareKit/build-support/jb-tar.c -lz
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/jb-tar | grep -q 'AArch64'
           "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/spawn-shim.so | grep -q 'AArch64'
-          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so
+          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so ci/firmwarekit/android/jb-tar
 
       # The patches carry changes to the engine's own build scripts (0012 adds
       # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for
@@ -663,6 +710,15 @@ jobs:
           path: ci/debug.keystore
           key: lt-ci-debug-keystore-v1
 
+      # The jailbreak build is its own application (org.un1box.android.jb) with its own key, in its own
+      # cache entry: adding it to the entry above would have replaced that key's cache with one that has
+      # no debug.keystore in it, and every normal build after that would sign with a brand-new key.
+      - name: Cache the jailbreak signing key
+        uses: actions/cache@v4
+        with:
+          path: ci/jailbreak.keystore
+          key: lt-ci-jailbreak-keystore-v1
+
       - name: Use a stable keystore for the debug build
         run: |
           mkdir -p "$HOME/.android" ci
@@ -671,12 +727,21 @@ jobs:
               -storepass android -keypass android -alias androiddebugkey \
               -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
+          if [ ! -f ci/jailbreak.keystore ]; then
+            keytool -genkeypair -keystore ci/jailbreak.keystore -storetype PKCS12 \
+              -storepass android -keypass android -alias un1boxjailbreak \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Un1box Jailbreak,O=Un1box,C=US"
+          fi
           cp ci/debug.keystore "$HOME/.android/debug.keystore"
           keytool -list -keystore ci/debug.keystore -storepass android | tail -3
           SIGNER="$(keytool -list -v -keystore ci/debug.keystore -storepass android -alias androiddebugkey | sed -n 's/.*SHA256: //p' | tr -d ':' | tr 'A-Z' 'a-z')"
           [ -n "$SIGNER" ] || { echo '::error::the keystore has no androiddebugkey'; exit 1; }
           echo "LT_SIGNER_SHA256=$SIGNER" >> "$GITHUB_ENV"
           echo "keystore signer: $SIGNER"
+          JB_SIGNER="$(keytool -list -v -keystore ci/jailbreak.keystore -storepass android -alias un1boxjailbreak | sed -n 's/.*SHA256: //p' | tr -d ':' | tr 'A-Z' 'a-z')"
+          [ -n "$JB_SIGNER" ] || { echo '::error::the jailbreak keystore has no un1boxjailbreak'; exit 1; }
+          echo "LT_JB_SIGNER_SHA256=$JB_SIGNER" >> "$GITHUB_ENV"
+          echo "jailbreak keystore signer: $JB_SIGNER"
 
       # The debug-only angle-gl route needs its three fixed provider DSOs staged into the
       # debug source set (Android/DEBUG-ANGLE.md). The bundle is pinned by the SHA256 of the
@@ -859,6 +924,37 @@ jobs:
           python3 tests/branding/run.py
           python3 tests/idle/run.py
 
+      # The archives firmwarekit's jailbreak option extracts, pinned by SHA-1 in SystemEdits/Cydia.swift:
+      # the jailbreak self-check compares the tar this APK builds against the host's own on the real bytes
+      # when they are here (a cache hit after the first run) and on its own fixtures when they are not.
+      - name: Cache the pinned jailbreak archives
+        uses: actions/cache@v4
+        with:
+          path: tests/jailbreak/archives
+          key: jailbreak-archives-c943e5ec-264f4793-3a1302c6
+
+      - name: Fetch the pinned jailbreak archives
+        continue-on-error: true
+        run: |
+          mkdir -p tests/jailbreak/archives
+          BASE="https://raw.githubusercontent.com/LukeZGD/Legacy-iOS-Kit/4b0a582f4d53e105be373b495734c8ed639fd634/resources/jailbreak"
+          for entry in freeze.tar.gz:c943e5ece72b7b71da589c22663a8f9b3b3d1190 \
+                       cydiasubstrate.tar:264f47938acc09e6cc2890a3cc7c7988a6822da3 \
+                       cydiahttpatch.tar:3a1302c6294fe290c6d52186dd4fe56cda7fd661; do
+            NAME="${entry%%:*}"; SHA1="${entry##*:}"
+            [ -f "tests/jailbreak/archives/$NAME" ] && [ "$(sha1sum "tests/jailbreak/archives/$NAME" | cut -d' ' -f1)" = "$SHA1" ] && continue
+            curl -fLsS --retry 3 "$BASE/$NAME" -o "tests/jailbreak/archives/$NAME"
+            echo "$SHA1  tests/jailbreak/archives/$NAME" | sha1sum -c -
+          done
+          ls -la tests/jailbreak/archives
+
+      # The jailbreak path: the tar firmwarekit's Cydia step runs as /usr/bin/tar, checked against the
+      # host's own tar on the archives it is pinned to, and the shim redirect that reaches it through a
+      # real spawn. No engine needed.
+      - name: Self-check the jailbreak path
+        continue-on-error: true
+        run: python3 tests/jailbreak/run.py
+
       - name: Build the engine
         run: |
           set -o pipefail
@@ -941,6 +1037,7 @@ jobs:
             -PsourceRevision="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" \
             -PsourceReference="https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME}" \
             -Pdebuggable="$DECLARED_DEBUGGABLE" \
+            -Pjailbreak="$DECLARED_JAILBREAK" \
             "${angle_args[@]}" \
             ":app:assemble${DECLARED_VARIANT^}"
 
@@ -980,11 +1077,17 @@ jobs:
         run: |
           APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           # The release variant has no signing config, so AGP writes app-release-unsigned.apk;
-          # the debug variant's file is app-debug.apk. Either is signed here.
+          # the debug variant's file is app-debug.apk. Either is signed here, with the key this build's
+          # application id belongs to: the jailbreak app (org.un1box.android.jb) has its own.
+          if [ "$DECLARED_JAILBREAK" = "true" ]; then
+            KEYSTORE="$GITHUB_WORKSPACE/ci/jailbreak.keystore"; ALIAS="un1boxjailbreak"
+          else
+            KEYSTORE="$GITHUB_WORKSPACE/ci/debug.keystore"; ALIAS="androiddebugkey"
+          fi
           APK="$(ls "app/build/outputs/apk/$DECLARED_VARIANT/"*.apk | head -1)"
-          echo "signing $APK"
-          "$APKSIGNER" sign --ks "$GITHUB_WORKSPACE/ci/debug.keystore" \
-            --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey \
+          echo "signing $APK with $KEYSTORE ($ALIAS)"
+          "$APKSIGNER" sign --ks "$KEYSTORE" \
+            --ks-pass pass:android --key-pass pass:android --ks-key-alias "$ALIAS" \
             --in "$APK" --out app-signed.apk
           mv app-signed.apk "$APK"
 
@@ -993,16 +1096,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ENGINE_SHORT="$(git -C qemu-ios rev-parse --short HEAD)"
-          APK="ci/Un1box-${ENGINE_SHORT}-arm64-${DECLARED_VARIANT}.apk"
+          JAILBREAK_SUFFIX=""
+          [ "$DECLARED_JAILBREAK" = "true" ] && JAILBREAK_SUFFIX="-jailbreak"
+          APK="ci/Un1box-${ENGINE_SHORT}-arm64-${DECLARED_VARIANT}${JAILBREAK_SUFFIX}.apk"
           cp "$(ls "Android/app/build/outputs/apk/$DECLARED_VARIANT/"*.apk | head -1)" "$APK"
           ls -la "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK"
           SIGNED="$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK" | sed -n 's/.*SHA-256 digest: //p' | head -1)"
-          [ "$SIGNED" = "$LT_SIGNER_SHA256" ] || {
-            echo "::error::the APK carries signer $SIGNED, not this workflow's keystore ($LT_SIGNER_SHA256): a phone could not update its previous install"
+          EXPECTED="$LT_SIGNER_SHA256"
+          if [ "$DECLARED_JAILBREAK" = "true" ]; then EXPECTED="$LT_JB_SIGNER_SHA256"; fi
+          [ "$SIGNED" = "$EXPECTED" ] || {
+            echo "::error::the APK carries signer $SIGNED, not this build's keystore ($EXPECTED): a phone could not update its previous install of this application"
             exit 1
           }
-          echo "- signer: $SIGNED (the workflow's keystore, so an install updates in place)"
+          echo "- signer: $SIGNED (this application's keystore, so an install updates in place)"
           # check-apk.py targets uncompressed packaging; this APK extracts its
           # libraries so firmwarekit can run out of nativeLibraryDir.
           python3 Android/scripts/check-apk.py "$APK" ||
@@ -1023,7 +1130,18 @@ jobs:
             else
               echo "- ARM64 ANGLE provider: not packaged"
             fi
-            echo "- variant: $DECLARED_VARIANT (debuggable: $DECLARED_DEBUGGABLE); signed with this workflow's own keystore"
+            echo "- variant: $DECLARED_VARIANT (debuggable: $DECLARED_DEBUGGABLE)"
+            if [ "$DECLARED_JAILBREAK" = "true" ]; then
+              echo "- application: org.un1box.android.jb, signed with the jailbreak keystore ($LT_JB_SIGNER_SHA256):"
+              echo "  its own application, so it installs beside the normal Un1box and its devices are prepared"
+              echo "  again inside it"
+              echo "- jailbreak build: every preparation passes --jailbreak (afc2, Cydia and Substrate, from the"
+              echo "  pinned Legacy-iOS-Kit bootstrap), and firmwarekit's Cydia step runs the shim-redirected"
+              echo "  jb-tar in place of the /usr/bin/tar Android does not have"
+            else
+              echo "- application: org.un1box.android, signed with the debug keystore ($LT_SIGNER_SHA256)"
+              echo "- jailbreak build: no (preparations are stock; use the Jailbreak APK workflow for one)"
+            fi
             echo
             echo "## Engine commits in $ENGINE_REF that are not in main"
             echo
@@ -1043,17 +1161,20 @@ jobs:
       - name: Upload the APK
         uses: actions/upload-artifact@v4
         with:
-          name: Un1box-perf-apk-${{ steps.engine.outputs.sha }}
+          name: Un1box-perf-apk-${{ steps.engine.outputs.sha }}${{ inputs.jailbreak == 'true' && '-jailbreak' || '' }}
           path: |
             ci/Un1box-*-arm64-*.apk
             ci/PROVENANCE.txt
 
       - name: Attach the APK to a pre-release
-        if: github.event_name == 'workflow_dispatch' && inputs.create_release == 'true'
+        if: (github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') && inputs.create_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="ci-$(git -C qemu-ios rev-parse --short HEAD)-r${{ github.run_number }}"
+          # A jailbreak build gets its own tag prefix: it is a different application (its own id, its own
+          # key), so a phone holds both and the two releases must not be confused for one another.
+          if [ "$DECLARED_JAILBREAK" = "true" ]; then PREFIX="jb"; else PREFIX="ci"; fi
+          TAG="$PREFIX-$(git -C qemu-ios rev-parse --short HEAD)-r${{ github.run_number }}"
           gh release create "$TAG" ci/Un1box-*.apk ci/PROVENANCE.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --prerelease --title "$TAG" --notes-file ci/PROVENANCE.txt

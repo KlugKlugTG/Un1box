@@ -28,3 +28,6 @@ scripts/build.env
 # The engine checkout the self-checks run against, cloned in beside the app or linked to it
 # (no trailing slash: the linked form is a symlink, which that form would not match)
 /qemu-ios
+
+# The pinned jailbreak archives the self-check compares against (fetched by the workflow; never tracked)
+/tests/jailbreak/archives/

@@ -246,6 +246,11 @@ print(p["url"], p["sha256"], p["directory"])' "$REPO/build-support/dependencies.
     # where env was asked for, logging the access and spawn calls a failure needs.
     "$NDK_BIN/aarch64-linux-android29-clang" -O2 -fPIC -shared -Wl,-soname,libspawnshim.so \
         -o "$OUT/firmwarekit/android/spawn-shim.so" "$REPO/Packages/FirmwareKit/build-support/spawn-shim.c" -ldl
+    # The jailbreak option installs Cydia by running the host's tar; Android has none, and toybox's has
+    # neither -k nor --exclude. The shim redirects /usr/bin/tar to this copy, and the Gradle build stages it
+    # as libjbTar.so when -Pjailbreak=true (the jailbreak-apk workflow; tests/jailbreak checks both).
+    "$NDK_BIN/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
+        -o "$OUT/firmwarekit/android/jb-tar" "$REPO/Packages/FirmwareKit/build-support/jb-tar.c" -lz
     python3 "$REPO/Packages/FirmwareKit/build-support/stage-notices.py" "$OUT/firmwarekit/android/licenses" \
         --checkouts "$REPO/Packages/FirmwareKit/.build-android/checkouts" \
         --swift-license "$LT_SWIFT_ANDROID_BUNDLE/swift-android/swift-resources/usr/share/swift/LICENSE.txt" \

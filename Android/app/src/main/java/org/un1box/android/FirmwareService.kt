@@ -85,7 +85,12 @@ class FirmwareService : Service() {
                 // iOS 5 and later start at the Home screen, not Setup Assistant (ignored before 5, which has none)
                 "--skip-setup") +
                 // the iPod touch 2G's keybag boot (iOS 4) runs its SecureROM, which no IPSW carries
-                (if (bootrom.isNotEmpty()) listOf("--bootrom", bootrom) else emptyList()))
+                (if (bootrom.isNotEmpty()) listOf("--bootrom", bootrom) else emptyList()) +
+                // This build prepares every device jailbroken (afc2, Cydia and Substrate). The recipes that
+                // support it are the ones that go through SystemEdits.buildK48 -- the iPad, the iPod touches and
+                // the iPhone 4 -- and N72; N45's 1.x refuses the option itself, in words, rather than silently
+                // preparing a stock system.
+                (if (BuildConfig.JAILBREAK) listOf("--jailbreak") else emptyList()))
             // create's own lease and boot logs; the device is the rest
             File(out, "work").let { writable(it); it.deleteRecursively() }
             done = total
@@ -170,6 +175,10 @@ class FirmwareService : Service() {
             // directories it derives, so a build without the tool keeps firmwarekit's own "iBoot32Patcher ...
             // not runnable" error rather than being pointed at nothing.
             File(libs, "libiBoot32Patcher.so").takeIf { it.canExecute() }?.let { put("FIRMWAREKIT_IBOOT_PATCHER", it.path) }
+            // The jailbreak build's tar, which the shim runs where firmwarekit asked for /usr/bin/tar (absent
+            // here, and toybox's has neither -k nor --exclude). A normal build has no such file: it never asks
+            // for tar, and the shim leaves the path alone.
+            File(libs, "libjbTar.so").takeIf { it.canExecute() }?.let { put("FIRMWAREKIT_TAR", it.path) }
         }
         check(!cancelling) { "Cancelled" }
         val child = start(builder, libs).also { process = it }
