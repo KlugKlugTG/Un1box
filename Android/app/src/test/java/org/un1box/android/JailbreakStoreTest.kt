@@ -101,7 +101,7 @@ class JailbreakStoreTest {
         val packages = store.parseIndex(index, "http://repo.example/", "http://repo.example/Packages")
         assertEquals(2, packages.size)
         assertEquals("http://repo.example/debs/first_1.2.3_iphoneos-arm.deb",
-            store.packageUrl(packages[0], "http://repo.example/Packages"))   # the root itself
+            store.packageUrl(packages[0], "http://repo.example/Packages"))   // the root itself
     }
 
     @Test
