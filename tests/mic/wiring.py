@@ -19,8 +19,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
-MIC_PATCH = PATCHES / "0009-engine-microphone-input.patch"
-BOARDS_PATCH = PATCHES / "0013-engine-microphone-a4-boards.patch"
+
+def patch_with(marker):
+    """The patch that carries a feature: the engine rework is applied in more than one file now."""
+    for candidate in sorted(PATCHES.glob("*.patch")):
+        if marker in candidate.read_text(errors="ignore"):
+            return candidate
+    raise AssertionError("no patch in ci/engine-patches carries " + marker)
+
+MIC_PATCH = patch_with("host-mic")
+BOARDS_PATCH = patch_with("host-mic")
+
+# The capture port's read of the ring has been shipped in two shapes: the plain call, while the
+# microphone was a patch of its own, and -- since the port grew the A4-only property -- that same
+# call behind the property. The series is one patch now, so both checks below look for the call site
+# itself rather than for one spelling of it.
+MIC_CALL = "if (host_mic_read_frame(s->rx_frame))"
+GATED_MIC_CALL = "if (s->host_mic && host_mic_read_frame(s->rx_frame))"
+API_DEFINE = re.compile(r"^([+-])#define QEMU_IOS_API_VERSION \(\(2u << 16\) \| (\d+)u\)", re.M)
 
 ENGINE_SYMBOLS = ("qemu_ios_microphone_write", "qemu_ios_microphone_flush", "qemu_ios_microphone_state")
 PORTABLE_SYMBOLS = ("lt_runtime_mic_write", "lt_runtime_mic_info", "lt_runtime_mic_flush")
@@ -66,10 +82,16 @@ def file_body(patch, relative):
     return "\n".join(lines)
 
 
+def mic_call_offset(body):
+    """Where the capture port asks the frontend's microphone, in either shape, or -1."""
+    found = [index for index in (body.find(MIC_CALL), body.find(GATED_MIC_CALL)) if index >= 0]
+    return min(found) if found else -1
+
+
 def engine_patch_asks_the_microphone_first():
     """The ordering that made the first device build record silence."""
     body = file_body(MIC_PATCH, "hw/arm/s5l8930_i2s.c")
-    mic = body.find("if (host_mic_read_frame(s->rx_frame))")
+    mic = mic_call_offset(body)
     voice = body.find("if (s->in_level >= 4)")
     require(mic >= 0, "i2s_next_frame() no longer consults the frontend's microphone")
     require(voice >= 0, "i2s_next_frame() no longer reads the port's own voice ring")
@@ -82,7 +104,17 @@ def engine_patch_exports_the_api():
     body = added_lines(MIC_PATCH)
     for symbol in ENGINE_SYMBOLS:
         require(re.search(r"\b" + symbol + r"\s*\(", body), f"the patch does not define {symbol}()")
-    require("(2u << 16) | 4u" in body, "QEMU_IOS_API_VERSION is not bumped to 2.4")
+    bumps = API_DEFINE.findall(read(MIC_PATCH))
+    raised = [int(minor) for sign, minor in bumps if sign == "+"]
+    lowered = [int(minor) for sign, minor in bumps if sign == "-"]
+    require(raised and lowered,
+            "the patch does not touch QEMU_IOS_API_VERSION, so an app cannot tell this engine "
+            "from one without the microphone")
+    require(max(raised) > min(lowered),
+            f"QEMU_IOS_API_VERSION is not raised: {min(lowered)} -> {max(raised)}")
+    require(max(raised) >= 4,
+            "the microphone arrived in API 2.4, and an engine below it exports no "
+            "qemu_ios_microphone_* entry points")
 
 
 def engine_patch_flushes_on_stop():
@@ -132,19 +164,24 @@ def portable_resolves_exactly_the_exported_names():
 def portable_pushes_from_the_capture_port():
     """One caller reads the ring, and it is the capture port."""
     body = added_lines(MIC_PATCH)
-    require("if (host_mic_read_frame(s->rx_frame))" in body,
+    require(mic_call_offset(body) >= 0,
             "the capture port no longer reads the microphone into its frame")
-    others = []
+    calls = []
     for line in body.splitlines():
         if "host_mic_read_frame(" not in line:
             continue
         text = line.strip()
-        if text.startswith(("*", "//", "if (host_mic_read_frame(s->rx_frame))")):
+        if text.startswith(("*", "//", MIC_CALL, GATED_MIC_CALL)):
             continue
         if text.startswith(("bool host_mic_read_frame", "void host_mic_read_frame")):
             continue  # its own definition or declaration
-        others.append(text)
-    require(not others, f"host_mic_read_frame() has unexpected call sites: {others}")
+        calls.append(text)
+    require(not calls, f"host_mic_read_frame() has unexpected call sites: {calls}")
+    site = [text for text in body.splitlines()
+            if text.strip().startswith((MIC_CALL, GATED_MIC_CALL))]
+    require(len(site) == 1,
+            f"the capture port is the ring's one reader, and the patch has {len(site)}: "
+            f"{[text.strip() for text in site]}")
 
 
 # --- android ----------------------------------------------------------------
@@ -239,7 +276,7 @@ def patch_stack(patch_dir, engine):
 CHECKS = [
     ("engine patch: the device code, its header and its build entry", engine_patch_adds_the_source),
     ("engine patch: the microphone is asked before the silent voice", engine_patch_asks_the_microphone_first),
-    ("engine patch: the three entry points and API 2.4", engine_patch_exports_the_api),
+    ("engine patch: the three entry points and the API bump", engine_patch_exports_the_api),
     ("engine patch: a stopped capture flushes the ring", engine_patch_flushes_on_stop),
     ("engine patch: the A4 boards have the microphone, the S5L8920 ones do not",
      engine_patch_gives_the_microphone_to_the_a4_boards_only),

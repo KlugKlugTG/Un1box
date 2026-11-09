@@ -1,0 +1,11 @@
+iBoot32Patcher, built from LukeZGD's fork of iBoot32Patcher at commit
+1ff9bd14648efae691ed23ae0abb55a4635111e3 (https://github.com/LukeZGD/iBoot32Patcher), with
+build-support/patches/iBoot32Patcher-ltm.patch applied. The archive and its SHA-256 are pinned in
+build-support/dependencies.json.
+
+firmwarekit runs it as a separate process for the iPad 1 (k48ap) recipe: it patches an iBoot image
+with the RSA/personalization bypass, the debug-enable patch and the boot-args string, and firmwarekit
+then seals the result into the NOR it builds.
+
+iBoot32Patcher is licensed GPL-3.0-or-later; the licence text is iBoot32Patcher-LICENSE beside this
+file, and the complete corresponding source is the pinned archive above with the patch named here.

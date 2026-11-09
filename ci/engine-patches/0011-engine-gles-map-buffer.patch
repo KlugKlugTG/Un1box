@@ -1,243 +1,18 @@
-From 9e0b2808a21ad9817b8b2743c2157acadf76cf0c Mon Sep 17 00:00:00 2001
-From: Un1box <un1box@localhost>
-Date: Thu, 29 Oct 2026 15:57:06 +0000
-Subject: [PATCH] gles: allocate guest storage lazily for NULL-backed mapped
- buffers
-
-Asphalt 8's latest crash report shows the next case: its 96-byte buffer was
-created by glBufferData with NULL. The host recognizes glMapBuffer, but has
-no guest address it can return, so map:no-guest-copy still leads to a null
-dereference.
-
-Keep metadata for NULL-backed buffers in the guest GLES shim, keyed by buffer
-name within the sharegroup. When (and only when) the app maps one, allocate
-its guest memory, replace the host's NULL data store with that address, then
-perform the map. This avoids allocating memory for the many NULL-backed
-buffers an app never maps. Free backing on successful reallocation, deletion
-or sharegroup teardown; cap it at the host's existing 64 MiB buffer limit.
-
-The host copies writes back on unmap. Client-backed buffers keep using their
-original guest pointer.
----
- contrib/guest-package/VERSION        |   2 +-
- contrib/it-gles/mbxshim.c            | 141 +++++++++++++++++++++++++--
- hw/arm/gles-host.c                   | 125 ++++++++++++++++++++++++
- include/hw/arm/guest-services/gles.h |   4 +
- 4 files changed, 265 insertions(+), 7 deletions(-)
-
-diff --git a/contrib/guest-package/VERSION b/contrib/guest-package/VERSION
-index 32a6323..fbda499 100644
---- a/contrib/guest-package/VERSION
-+++ b/contrib/guest-package/VERSION
-@@ -1,2 +1,2 @@
--serial 36
-+serial 39
- version 1.1.34
-diff --git a/contrib/it-gles/mbxshim.c b/contrib/it-gles/mbxshim.c
-index 45e40d3..7f12831 100644
---- a/contrib/it-gles/mbxshim.c
-+++ b/contrib/it-gles/mbxshim.c
-@@ -103,11 +103,21 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s && s[n]) n++; ret
- #define GLES_OP_NEW_CONTEXT 0x1006
- #define GLES_OP_DELETE_CONTEXT 0x1007
- 
--/* api and sg are glishim.c's (the GLEngine replacement, which #includes this
-- * file); the MBX path leaves them zero. */
-+/* api is known to the GLEngine replacement; the stock MBX ABI leaves it
-+ * unknown. sg is the sharegroup for this context, used to own guest buffer
-+ * storage shared by its contexts. */
-+typedef struct GuestMapStorage {
-+    unsigned name, size, usage;
-+    void *data;                  /* allocated lazily, only if glMapBuffer is called */
-+    struct GuestMapStorage *next;
-+} GuestMapStorage;
-+
- typedef struct {
-     unsigned host, unpack_alignment, api, owns_sg; void *sg; unsigned unpack_row_bytes;
-     unsigned *batch, batch_len;   /* glishim's command buffer (GLES_BATCH); unused on the MBX path */
-+    /* Buffer bindings are per context; NULL-data buffer backing is per sharegroup. */
-+    unsigned array_buffer, element_buffer;
-+    GuestMapStorage *map_storage;
- } GuestGC;
- extern void *calloc(unsigned long, unsigned long);
- extern void free(void *);
-@@ -643,7 +653,12 @@ static int s_texSubImage2D(void *gc, unsigned target, unsigned level,
-       return (int)qc(307, gc, 9,
-                      A(target, level, xoff, yoff, wd_, ht, fmt, type, pixels)); }
- static int s_bindBuffer(void *gc, unsigned target, unsigned buf)
--    { return (int)qc(642, gc, 2, A(target, buf)); }
-+    {
-+        int result = (int)qc(642, gc, 2, A(target, buf));
-+        if (gc && target == 0x8892) ((GuestGC *)gc)->array_buffer = buf;
-+        if (gc && target == 0x8893) ((GuestGC *)gc)->element_buffer = buf;
-+        return result;
-+    }
- static int s_scalex(void *gc, unsigned x, unsigned y, unsigned z)
-     { return (int)qc(796, gc, 3, A(x, y, z)); }
- 
-@@ -723,12 +738,121 @@ static int s_compressedTexSubImage2D(void *gc, unsigned target, unsigned level,
-                      A(target, level, xoff, yoff, wd_, ht, fmt, imgsz, data)); }
- static int s_genBuffers(void *gc, unsigned n, unsigned ids)
-     { return (int)qc(644, gc, 2, A(n, ids)); }
-+
-+/* glBufferData(NULL) is legal: the driver allocates storage for later mapping.
-+ * The host cannot allocate guest virtual memory, so the sharegroup owns a small
-+ * guest-side backing allocation for each such buffer. The host keeps its own
-+ * copy for drawing; glMapBuffer returns this guest address and glUnmapBuffer
-+ * copies the app's writes back. */
-+#define GLES_MAP_BUFFER_MAX_BYTES (64u * 1024u * 1024u)
-+static GuestGC *map_storage_owner(void *gc)
-+{
-+    GuestGC *context = gc;
-+    return context && context->sg ? (GuestGC *)context->sg : context;
-+}
-+static GuestMapStorage *map_storage_find(GuestGC *owner, unsigned name)
-+{
-+    for (GuestMapStorage *item = owner ? owner->map_storage : 0; item; item = item->next) {
-+        if (item->name == name) return item;
-+    }
-+    return 0;
-+}
-+static void map_storage_drop(GuestGC *owner, unsigned name)
-+{
-+    if (!owner || !name) return;
-+    GuestMapStorage **link = &owner->map_storage;
-+    while (*link) {
-+        GuestMapStorage *item = *link;
-+        if (item->name == name) {
-+            *link = item->next;
-+            free(item->data);
-+            free(item);
-+            return;
-+        }
-+        link = &item->next;
-+    }
-+}
-+static void map_storage_clear(GuestGC *owner)
-+{
-+    if (!owner) return;
-+    while (owner->map_storage) {
-+        GuestMapStorage *item = owner->map_storage;
-+        owner->map_storage = item->next;
-+        free(item->data);
-+        free(item);
-+    }
-+}
- static int s_deleteBuffers(void *gc, unsigned n, unsigned ids)
--    { return (int)qc(643, gc, 2, A(n, ids)); }
-+    {
-+        GuestGC *owner = map_storage_owner(gc);
-+        if (n && ids && n <= 0x3fffffffu &&
-+            guest_fault_read(ids, n * sizeof(unsigned))) {
-+            const unsigned *names = (const unsigned *)(unsigned long)ids;
-+            for (unsigned i = 0; i < n; i++) map_storage_drop(owner, names[i]);
-+        }
-+        return (int)qc(643, gc, 2, A(n, ids));
-+    }
- static int s_bufferData(void *gc, unsigned target, unsigned size,
-                         unsigned data, unsigned usage)
--    { guest_fault_read(data, size);
--      return (int)qc(646, gc, 4, A(target, size, data, usage)); }
-+    {
-+        GuestGC *context = gc;
-+        GuestGC *owner = map_storage_owner(gc);
-+        unsigned name = context ? (target == 0x8893 ? context->element_buffer :
-+                                   context->array_buffer) : 0;
-+        GuestMapStorage *storage = 0;
-+
-+        /* Keep only metadata for NULL stores: most are never mapped, so do not
-+         * allocate guest memory until the app actually asks glMapBuffer for it. */
-+        if (!data && size && size <= GLES_MAP_BUFFER_MAX_BYTES && name && owner) {
-+            storage = calloc(1, sizeof(*storage));
-+            if (storage) {
-+                storage->name = name;
-+                storage->size = size;
-+                storage->usage = usage;
-+            }
-+        }
-+        guest_fault_read(data, size);
-+        int result = (int)qc(646, gc, 4, A(target, size, data, usage));
-+        if (result < 0) {
-+            free(storage);
-+            return result;
-+        }
-+        map_storage_drop(owner, name);
-+        if (storage) {
-+            storage->next = owner->map_storage;
-+            owner->map_storage = storage;
-+        }
-+        return result;
-+    }
-+static void *s_mapBuffer(void *gc, unsigned target, unsigned access)
-+    {
-+        GuestGC *context = gc;
-+        GuestGC *owner = map_storage_owner(gc);
-+        unsigned name = context ? (target == 0x8893 ? context->element_buffer :
-+                                   context->array_buffer) : 0;
-+        GuestMapStorage *storage = map_storage_find(owner, name);
-+
-+        if (storage && !storage->data) {
-+            storage->data = calloc(1, storage->size);
-+            if (!storage->data) {
-+                long long failed = qc(649, gc, 2, A(target, access));
-+                return failed > 0 ? (void *)(unsigned long)failed : 0;
-+            }
-+            unsigned guest = (unsigned)(unsigned long)storage->data;
-+            guest_fault_read(guest, storage->size);
-+            /* Replace the host's NULL store with this guest-owned storage so
-+             * the host can return its address from the following map call. */
-+            if (qc(646, gc, 4, A(target, storage->size, guest, storage->usage)) < 0) {
-+                free(storage->data);
-+                storage->data = 0;
-+                return 0;
-+            }
-+        }
-+        long long mapped = qc(649, gc, 2, A(target, access));
-+        return mapped > 0 ? (void *)(unsigned long)mapped : 0;
-+    }
-+static int s_unmapBuffer(void *gc, unsigned target)
-+    { return (int)qc(650, gc, 1, A(target)); }
- static int s_bufferSubData(void *gc, unsigned target, unsigned offset,
-                            unsigned size, unsigned data)
-     { guest_fault_read(data, size);
-@@ -757,6 +881,7 @@ static int GLESCreateSharegroup(void **out)
- static int GLESDestroySharegroup(void *sg)
- {
-     if (sg && ((GuestGC *)sg)->host) qc(GLES_OP_DELETE_SHAREGROUP, 0, 1, A(((GuestGC *)sg)->host));
-+    map_storage_clear(sg); // sharegroup storage outlives its contexts
-     free(sg);
-     return 0;
- }
-@@ -950,6 +1075,8 @@ static void gles_hand_table(void **table)
-         table[643] = (void *)s_deleteBuffers;
-         table[644] = (void *)s_genBuffers;
-         table[646] = (void *)s_bufferData;
-+        table[649] = (void *)s_mapBuffer;
-+        table[650] = (void *)s_unmapBuffer;
-         table[647] = (void *)s_bufferSubData;
- 
-         table[60]  = (void *)s_depthFunc;
-@@ -982,6 +1109,7 @@ static int GLESCreateGCWithAPI(void *sharegroup, void **fw_table, void *x_end,
-         gc->host = (unsigned)host;
-     }
-     gc->api = api;
-+    gc->sg = sharegroup;
-     w("[mbxshim] GLESCreateGC\n");
- 
-     if (fw_table) {
-@@ -1077,6 +1205,7 @@ static int GLESDestroyGC(void *gc)
- {
-     ca_detach_view(ca_view_for_gc(gc, 0));
-     if (gc && ((GuestGC *)gc)->host) qc(GLES_OP_DELETE_CONTEXT, gc, 0, A(0));
-+    if (gc && !((GuestGC *)gc)->sg) map_storage_clear(gc);
-     free(gc);
-     return 0;
- }
 diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
-index a9204b3..0fa0b71 100644
+index f410cfc4df..1646c3a263 100644
 --- a/hw/arm/gles-host.c
 +++ b/hw/arm/gles-host.c
-@@ -290,6 +290,21 @@ typedef struct {
+@@ -42,6 +42,9 @@ extern bool it_profile_on;
+ #include "exec/tb-flush.h"
+ #include "tcg/tcg.h"
+ #include "qemu/units.h"
++#if defined(__aarch64__)
++#include <arm_neon.h>       /* gles_frame_row: four pixels a byte shuffle */
++#endif
+ #include "qemu/error-report.h"
+ #include "hw/core/sysbus.h"
+ #include "hw/arm/ipod_touch_2g.h"
+@@ -287,6 +290,22 @@ typedef struct {
      size_t size;
      uint32_t name;
      unsigned refs;
@@ -256,10 +31,545 @@ index a9204b3..0fa0b71 100644
 +    uint32_t map_ptr;
 +    uint32_t map_size;
 +    uint32_t map_access;
++    uint64_t generation;
  } GLESBuffer;
  
  typedef struct {
-@@ -4381,6 +4396,10 @@ static float gles_f(uint32_t bits)
+@@ -312,6 +331,10 @@ typedef struct {
+     /* Second scratch, used only to widen GL_FIXED to float. */
+     float *fbuf;
+     size_t fbuf_count;
++    const GLESBuffer *fbuf_vbo;
++    uint64_t fbuf_vbo_gen;
++    size_t fbuf_off;
++    uint32_t fbuf_verts, fbuf_stride, fbuf_size, fbuf_type;
+ 
+     /* Which client-state enum turns this array on, e.g. GL_VERTEX_ARRAY. */
+     GLenum client_state;
+@@ -319,12 +342,47 @@ typedef struct {
+     /* Actual host state, separate from the guest's pointer/enable state.
+      * Scratch contents are refreshed every draw even when its address stays
+      * the same. These fields belong to this array's host context. */
+-    bool host_enabled, host_pointer_valid;
++    bool host_enabled, host_pointer_valid, host_normalized;
+     uint32_t host_size, host_stride;
+     GLenum host_type;
+     const void *host_pointer;
+ } GLESArray;
+ 
++/*
++ * OES_vertex_array_object: a name for the array state the draws already read
++ * here. What a VAO owns is exactly what this context keeps per array -- the ES1
++ * client arrays, the ES2 generic attributes and the element-array binding -- so
++ * a VAO is that state under a name, and no host object is involved. The host's
++ * own VAO would only duplicate a cache the draw path re-applies on every draw,
++ * and asking for one would tie these four slots to the backends that have
++ * ARB_vertex_array_object, which an ES 1.1 host context and the desktop ones do
++ * not.
++ *
++ * Everything the host side of an array carries stays with the context: the
++ * scratch a fetch grows (buf/fbuf), the client-state enum, and the mirror of
++ * what the host was last told. The scratch's contents are refreshed every draw
++ * even when its address stays the same, and the mirror is compared against the
++ * state now wanted, so a bind re-issues exactly the host calls the new state
++ * needs and no stale copy survives the switch. GL_ARRAY_BUFFER is deliberately
++ * not part of it: GL captures the binding in force per array at gl*Pointer time,
++ * which `vbo` already is, and leaves the array-buffer binding itself outside.
++ */
++#define GLES_VAO_ARRAYS  (4u + GLES_MAX_TEXUNITS + GLES_MAX_ATTRIBS)
++#define GLES_VAO_BINDING 0x85B5   /* GL_VERTEX_ARRAY_BINDING_OES */
++
++/* One array's guest-visible state, and a reference to the buffer it names. */
++typedef struct {
++    uint32_t enabled, size, type, stride, ptr;
++    bool normalized;            /* the generic attributes' one extra field */
++    GLESBuffer *vbo;
++} GlesArrayState;
++
++typedef struct {
++    GlesArrayState array[GLES_VAO_ARRAYS];
++    GLESBuffer *element_buffer;
++} GlesVertexArray;
++/* The functions that move this state are with the buffer ones below. */
++
+ typedef struct {
+     uint32_t base, stride, width, height, format, uv, uvstride;
+     GLenum target;
+@@ -596,6 +654,13 @@ typedef struct {
+      * A nonzero program is what sends a draw down the ES 2.0 path. */
+     GLESArray attr[GLES_MAX_ATTRIBS];
+     bool attr_normalized[GLES_MAX_ATTRIBS];
++    /* OES_vertex_array_object: the array state under a name. Per context, not
++     * per sharegroup -- GL does not share VAOs, and the arrays they name belong
++     * to this context. The table is made at the first bind of a name. */
++    GHashTable *vaos;           /* name -> GlesVertexArray */
++    uint32_t next_vao_name;     /* append-only: a deleted name is not reused */
++    GLuint vao;                 /* the bound name; 0 is the default state below */
++    GlesVertexArray vao_default;
+     GLuint program;             /* guest id; nonzero = ES 2.0 draws */
+     GHashTable *glsl;           /* shader/program names, without a group */
+     uint32_t glsl_next;
+@@ -1357,6 +1422,216 @@ static void gles_array_enable(GLESArray *a, bool enabled)
+     }
+ }
+ 
++static void gles_es2_attr_enable(unsigned index, GLESArray *a, bool enabled)
++{
++    if (!gles_array_cache || a->host_enabled != enabled) {
++        if (enabled) {
++            glEnableVertexAttribArray(index);
++        } else {
++            glDisableVertexAttribArray(index);
++        }
++        a->host_enabled = enabled;
++        if (gles_prof) gh.array_enables++;
++    }
++}
++
++static void gles_widen_fixed_or_byte(GLESArray *a, const uint8_t *base,
++                                     size_t vbo_off, uint32_t count,
++                                     uint32_t stride, GLenum type)
++{
++    size_t n = (size_t)count * a->size;
++
++    if (a->vbo && a->fbuf_vbo == a->vbo &&
++        a->fbuf_vbo_gen == a->vbo->generation && a->fbuf_off == vbo_off &&
++        a->fbuf_verts == count && a->fbuf_stride == stride &&
++        a->fbuf_size == a->size && a->fbuf_type == type && n <= a->fbuf_count) {
++        return;
++    }
++    if (n > a->fbuf_count) {
++        a->fbuf = g_realloc(a->fbuf, n * sizeof(float));
++        a->fbuf_count = n;
++    }
++    if (type == GLES_FIXED && stride == a->size * 4) {
++        size_t i = 0;
++#if defined(__aarch64__) && defined(__ARM_NEON)
++        for (; i + 4 <= n; i += 4) {
++            int32x4_t raw = vld1q_s32((const int32_t *)(base + i * 4));
++            vst1q_f32(&a->fbuf[i], vcvtq_n_f32_s32(raw, 16));
++        }
++#endif
++        for (; i < n; i++) {
++            a->fbuf[i] = (float)ldl_le_p(base + i * 4) * (1.0f / 65536.0f);
++        }
++    } else if (type == GLES_FIXED) {
++        for (uint32_t row = 0; row < count; row++) {
++            const uint8_t *src = base + (size_t)stride * row;
++            for (uint32_t c = 0; c < a->size; c++) {
++                a->fbuf[(size_t)row * a->size + c] =
++                    (float)ldl_le_p(src + c * 4) * (1.0f / 65536.0f);
++            }
++        }
++    } else {
++        for (uint32_t row = 0; row < count; row++) {
++            const uint8_t *src = base + (size_t)stride * row;
++            for (uint32_t c = 0; c < a->size; c++) {
++                /* GL_BYTE positions are used unscaled, not normalized. */
++                a->fbuf[(size_t)row * a->size + c] =
++                    (float)((const int8_t *)src)[c];
++            }
++        }
++    }
++    if (a->vbo) {
++        a->fbuf_vbo = a->vbo;
++        a->fbuf_vbo_gen = a->vbo->generation;
++        a->fbuf_off = vbo_off;
++        a->fbuf_verts = count;
++        a->fbuf_stride = stride;
++        a->fbuf_size = a->size;
++        a->fbuf_type = type;
++    } else {
++        a->fbuf_vbo = NULL;
++    }
++}
++
++/*
++ * One fetch per draw can serve the arrays that live inside it.
++ *
++ * Guest geometry is usually interleaved -- position, normal, colour and texture coordinates in one
++ * struct -- so each array's gl*Pointer names a range of bytes that contains the others' ranges, and
++ * the bind copied that memory once per array: four guest reads of overlapping bytes for one draw,
++ * each its own pass of probes. The draw's fetches are now taken from one pool, and an array whose
++ * range falls inside an earlier fetch of the same draw is pointed into that copy instead of reading
++ * the guest again. Nothing runs in the guest between them: this all happens inside one QEMU_CALL.
++ *
++ * The pool is a fixed size and a bump allocator, reset per draw, so no pointer handed to GL ever
++ * moves: an array's registered pointer stays valid for as long as its delta into the pool does, and
++ * the host-pointer cache above it keeps working. An array larger than the pool takes the per-array
++ * buffer, exactly as before. Per thread, because a queued GL call runs on the GL thread while the
++ * vCPU may be inside one of its own.
++ */
++#define GLES_DRAW_POOL_BYTES (1u << 20)
++#define GLES_DRAW_FETCHES    8
++
++static __thread struct {
++    uint8_t *pool;                      /* allocated on first use, never moves */
++    size_t used;                        /* bytes handed out this draw */
++    unsigned nfetch;
++    struct {
++        uint64_t start;                 /* guest address of host[0] */
++        size_t len;
++        uint8_t *host;
++    } fetch[GLES_DRAW_FETCHES];
++} gles_draw_fetch;
++
++/* A fetch's bytes for this draw, from the pool; NULL if the pool cannot take it. */
++static uint8_t *gles_draw_pool_take(size_t bytes)
++{
++    size_t at = (gles_draw_fetch.used + 15) & ~(size_t)15;
++
++    if (bytes > GLES_DRAW_POOL_BYTES || at + bytes > GLES_DRAW_POOL_BYTES) {
++        return NULL;
++    }
++    if (!gles_draw_fetch.pool) {
++        gles_draw_fetch.pool = g_malloc(GLES_DRAW_POOL_BYTES);
++    }
++    gles_draw_fetch.used = at + bytes;
++    return gles_draw_fetch.pool + at;
++}
++
++/* The pool copy of the range [va, va + bytes], if this draw already read a range containing it. */
++static const uint8_t *gles_draw_pool_find(uint64_t va, size_t bytes)
++{
++    for (unsigned i = 0; i < gles_draw_fetch.nfetch; i++) {
++        uint64_t start = gles_draw_fetch.fetch[i].start;
++        size_t len = gles_draw_fetch.fetch[i].len;
++
++        if (va >= start && va + bytes <= start + len) {
++            return gles_draw_fetch.fetch[i].host + (va - start);
++        }
++    }
++    return NULL;
++}
++
++static void gles_draw_pool_record(uint64_t va, size_t bytes, uint8_t *host)
++{
++    if (gles_draw_fetch.nfetch < GLES_DRAW_FETCHES) {
++        gles_draw_fetch.fetch[gles_draw_fetch.nfetch].start = va;
++        gles_draw_fetch.fetch[gles_draw_fetch.nfetch].len = bytes;
++        gles_draw_fetch.fetch[gles_draw_fetch.nfetch].host = host;
++        gles_draw_fetch.nfetch++;
++    }
++}
++
++static void gles_interleaved_consider(const GLESArray *b, uint32_t ptr,
++                                      uint32_t stride, uint32_t first,
++                                      uint32_t count, uint64_t *span_lo,
++                                      uint64_t *span_hi)
++{
++    uint32_t b_esz, b_stride, lo_ptr, hi_ptr;
++    uint64_t b_want, b_end;
++
++    if (!b->enabled || b->vbo || !b->ptr) {
++        return;
++    }
++    b_esz = gles_type_size(b->type) * b->size;
++    if (!b_esz) {
++        return;
++    }
++    b_stride = b->stride ? b->stride : b_esz;
++    if (b_stride != stride) {
++        return;
++    }
++    lo_ptr = MIN(ptr, b->ptr);
++    hi_ptr = MAX(ptr, b->ptr);
++    if (hi_ptr - lo_ptr >= stride) {
++        return;
++    }
++    b_want = (uint64_t)b->ptr + (uint64_t)stride * first;
++    b_end = b_want + (uint64_t)stride * (count - 1) + b_esz;
++    if (b_want < *span_lo) {
++        *span_lo = b_want;
++    }
++    if (b_end > *span_hi) {
++        *span_hi = b_end;
++    }
++}
++
++/*
++ * Expand [want, want + need) to the convex hull of enabled client arrays in
++ * this draw that share `stride` and start within `stride` bytes of `a->ptr`.
++ * Without this, `pos` at offset 0 stops at `stride * (count - 1) + pos_esz`,
++ * leaving the last vertex's `uv`/`color` bytes outside the fetched range so
++ * later interleaved attributes miss the pool on every draw.
++ */
++static void gles_interleaved_span(const GLESArray *a, uint32_t stride,
++                                  uint32_t first, uint32_t count,
++                                  uint64_t want, size_t need, bool es2,
++                                  uint64_t *span_lo, size_t *span_len)
++{
++    uint64_t lo = want, hi = want + need;
++
++    if (es2) {
++        for (unsigned j = 0; j < GLES_MAX_ATTRIBS; j++) {
++            gles_interleaved_consider(&gh.attr[j], a->ptr, stride, first,
++                                      count, &lo, &hi);
++        }
++    } else {
++        const GLESArray *fixed[] = {
++            &gh.vertex, &gh.color, &gh.normal, &gh.pointsize
++        };
++        for (unsigned j = 0; j < ARRAY_SIZE(fixed); j++) {
++            gles_interleaved_consider(fixed[j], a->ptr, stride, first,
++                                      count, &lo, &hi);
++        }
++        for (unsigned j = 0; j < GLES_MAX_TEXUNITS; j++) {
++            gles_interleaved_consider(&gh.texcoord[j], a->ptr, stride, first,
++                                      count, &lo, &hi);
++        }
++    }
++    *span_lo = lo;
++    *span_len = (size_t)(hi - lo);
++}
++
+ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
+                             uint32_t count)
+ {
+@@ -1400,25 +1675,46 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
+         }
+         base = a->vbo->data + a->ptr + off;
+     } else {
+-        if (need > a->buf_size) {
+-            a->buf = g_realloc(a->buf, need);
+-            a->buf_size = need;
+-        }
+-        {
+-            uint64_t t0 = gles_t();
+-            int rc = gles_guest_rw(cpu, a->ptr + (hwaddr)off,
+-                                         a->buf, need, 0);
+-            gh.t_fetch += gles_t() - t0;
+-            if (rc != 0) {
+-                if (!gles_guest_fault_pending() &&  /* else it is reissued */
+-                    gles_refuse("guest-read:array")) {
+-                    fprintf(stderr, "[gles] failed to read %zu bytes of array data "
+-                            "at guest 0x%08x\n", need, a->ptr);
++        uint64_t want = (uint64_t)a->ptr + off;
++        const uint8_t *pooled = gles_draw_pool_find(want, need);
++
++        if (pooled) {
++            base = pooled;
++        } else {
++            uint64_t fetch_va = want;
++            size_t fetch_len = need;
++            uint8_t *dst;
++
++            gles_interleaved_span(a, stride, first, count, want, need, false,
++                                  &fetch_va, &fetch_len);
++            dst = gles_draw_pool_take(fetch_len);
++            if (!dst) {
++                fetch_va = want;
++                fetch_len = need;
++                if (need > a->buf_size) {
++                    a->buf = g_realloc(a->buf, need);
++                    a->buf_size = need;
+                 }
+-                return false;
++                dst = a->buf;
++            }
++            {
++                uint64_t t0 = gles_t();
++                int rc = gles_guest_rw(cpu, fetch_va, dst, fetch_len, 0);
++                gh.t_fetch += gles_t() - t0;
++                if (rc != 0) {
++                    if (!gles_guest_fault_pending() &&  /* else it is reissued */
++                        gles_refuse("guest-read:array")) {
++                        fprintf(stderr, "[gles] failed to read %zu bytes of array data "
++                                "at guest 0x%08x\n", fetch_len, a->ptr);
++                    }
++                    return false;
++                }
++            }
++            if (dst != a->buf) {
++                gles_draw_pool_record(fetch_va, fetch_len, dst);
+             }
++            base = dst + (want - fetch_va);
+         }
+-        base = a->buf;
+     }
+ 
+     data = base;
+@@ -1426,26 +1722,8 @@ static bool gles_bind_array(CPUState *cpu, GLESArray *a, uint32_t first,
+ 
+     /* Convert the types the host would refuse. See gles_needs_widen. */
+     if (gles_needs_widen(a->client_state, type)) {
+-        size_t n = (size_t)count * a->size;
+-        uint32_t i, c;
+-
+-        if (n > a->fbuf_count) {
+-            a->fbuf = g_realloc(a->fbuf, n * sizeof(float));
+-            a->fbuf_count = n;
+-        }
+-        for (i = 0; i < count; i++) {
+-            const uint8_t *row = base + (size_t)stride * i;
+-            for (c = 0; c < a->size; c++) {
+-                float v;
+-                if (type == GLES_FIXED) {
+-                    v = (float)((const int32_t *)row)[c] / 65536.0f;
+-                } else {
+-                    /* GL_BYTE positions are used unscaled, not normalized. */
+-                    v = (float)((const int8_t *)row)[c];
+-                }
+-                a->fbuf[(size_t)i * a->size + c] = v;
+-            }
+-        }
++        gles_widen_fixed_or_byte(a, base, (size_t)a->ptr + off, count, stride,
++                                 type);
+         data = a->fbuf;
+         type = GL_FLOAT;
+         stride = 0;   /* the converted copy is tightly packed */
+@@ -1722,6 +2000,10 @@ static uint32_t gles_bind_all_arrays(CPUState *cpu, uint32_t first,
+     unsigned i;
+     uint64_t t0 = gles_t();
+ 
++    /* A new draw: its fetches start from the top of the pool (see gles_draw_fetch). */
++    gles_draw_fetch.used = 0;
++    gles_draw_fetch.nfetch = 0;
++
+     for (i = 0; i < ARRAY_SIZE(arrays); i++) {
+         if (gles_bind_array(cpu, arrays[i], first, count)) {
+             bound |= 1u << i;
+@@ -2229,6 +2511,7 @@ static unsigned gles_query_count(uint32_t pname)
+     case GL_NORMAL_ARRAY_BUFFER_BINDING:
+     case GL_COLOR_ARRAY_BUFFER_BINDING:
+     case GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING:
++    case GLES_VAO_BINDING:
+     case 0x8B9A: /* GL_IMPLEMENTATION_COLOR_READ_TYPE_OES */
+     case 0x8B9B: /* GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES */
+     case 0x8CA6: /* GL_FRAMEBUFFER_BINDING_OES */
+@@ -3157,10 +3440,36 @@ static const uint8_t *gles_frame_lock(size_t *stride)
+     if (!gh.iosurface) {
+         return NULL;
+     }
+-    glFlush();
++#ifdef GLES_HOST_AHB
++    /* The AHardwareBuffer lock submits the frame itself -- the native fence after a flush, or a
++     * glFinish -- so flushing here as well submitted it twice. */
++    if (!gh.ahb.buffer)
++#endif
++    {
++        glFlush();
++    }
+     return gles_platform_frame_lock(stride);
+ }
+ 
++/*
++ * glReadPixels is the sync point for the pixels it reads: the driver has the drawable's rendering
++ * finished before it returns them, per read rather than per queue. The glFinish this path took
++ * first therefore drained every queue in the context for nothing -- the double wait the
++ * AHardwareBuffer path was added to remove (see gles_ahb_lock). Kept as a switch for a driver that
++ * tests badly: LT_READBACK_FINISH=on.
++ */
++static bool gles_readback_finish(void)
++{
++    static int on = -1;
++
++    if (on < 0) {
++        const char *v = getenv("LT_READBACK_FINISH");
++
++        on = v && (!strcmp(v, "on") || !strcmp(v, "1"));
++    }
++    return on;
++}
++
+ /*
+  * A locked frame row in the guest's BGRA order: @src itself, or @scratch
+  * holding it byte-swapped when the platform could only render RGBA.
+@@ -3172,8 +3481,23 @@ static inline const uint8_t *gles_frame_row(const uint8_t *src, uint8_t *scratch
+     if (gh.ahb.rgba) {
+         const uint32_t *s = (const uint32_t *)src;
+         uint32_t *d = (uint32_t *)scratch;
++        uint32_t i = 0;
++
++#if defined(__aarch64__) && defined(__ARM_NEON)
++        /* Four pixels a byte shuffle, as the Android presenter's own convert does: this runs over
++         * every pixel of every frame on a driver that refused BGRA storage for the surface. */
++        static const uint8_t swap[16] = {
++            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
++        };
++        uint8x16_t table = vld1q_u8(swap);
++
++        for (; i + 4 <= pixels; i += 4) {
++            uint8x16_t v = vld1q_u8((const uint8_t *)(s + i));
+ 
+-        for (uint32_t i = 0; i < pixels; i++) {
++            vst1q_u8((uint8_t *)(d + i), vqtbl1q_u8(v, table));
++        }
++#endif
++        for (; i < pixels; i++) {
+             uint32_t v = s[i];
+             d[i] = (v & 0xff00ff00u) | (v >> 16 & 0xffu) | (v & 0xffu) << 16;
+         }
+@@ -4024,6 +4348,19 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+         }
+         gles_present_mark(sample, PRESENT_ACQUIRE);
+         if (frame) {
++            GlesGuestPages pages;
++            /*
++             * The destination's pages once for the whole frame, not once a row: the copy wrote
++             * every row with its own gles_guest_rw, which probes the page, looks up the mmu index
++             * and splits at the page boundary again for each of up to 640 rows. A page that needs
++             * the full path fails the map and the rows go back through gles_guest_rw, which is
++             * also what raises the fault that reissues the present.
++             */
++            bool mapped = !gles_guest_rw_hook && !gles_guest_fault_pending() &&
++                          gles_guest_pages_map(&pages, cpu, base,
++                                               (uint64_t)base + (uint64_t)(rh - 1) * stride +
++                                               (uint64_t)rw * 4);
++
+             if (sample) {
+                 sample->path = 1;
+             }
+@@ -4032,6 +4369,11 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+                 const uint8_t *src = frame + (size_t)(rh - 1 - y) * fstride;
+ 
+                 src = gles_frame_row(src, gh.readback, rw);
++                if (mapped) {
++                    gles_guest_pages_write(&pages, (uint64_t)base + (uint64_t)y * stride,
++                                           src, (size_t)rw * 4);
++                    continue;
++                }
+                 if (gles_guest_rw(cpu, base + (hwaddr)y * stride,
+                                         (void *)src, rw * 4, 1) != 0) {
+                     /* a page being faulted in reissues the whole present: not a refusal */
+@@ -4096,7 +4438,9 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+         /* Same as the panel present above: read the drawable, not whichever
+          * offscreen target the guest left bound. */
+         glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.fbo);
+-        glFinish();
++        if (gles_readback_finish()) {
++            glFinish();         /* LT_READBACK_FINISH=on: the drain this path used to take */
++        }
+         if (sample) {
+             sample->path = 2;
+         }
+@@ -4145,6 +4489,13 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+         }
+         gles_present_mark(sample, PRESENT_CONVERT);
+ 
++        GlesGuestPages pages;
++        /* As on the surface path above: one mapping for the frame, or the row-at-a-time copy. */
++        bool mapped = !gles_guest_rw_hook && !gles_guest_fault_pending() &&
++                      gles_guest_pages_map(&pages, cpu, base,
++                                           (uint64_t)base + (uint64_t)(rh - 1) * stride +
++                                           (uint64_t)rw * bpp);
++
+         for (y = 0; y < rh; y++) {
+             /* GL's origin is bottom-left, the surface's is top-left. Only the
+              * rw*4 bytes the row actually covers are written, so the staging
+@@ -4152,6 +4503,11 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+              * already in the destination's layout. */
+             uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * bpp;
+ 
++            if (mapped) {
++                gles_guest_pages_write(&pages, (uint64_t)base + (uint64_t)y * stride,
++                                       src, (size_t)rw * bpp);
++                continue;
++            }
+             if (gles_guest_rw(cpu, base + (hwaddr)y * stride,
+                                     src, rw * bpp, 1) != 0) {
+                 if (!gles_guest_fault_pending() && gles_refuse("present:write")) {
+@@ -4218,6 +4574,10 @@ static float gles_f(uint32_t bits)
  /* A guest buffer big enough to matter is a few MB of geometry; anything past
   * this is a corrupt size, and g_malloc aborts QEMU rather than failing. */
  #define GLES_MAX_BUFFER_BYTES ((size_t)64 * 1024 * 1024)
@@ -270,7 +580,212 @@ index a9204b3..0fa0b71 100644
  
  static void gles_buffer_destroy(gpointer p)
  {
-@@ -4436,6 +4455,25 @@ static GLESBuffer *gles_buffer_bound(uint32_t target)
+@@ -4237,6 +4597,196 @@ static void gles_buffer_bind(GLESBuffer **slot, GLESBuffer *b)
+     *slot = b;
+ }
+ 
++/* ------------------------------------------------- vertex array objects ---- */
++
++/*
++ * The arrays a VAO owns, in one order: the four ES1 client arrays, the texture
++ * coordinate ones, then the ES2 generic attributes (whose normalized flag
++ * travels with them). Both store and load walk this list, so the two can never
++ * disagree about which array is which.
++ */
++static unsigned gles_vao_arrays(GLESArray **array, bool **normalized)
++{
++    unsigned n = 0;
++
++    array[n] = &gh.vertex;    normalized[n++] = NULL;
++    array[n] = &gh.color;     normalized[n++] = NULL;
++    array[n] = &gh.normal;    normalized[n++] = NULL;
++    array[n] = &gh.pointsize; normalized[n++] = NULL;
++    for (unsigned i = 0; i < GLES_MAX_TEXUNITS; i++) {
++        array[n] = &gh.texcoord[i];
++        normalized[n++] = NULL;
++    }
++    for (unsigned i = 0; i < GLES_MAX_ATTRIBS; i++) {
++        array[n] = &gh.attr[i];
++        normalized[n++] = &gh.attr_normalized[i];
++    }
++    return n;
++}
++
++/* Drop a record's buffer references; the record itself belongs to the caller. */
++static void gles_vao_release(GlesVertexArray *v)
++{
++    for (unsigned i = 0; i < GLES_VAO_ARRAYS; i++) {
++        gles_buffer_bind(&v->array[i].vbo, NULL);
++    }
++    gles_buffer_bind(&v->element_buffer, NULL);
++}
++
++static void gles_vao_destroy(gpointer data)
++{
++    GlesVertexArray *v = data;
++
++    gles_vao_release(v);
++    g_free(v);
++}
++
++/*
++ * The record for a name. Name 0 is the default state, which lives in the
++ * context: it is what a bind of 0 comes back to, and what deleting the bound one
++ * falls back to. NULL for a name that is not a VAO and is not to become one.
++ */
++static GlesVertexArray *gles_vao_record(uint32_t name, bool create)
++{
++    GlesVertexArray *v;
++
++    if (!name) {
++        return &gh.vao_default;
++    }
++    if (!gh.vaos) {
++        if (!create) {
++            return NULL;
++        }
++        gh.vaos = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
++                                        gles_vao_destroy);
++    }
++    v = g_hash_table_lookup(gh.vaos, GUINT_TO_POINTER(name));
++    if (!v && create) {
++        v = g_new0(GlesVertexArray, 1);     /* every array off, no element array */
++        g_hash_table_insert(gh.vaos, GUINT_TO_POINTER(name), v);
++    }
++    return v;
++}
++
++static void gles_vao_store(GlesVertexArray *v)
++{
++    GLESArray *array[GLES_VAO_ARRAYS];
++    bool *normalized[GLES_VAO_ARRAYS];
++    unsigned n = gles_vao_arrays(array, normalized);
++
++    for (unsigned i = 0; i < n; i++) {
++        GlesArrayState *s = &v->array[i];
++
++        gles_buffer_bind(&s->vbo, array[i]->vbo);   /* the record's old reference goes first */
++        s->enabled = array[i]->enabled;
++        s->size = array[i]->size;
++        s->type = array[i]->type;
++        s->stride = array[i]->stride;
++        s->ptr = array[i]->ptr;
++        s->normalized = normalized[i] ? *normalized[i] : false;
++    }
++    gles_buffer_bind(&v->element_buffer, gh.element_buffer);
++}
++
++static void gles_vao_load(const GlesVertexArray *v)
++{
++    GLESArray *array[GLES_VAO_ARRAYS];
++    bool *normalized[GLES_VAO_ARRAYS];
++    unsigned n = gles_vao_arrays(array, normalized);
++
++    for (unsigned i = 0; i < n; i++) {
++        const GlesArrayState *s = &v->array[i];
++
++        gles_buffer_bind(&array[i]->vbo, s->vbo);
++        array[i]->enabled = s->enabled;
++        array[i]->size = s->size;
++        array[i]->type = s->type;
++        array[i]->stride = s->stride;
++        array[i]->ptr = s->ptr;
++        if (normalized[i]) {
++            *normalized[i] = s->normalized;
++        }
++    }
++    gles_buffer_bind(&gh.element_buffer, v->element_buffer);
++}
++
++/* glGenVertexArrays{n, guest GLuint*}: names only, for the OES and the EXT
++ * spelling alike. GL makes the object exist at its first bind, so a name
++ * generated and never bound is not a VAO -- which glIsVertexArray then reports. */
++static int64_t gles_vao_gen(CPUState *cpu, uint32_t n, uint32_t gptr)
++{
++    g_autofree uint32_t *ids = NULL;
++
++    if (!n) {
++        return 0;
++    }
++    if (n > GLES_MAX_NAMES) {
++        gles_refuse("cap:glGenVertexArraysOES");
++        return -1;
++    }
++    ids = g_new0(uint32_t, n);
++    for (uint32_t i = 0; i < n; i++) {
++        ids[i] = ++gh.next_vao_name;
++    }
++    if (gptr && gles_guest_rw(cpu, gptr, ids, n * sizeof(uint32_t), 1) != 0) {
++        return -1;
++    }
++    return 0;
++}
++
++/* glDeleteVertexArraysOES(n, guest const GLuint*). Deleting the bound one is as
++ * though 0 had been bound; 0 itself is the default state and is never deleted. */
++static int64_t gles_vao_delete(CPUState *cpu, uint32_t n, uint32_t gptr)
++{
++    g_autofree uint32_t *ids = NULL;
++
++    if (!n || !gptr || !gh.vaos) {
++        return 0;
++    }
++    if (n > GLES_MAX_NAMES) {
++        gles_refuse("cap:glDeleteVertexArraysOES");
++        return -1;
++    }
++    ids = g_new0(uint32_t, n);
++    if (gles_guest_rw(cpu, gptr, ids, n * sizeof(uint32_t), 0) != 0) {
++        return -1;
++    }
++    for (uint32_t i = 0; i < n; i++) {
++        if (!ids[i]) {
++            continue;
++        }
++        g_hash_table_remove(gh.vaos, GUINT_TO_POINTER(ids[i]));
++        if (gh.vao == ids[i]) {
++            gh.vao = 0;
++            gles_vao_load(&gh.vao_default);
++        }
++    }
++    return 0;
++}
++
++/* glBindVertexArrayOES(id): what is current goes to the record it came from and
++ * the named one's state comes in. A name never generated binds an empty record,
++ * the way ES 1.1 lets an app bind a buffer name it never generated. Binding the
++ * name already bound only writes the current state back, so a driver that kicks
++ * it twice changes nothing. */
++static int64_t gles_vao_bind(uint32_t name)
++{
++    GlesVertexArray *from = gles_vao_record(gh.vao, false);
++    GlesVertexArray *to = gles_vao_record(name, true);
++
++    gles_vao_store(from ? from : &gh.vao_default);
++    if (name != gh.vao) {
++        gh.vao = name;
++        gles_vao_load(to);
++    }
++    return 0;
++}
++
++static int64_t gles_vao_is(uint32_t name)
++{
++    return name && gles_vao_record(name, false) ? 1 : 0;
++}
++
+ /*
+  * The buffer with this name, created empty if the guest has not seen it before.
+  *
+@@ -4259,6 +4809,7 @@ static GLESBuffer *gles_buffer_intern(uint32_t name)
+         b = g_new0(GLESBuffer, 1);
+         b->name = name;
+         b->refs = 1;
++        b->generation = 1;
+         g_hash_table_insert(gh.buffers, GUINT_TO_POINTER(name), b);
+     }
+     return b;
+@@ -4273,6 +4824,25 @@ static GLESBuffer *gles_buffer_bound(uint32_t target)
      return (GLESBuffer *)gh.array_buffer;
  }
  
@@ -296,10 +811,351 @@ index a9204b3..0fa0b71 100644
  /*
   * Forget every reference to a buffer that is about to be freed.
   *
-@@ -7057,6 +7095,10 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+@@ -4283,21 +4853,36 @@ static GLESBuffer *gles_buffer_bound(uint32_t target)
+  */
+ static void gles_buffer_forget(const GLESBuffer *b)
+ {
+-    GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal };
++    GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal, &gh.pointsize };
+     unsigned i;
+ 
+     for (i = 0; i < ARRAY_SIZE(arrays); i++) {
++        if (arrays[i]->fbuf_vbo == b) {
++            arrays[i]->fbuf_vbo = NULL;
++        }
+         if (arrays[i]->vbo == b) {
+             gles_buffer_bind(&arrays[i]->vbo, NULL);
+             arrays[i]->ptr = 0;
+         }
+     }
+     for (i = 0; i < GLES_MAX_TEXUNITS; i++) {
++        if (gh.texcoord[i].fbuf_vbo == b) {
++            gh.texcoord[i].fbuf_vbo = NULL;
++        }
+         if (gh.texcoord[i].vbo == b) {
+             gles_buffer_bind(&gh.texcoord[i].vbo, NULL);
+             gh.texcoord[i].ptr = 0;
+         }
+     }
++    for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
++        if (gh.attr[i].fbuf_vbo == b) {
++            gh.attr[i].fbuf_vbo = NULL;
++        }
++        if (gh.attr[i].vbo == b) {
++            gles_buffer_bind(&gh.attr[i].vbo, NULL);
++            gh.attr[i].ptr = 0;
++        }
++    }
+     if (gh.array_buffer == b) {
+         gles_buffer_bind(&gh.array_buffer, NULL);
+     }
+@@ -5567,7 +6152,7 @@ static bool gles_es2_bind_attr(CPUState *cpu, unsigned i, uint32_t first,
+                                uint32_t count)
+ {
+     GLESArray *a = &gh.attr[i];
+-    uint32_t esz = gles_type_size(a->type) * a->size, stride, c, k;
++    uint32_t esz = gles_type_size(a->type) * a->size, stride;
+     size_t need, off;
+     const uint8_t *base;
+     GLenum type = a->type;
+@@ -5591,36 +6176,162 @@ static bool gles_es2_bind_attr(CPUState *cpu, unsigned i, uint32_t first,
+         }
+         base = a->vbo->data + a->ptr + off;
+     } else {
+-        if (need > a->buf_size) {
+-            a->buf = g_realloc(a->buf, need);
+-            a->buf_size = need;
+-        }
+-        if (gles_guest_rw(cpu, a->ptr + (hwaddr)off, a->buf, need, 0)) {
+-            if (!gles_guest_fault_pending()) gles_refuse("guest-read:attrib");
+-            return false;
++        uint64_t want = (uint64_t)a->ptr + off;
++        const uint8_t *pooled = gles_draw_pool_find(want, need);
++
++        if (pooled) {
++            base = pooled;
++        } else {
++            uint64_t fetch_va = want;
++            size_t fetch_len = need;
++            uint8_t *dst;
++
++            gles_interleaved_span(a, stride, first, count, want, need, true,
++                                  &fetch_va, &fetch_len);
++            dst = gles_draw_pool_take(fetch_len);
++            if (!dst) {
++                fetch_va = want;
++                fetch_len = need;
++                if (need > a->buf_size) {
++                    a->buf = g_realloc(a->buf, need);
++                    a->buf_size = need;
++                }
++                dst = a->buf;
++            }
++            {
++                uint64_t t0 = gles_t();
++                int rc = gles_guest_rw(cpu, fetch_va, dst, fetch_len, 0);
++                gh.t_fetch += gles_t() - t0;
++                if (rc != 0) {
++                    if (!gles_guest_fault_pending()) gles_refuse("guest-read:attrib");
++                    return false;
++                }
++            }
++            if (dst != a->buf) {
++                gles_draw_pool_record(fetch_va, fetch_len, dst);
++            }
++            base = dst + (want - fetch_va);
+         }
+-        base = a->buf;
+     }
+     if (type == GLES_FIXED) {                   /* no desktop equivalent */
+-        if ((size_t)count * a->size > a->fbuf_count) {
+-            a->fbuf_count = (size_t)count * a->size;
+-            a->fbuf = g_realloc(a->fbuf, a->fbuf_count * sizeof(float));
+-        }
+-        for (c = 0; c < count; c++) {
+-            for (k = 0; k < a->size; k++) {
+-                a->fbuf[c * a->size + k] =
+-                    gles_x(ldl_le_p(base + (size_t)stride * c + k * 4));
+-            }
+-        }
++        gles_widen_fixed_or_byte(a, base, (size_t)a->ptr + off, count, stride,
++                                 type);
+         base = (const uint8_t *)a->fbuf;
+         type = GL_FLOAT;
+         stride = 0;
+     }
+-    glEnableVertexAttribArray(i);
++    gles_es2_attr_enable(i, a, true);
++    if (gles_array_cache && a->host_pointer_valid &&
++        a->host_size == a->size && a->host_type == type &&
++        a->host_normalized == gh.attr_normalized[i] &&
++        a->host_stride == stride && a->host_pointer == base) {
++        return true;
++    }
++    if (gles_prof) gh.array_pointers++;
+     glVertexAttribPointer(i, a->size, type, gh.attr_normalized[i], stride, base);
++    a->host_pointer_valid = true;
++    a->host_size = a->size;
++    a->host_type = type;
++    a->host_normalized = gh.attr_normalized[i];
++    a->host_stride = stride;
++    a->host_pointer = base;
++    return true;
++}
++
++static bool gles_vbo_array_spans(const GLESArray *a, uint32_t hi, bool es2)
++{
++    uint32_t esz, stride;
++
++    if (!a->enabled) {
++        return true;
++    }
++    if (!a->vbo) {
++        return false;
++    }
++    if (es2 ? (a->type == GLES_FIXED)
++            : gles_needs_widen(a->client_state, a->type)) {
++        return false;
++    }
++    esz = gles_type_size(a->type) * a->size;
++    if (!esz) {
++        return false;
++    }
++    stride = a->stride ? a->stride : esz;
++    return (uint64_t)a->ptr + (uint64_t)stride * hi + esz <= a->vbo->size;
++}
++
++static bool gles_es2_vbo_can_span(uint32_t hi)
++{
++    bool any = false;
++
++    for (unsigned i = 0; i < GLES_MAX_ATTRIBS; i++) {
++        if (gh.attr[i].enabled) {
++            any = true;
++            if (!gles_vbo_array_spans(&gh.attr[i], hi, true)) {
++                return false;
++            }
++        }
++    }
++    return any;
++}
++
++static bool gles_es1_vbo_can_span(uint32_t hi)
++{
++    const GLESArray *arrays[] = { &gh.vertex, &gh.color, &gh.normal };
++
++    if (!gh.vertex.enabled || gh.pointsize.enabled) {
++        return false;
++    }
++    for (unsigned i = 0; i < ARRAY_SIZE(arrays); i++) {
++        if (!gles_vbo_array_spans(arrays[i], hi, false)) {
++            return false;
++        }
++    }
++    for (unsigned i = 0; i < GLES_MAX_TEXUNITS; i++) {
++        if (!gles_vbo_array_spans(&gh.texcoord[i], hi, false)) {
++            return false;
++        }
++    }
+     return true;
+ }
+ 
++static void gles_index_bounds(const uint8_t *idx, uint32_t count, uint32_t isz,
++                              uint32_t *lo_out, uint32_t *hi_out)
++{
++    uint32_t i = 0, lo = UINT32_MAX, hi = 0;
++
++#if defined(__aarch64__) && defined(__ARM_NEON)
++    if (isz == 2 && count >= 8) {
++        uint16x8_t vmin = vdupq_n_u16(0xffffu);
++        uint16x8_t vmax = vdupq_n_u16(0);
++        for (; i + 8 <= count; i += 8) {
++            uint16x8_t v = vld1q_u16((const uint16_t *)(idx + (size_t)i * 2));
++            vmin = vminq_u16(vmin, v);
++            vmax = vmaxq_u16(vmax, v);
++        }
++        lo = vminvq_u16(vmin);
++        hi = vmaxvq_u16(vmax);
++    } else if (isz == 1 && count >= 16) {
++        uint8x16_t vmin = vdupq_n_u8(0xffu);
++        uint8x16_t vmax = vdupq_n_u8(0);
++        for (; i + 16 <= count; i += 16) {
++            uint8x16_t v = vld1q_u8(idx + i);
++            vmin = vminq_u8(vmin, v);
++            vmax = vmaxq_u8(vmax, v);
++        }
++        lo = vminvq_u8(vmin);
++        hi = vmaxvq_u8(vmax);
++    }
++#endif
++    for (; i < count; i++) {
++        uint32_t v = (isz == 1) ? idx[i] : lduw_le_p(idx + (size_t)i * 2);
++        lo = MIN(lo, v);
++        hi = MAX(hi, v);
++    }
++    *lo_out = lo;
++    *hi_out = hi;
++}
++
+ /*
+  * The vertices a glDrawElements index list needs, as `first` and `nverts`, and
+  * the index list to draw with. Indices are absolute, so only the vertices
+@@ -5632,26 +6343,27 @@ static bool gles_es2_bind_attr(CPUState *cpu, unsigned i, uint32_t first,
+  * glDrawArrays' `first` works. The copy is gh.ibuf -- in place when the indices
+  * are already there, never into a guest buffer object the guest may draw from
+  * again.
++ *
++ * When every enabled array is already resident in a host VBO (and needs no CPU
++ * widening) with [0 .. hi] in bounds, rebasing is skipped: `idx` is handed
++ * straight to the driver and `first` stays 0, keeping each VBO's base pointer
++ * stable across submesh draws so the host-pointer cache hits.
+  */
+ static const uint8_t *gles_rebase_indices(const uint8_t *idx, uint32_t count,
+-                                          uint32_t isz, uint32_t *first,
+-                                          uint32_t *nverts)
++                                          uint32_t isz, bool es2,
++                                          uint32_t *first, uint32_t *nverts)
+ {
+     uint32_t i, lo = UINT32_MAX, hi = 0;
+     size_t need = (size_t)count * isz;
+ 
+-    for (i = 0; i < count; i++) {
+-        /* An index list inside a VBO starts at an arbitrary offset, so the
+-         * 16-bit read cannot assume alignment the way a cast would. */
+-        uint32_t v = (isz == 1) ? idx[i] : lduw_le_p(idx + i * 2);
+-        lo = MIN(lo, v);
+-        hi = MAX(hi, v);
+-    }
+-    if (!gles_index_range || !count) {
++    gles_index_bounds(idx, count, isz, &lo, &hi);
++    if (!gles_index_range || !count ||
++        (lo > 0 && (es2 ? gles_es2_vbo_can_span(hi)
++                        : gles_es1_vbo_can_span(hi)))) {
+         lo = 0;
+     }
+     *first = lo;
+-    *nverts = hi - lo + 1;
++    *nverts = count ? (hi - lo + 1) : 0;
+     if (!lo) {
+         return idx;
+     }
+@@ -5707,7 +6419,7 @@ static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
+             }
+             idx = gh.ibuf;
+         }
+-        idx = gles_rebase_indices(idx, count, isz, &first, &nverts);
++        idx = gles_rebase_indices(idx, count, isz, true, &first, &nverts);
+     } else {
+         first = a[1];
+         count = nverts = a[2];
+@@ -5715,9 +6427,17 @@ static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
+     if (!count || !gles_refresh_surfaces(cpu)) {
+         return count ? -1 : 0;
+     }
++    gles_draw_fetch.used = 0;
++    gles_draw_fetch.nfetch = 0;
+     for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
++        if (!gh.attr[i].enabled &&
++            (!gles_array_cache || !gh.attr[i].host_enabled)) {
++            continue;
++        }
+         if (gles_es2_bind_attr(cpu, i, first, nverts)) {
+             bound |= 1u << i;
++        } else if (gles_array_cache) {
++            gles_es2_attr_enable(i, &gh.attr[i], false);
+         }
+     }
+     if (gles_guest_fault_pending()) {
+@@ -5728,9 +6448,11 @@ static int64_t gles_es2_draw(CPUState *cpu, bool elements, const uint32_t *a)
+         glDrawArrays(mode, 0, count);            /* `first` applied by the fetch */
+     }
+     gles_check_draw(elements ? "glDrawElements(ES2)" : "glDrawArrays(ES2)", mode, count);
+-    for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
+-        if (bound & (1u << i)) {
+-            glDisableVertexAttribArray(i);
++    if (!gles_array_cache) {
++        for (i = 0; i < GLES_MAX_ATTRIBS; i++) {
++            if (bound & (1u << i)) {
++                gles_es2_attr_enable(i, &gh.attr[i], false);
++            }
+         }
+     }
+     gh.draws++;
+@@ -6088,6 +6810,20 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
+         break;
+     }
+     case 821: break;                            /* glReleaseShaderCompiler */
++
++    /* Vertex array objects, ids from gles-names.h: the array state this context
++     * already keeps, under a name. The EXT and the OES spellings are the same four
++     * entry points; generate and delete carry a guest list, and only generate's is
++     * written to. */
++    case 550: *r = gles_vao_bind(a[0]); break;                  /* glBindVertexArrayEXT */
++    case 551: *r = gles_vao_delete(cpu, a[0], a[1]); break;     /* glDeleteVertexArraysEXT */
++    case 552: *r = gles_vao_gen(cpu, a[0], a[1]); break;        /* glGenVertexArraysEXT */
++    case 553: *r = gles_vao_is(a[0]); break;                    /* glIsVertexArrayEXT */
++    case 837: *r = gles_vao_bind(a[0]); break;                  /* glBindVertexArrayOES */
++    case 838: *r = gles_vao_delete(cpu, a[0], a[1]); break;     /* glDeleteVertexArraysOES */
++    case 839: *r = gles_vao_gen(cpu, a[0], a[1]); break;        /* glGenVertexArraysOES */
++    case 840: *r = gles_vao_is(a[0]); break;                    /* glIsVertexArrayOES */
++
+     default:
+         return false;
+     }
+@@ -6393,7 +7129,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+             idx = gh.ibuf;
+         }
+ 
+-        idx = gles_rebase_indices(idx, count, isz, &minidx, &nverts);
++        idx = gles_rebase_indices(idx, count, isz, false, &minidx, &nverts);
+ 
+         if (!gles_refresh_surfaces(cpu)) return -1;
+         bound = gles_bind_all_arrays(cpu, minidx, nverts);
+@@ -6894,6 +7630,11 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
          }
          b->data = g_realloc(b->data, n ? n : 1);
          b->size = n;
++        b->generation++;
 +        /* A new allocation ends any mapping and moves the buffer's guest copy:
 +         * the old pointer, if the app gave one, is not this buffer's any more. */
 +        b->map_ptr = b->map_size = 0;
@@ -307,7 +1163,11 @@ index a9204b3..0fa0b71 100644
          /* A NULL data pointer means "allocate, contents undefined" -- the
           * alloc-then-glBufferSubData idiom. Zero it so an app that draws
           * before filling gets degenerate geometry rather than whatever the
-@@ -7105,6 +7147,89 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+@@ -6939,9 +7680,95 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+             }
+             return -1;
+         }
++        b->generation++;
          return 0;
      }
  
@@ -380,15 +1240,17 @@ index a9204b3..0fa0b71 100644
 +            /* GL_FALSE, as a real driver answers when nothing was mapped. */
 +            return 0;
 +        }
-+        if (mapped->map_access != GLES_MAP_READ_ONLY &&
-+            gles_guest_rw(cpu, mapped->map_ptr, mapped->data, mapped->map_size, 0) != 0) {
-+            if (gles_refuse("unmap:guest-read")) {
-+                fprintf(stderr, "[gles] glUnmapBuffer: cannot read back %u bytes from "
-+                        "guest 0x%08x; the buffer keeps its old contents\n",
-+                        mapped->map_size, mapped->map_ptr);
++        if (mapped->map_access != GLES_MAP_READ_ONLY) {
++            if (gles_guest_rw(cpu, mapped->map_ptr, mapped->data, mapped->map_size, 0) != 0) {
++                if (gles_refuse("unmap:guest-read")) {
++                    fprintf(stderr, "[gles] glUnmapBuffer: cannot read back %u bytes from "
++                            "guest 0x%08x; the buffer keeps its old contents\n",
++                            mapped->map_size, mapped->map_ptr);
++                }
++                mapped->map_ptr = mapped->map_size = 0;
++                return 0;
 +            }
-+            mapped->map_ptr = mapped->map_size = 0;
-+            return 0;
++            mapped->generation++;
 +        }
 +        mapped->map_ptr = mapped->map_size = 0;
 +        return 1;
@@ -397,21 +1259,24 @@ index a9204b3..0fa0b71 100644
      case GLES_SLOT_GET_INTEGERV:
      case GLES_SLOT_GET_BOOLEANV:
      case GLES_SLOT_GET_FLOATV: {
-diff --git a/include/hw/arm/guest-services/gles.h b/include/hw/arm/guest-services/gles.h
-index 4b12cdf..0ddf601 100644
---- a/include/hw/arm/guest-services/gles.h
-+++ b/include/hw/arm/guest-services/gles.h
-@@ -291,6 +291,10 @@ static inline const char *gles_id_name(uint32_t id)
- #define GLES_SLOT_GEN_BUFFERS                  GLES_ID_glGenBuffers  /* 0x0a20 */
- #define GLES_SLOT_BUFFER_DATA                  GLES_ID_glBufferData  /* 0x0a28 */
- #define GLES_SLOT_BUFFER_SUB_DATA              GLES_ID_glBufferSubData  /* 0x0a2c */
-+/* OES_mapbuffer: the pair that hands the app a pointer into its own memory to
-+ * fill a buffer through, instead of a second array to upload. */
-+#define GLES_SLOT_MAP_BUFFER                   GLES_ID_glMapBuffer     /* 0x0289 */
-+#define GLES_SLOT_UNMAP_BUFFER                 GLES_ID_glUnmapBuffer   /* 0x028a */
- 
- /* OES framebuffer-object entry points. EAGL uses these itself inside
-  * -renderbufferStorage:fromDrawable:, so a real CAEAGLLayer client cannot get
--- 
-2.39.5
-
+@@ -6983,6 +7810,9 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+         case GL_ELEMENT_ARRAY_BUFFER_BINDING:
+             v.i[0] = gh.element_buffer ? gh.element_buffer->name : 0;
+             break;
++        case GLES_VAO_BINDING:
++            v.i[0] = gh.vao;
++            break;
+         case GL_VERTEX_ARRAY_BUFFER_BINDING:
+             v.i[0] = gh.vertex.vbo ? gh.vertex.vbo->name : 0;
+             break;
+@@ -8089,6 +8919,10 @@ static void gles_context_free(GLESHost *state)
+         gles_buffer_destroy(state->attr[i].vbo);
+         g_free(state->attr[i].buf); g_free(state->attr[i].fbuf);
+     }
++    /* Before the legacy context is zeroed below: the records hold references the
++     * arrays above have just dropped their own of. */
++    if (state->vaos) g_hash_table_destroy(state->vaos);
++    gles_vao_release(&state->vao_default);
+     gles_buffer_destroy(state->array_buffer);
+     gles_buffer_destroy(state->element_buffer);
+     g_free(state->ibuf); g_free(state->txbuf); g_free(state->zerobuf);

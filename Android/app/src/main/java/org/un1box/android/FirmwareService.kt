@@ -12,7 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * One preparation per process, independent of a running QEMU worker: firmwarekit (Packages/FirmwareKit, the
  * preparer every Un1box port shares) builds the device from its IPSW, with its build-time boots through
  * lighttouch-oneshot and the APK's engine, into a device folder that the device worker moves into its library.
- * Both ship as executables in nativeLibraryDir (libfirmwarekit.so, liblighttouch_oneshot.so).
+ * Both ship as executables in nativeLibraryDir (libfirmwarekit.so, liblighttouch_oneshot.so), and so does
+ * iBoot32Patcher (libiBoot32Patcher.so), which the iPad 1 recipe runs through firmwarekit.
  */
 class FirmwareService : Service() {
     private val consumed = AtomicBoolean(false)
@@ -92,7 +93,7 @@ class FirmwareService : Service() {
             note("complete")
             foreground("Your device is prepared. Open Un1box to add it.")
         } catch (e: Exception) {
-            if (cancelling) state = "cancelled" else { failure = e.message ?: "Firmware preparation failed"; state = "failed" }
+            if (cancelling) state = "cancelled" else { failure = listOf(e.message ?: "Firmware preparation failed", diagnosis(libs)).joinToString("\n"); state = "failed" }
             writable(out); out.deleteRecursively()
             if (cancelling) PreparationNote.clear(this) else note("failed")
         } finally {
@@ -101,6 +102,47 @@ class FirmwareService : Service() {
             // Decrypted firmware is only worth keeping for another build of the same IPSW; it is large.
             cache.deleteRecursively()
         }
+    }
+
+    /**
+     * What the preparation needed from this build and what the app could see of it, appended to a failure so a
+     * report names the link that broke: the patcher and env(1) beside firmwarekit, and whether this process can
+     * run the patcher at all. The app spawns it the way firmwarekit does, but through Java, which does not depend
+     * on Foundation's idea of where a bare name lives. The patcher prints its usage and exits, so this is cheap.
+     */
+    private fun diagnosis(libs: File): String {
+        val patcher = File(libs, "libiBoot32Patcher.so")
+        val shim = File(libs, "libspawnshim.so")
+        val spawn = try {
+            val child = ProcessBuilder(patcher.path).redirectErrorStream(true).start()
+            child.inputStream.readBytes()
+            child.waitFor()
+            "ran (exit ${child.exitValue()})"
+        } catch (error: Exception) {
+            "failed: ${error.message ?: error.javaClass.simpleName}"
+        }
+        return "tools: iBoot32Patcher ${if (patcher.canExecute()) "present" else "missing"}, " +
+            "spawn shim ${if (shim.isFile) "present" else "missing"}; app ran the patcher: $spawn" + shimLog()
+    }
+
+    /** The spawn shim's log, which names the path firmwarekit actually tried; empty when it wrote none. */
+    private fun shimLog(): String {
+        val log = File(filesDir, "spawn-shim.log")
+        if (!log.isFile) return ""
+        val lines = log.readLines().takeLast(40)
+        return if (lines.isEmpty()) "" else "\nspawn shim:\n" + lines.joinToString("\n")
+    }
+
+    /**
+     * Where firmwarekit is started, which is what decides how its bare "env" resolves: bionic's posix_spawn
+     * searches no PATH, so that name is looked up in the working directory alone. /system/bin holds toybox's env
+     * and is the first choice; the APK's own copy of env(1) sits beside firmwarekit in nativeLibraryDir, so a
+     * device where that directory cannot be entered still has one for the second attempt to find.
+     */
+    private fun start(builder: ProcessBuilder, libs: File): java.lang.Process = try {
+        builder.directory(File("/system/bin")).start()
+    } catch (error: java.io.IOException) {
+        builder.directory(libs).start()
     }
 
     /**
@@ -114,9 +156,23 @@ class FirmwareService : Service() {
             put("LTM_QEMU_DYLIB", File(libs, "libqemu-arm.so").path)
             put("LD_LIBRARY_PATH", libs.path)
             put("HOME", filesDir.path); put("TMPDIR", cacheDir.path)
+            put("PATH", libs.path + ":/system/bin:/system/xbin")
+            // The iPad 1 recipe launches the patcher through a bare "env", which Android cannot resolve. The shim
+            // runs the patcher in env's place and records the access and spawn calls it sees, so a failure says
+            // which path was wanted instead of only that something was missing.
+            File(libs, "libspawnshim.so").takeIf { it.isFile }?.let {
+                put("LD_PRELOAD", it.path)
+                put("SPAWN_SHIM_LOG", File(filesDir, "spawn-shim.log").path)
+            }
+            // firmwarekit's k48 (iPad 1) recipe shells out to iBoot32Patcher. On macOS it sits next to the
+            // app's executable; here it is one of the executables in nativeLibraryDir, which firmwarekit does
+            // not look in by name, so it is named explicitly. K48IBoot.patcher reads this override after the two
+            // directories it derives, so a build without the tool keeps firmwarekit's own "iBoot32Patcher ...
+            // not runnable" error rather than being pointed at nothing.
+            File(libs, "libiBoot32Patcher.so").takeIf { it.canExecute() }?.let { put("FIRMWAREKIT_IBOOT_PATCHER", it.path) }
         }
         check(!cancelling) { "Cancelled" }
-        val child = builder.start().also { process = it }
+        val child = start(builder, libs).also { process = it }
         var weights = listOf<Long>(); var step = 0
         var message = ""
         var stepName = ""; var stepStarted = 0L

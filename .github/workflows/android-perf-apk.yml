@@ -16,7 +16,7 @@ name: Android perf APK
 #
 # What is reused: firmwarekit (device preparation), its one-shot booter, the
 # USB bridge and it_seal are extracted from a published release APK. The two
-# guest itpacks are then replaced with a matching serial-39 artifact from the
+# guest itpacks are then replaced with a matching serial-42 artifact from the
 # guest-package workflow, so the host-side engine fix ships with its guest side.
 #
 # The APK is signed with a keystore generated on the first run and reused after
@@ -368,14 +368,14 @@ jobs:
           print(f'extracted firmwarekit, USB bridge and guest tools from {resolved_repo}@{resolved_tag} ({asset_name})')
           PY
 
-      - name: Overlay guest packages serial 39
+      - name: Overlay guest packages serial 42
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_RUN_ID: ${{ inputs.guest_package_run_id || '' }}
         run: |
           set -euo pipefail
           WORKFLOW_ID=400843872
-          CURRENT_PATCH_SHA="$(git hash-object ci/engine-patches/0011-engine-gles-map-buffer.patch)"
+          CURRENT_PATCH_SHA="$(git hash-object ci/engine-patches/0001-engine-un1box-features.patch)"
           # Retention is storage policy, not a package-build input. Ignore those YAML lines so the
           # already-built package stays reusable when we extend its retention period.
           CURRENT_WORKFLOW_SHA="$(python3 - <<'PYHASH'
@@ -390,7 +390,7 @@ jobs:
           workflow_matches_source() {
             local run_id="$1" package_sha package_patch package_workflow
             package_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.head_sha')" || return 1
-            package_patch="$(gh api "repos/$GITHUB_REPOSITORY/contents/ci/engine-patches/0011-engine-gles-map-buffer.patch?ref=$package_sha" --jq '.sha')" || return 1
+            package_patch="$(gh api "repos/$GITHUB_REPOSITORY/contents/ci/engine-patches/0001-engine-un1box-features.patch?ref=$package_sha" --jq '.sha')" || return 1
             [ "$package_patch" = "$CURRENT_PATCH_SHA" ] || return 1
             package_workflow="$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/guest-package.yml?ref=$package_sha" --jq '.content' | base64 --decode | python3 -c 'import hashlib,re,sys; text=sys.stdin.read(); text=re.sub(r"(?m)^[ \t]*retention-days:[ \t]*[0-9]+[ \t]*\r?$", "", text); print(hashlib.sha256(text.encode()).hexdigest())')" || return 1
             [ "$package_workflow" = "$CURRENT_WORKFLOW_SHA" ]
@@ -409,7 +409,7 @@ jobs:
             while IFS= read -r RUN_ID; do
               [ -n "$RUN_ID" ] || continue
               HAS_ARTIFACT="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
-                --jq '[.artifacts[] | select(.name == "Un1box-guest-packages-39" and .expired == false)] | length')"
+                --jq '[.artifacts[] | select(.name == "Un1box-guest-packages-42" and .expired == false)] | length')"
               [ "$HAS_ARTIFACT" -gt 0 ] || continue
               if workflow_matches_source "$RUN_ID"; then
                 SELECTED_RUN="$RUN_ID"
@@ -440,18 +440,18 @@ jobs:
               done <<< "$PENDING_RUNS"
               [ "$MATCHING_PENDING" -gt 0 ] || break
             fi
-            echo "Waiting for a matching serial-39 guest-package artifact ($attempt/30)..."
+            echo "Waiting for a matching serial-42 guest-package artifact ($attempt/30)..."
             sleep 20
           done
 
           [ -n "$SELECTED_RUN" ] || {
-            echo '::error::No unexpired serial-39 guest-package artifact with matching source was found across branches. Build/approve the guest-package workflow or provide guest_package_run_id.'
+            echo '::error::No unexpired serial-42 guest-package artifact with matching source was found across branches. Build/approve the guest-package workflow or provide guest_package_run_id.'
             exit 1
           }
-          PACKAGE_DIR="$RUNNER_TEMP/guest-packages-39"
+          PACKAGE_DIR="$RUNNER_TEMP/guest-packages-42"
           mkdir -p "$PACKAGE_DIR"
           gh run download "$SELECTED_RUN" --repo "$GITHUB_REPOSITORY" \
-            --name Un1box-guest-packages-39 --dir "$PACKAGE_DIR"
+            --name Un1box-guest-packages-42 --dir "$PACKAGE_DIR"
           test -s "$PACKAGE_DIR/armv6.itpack"
           test -s "$PACKAGE_DIR/armv7.itpack"
           python3 - "$PACKAGE_DIR" <<'PY'
@@ -478,7 +478,7 @@ jobs:
           install -m 0644 "$PACKAGE_DIR/armv6.itpack" ci/guest-tools/armv6.itpack
           install -m 0644 "$PACKAGE_DIR/armv7.itpack" ci/guest-tools/armv7.itpack
           echo "GUEST_PACKAGE_RUN_ID=$SELECTED_RUN" >> "$GITHUB_ENV"
-          echo "Overlaid serial-39 armv6/armv7 itpacks from workflow run $SELECTED_RUN."
+          echo "Overlaid serial-42 armv6/armv7 itpacks from workflow run $SELECTED_RUN."
 
       - name: JDK 17
         uses: actions/setup-java@v4
@@ -508,6 +508,53 @@ jobs:
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
           ninja --version
           meson/bin/meson --version
+
+      # firmwarekit's iPad 1 (k48) recipe shells out to iBoot32Patcher for the iBoot RSA/debug/boot-args
+      # patches and looks for it next to its own executable (or at FIRMWAREKIT_IBOOT_PATCHER). On macOS it
+      # is in the app bundle; on Android nothing carried it, so preparing an iPad died with
+      # "iBoot32Patcher (/iBoot32Patcher) not runnable: ... The file doesn't exist." It is a few hundred
+      # lines of C with no dependencies beyond libc, pinned with its patch in build-support, so it is built
+      # here from that pin and staged like the other executables: the Gradle build packages
+      # ci/firmwarekit/android/iBoot32Patcher as libiBoot32Patcher.so, and FirmwareService names it in the
+      # child's environment. The same step builds the spawn shim: the recipe launches the patcher as "env <path>
+      # ...", a bare name that Android's posix_spawn resolves against the working directory only and /usr/bin does
+      # not exist to satisfy, so the shim is preloaded into firmwarekit, runs the patcher directly in env's place
+      # and logs every access and spawn it sees (FirmwareService names the log). Only the NDK's compiler, readelf
+      # and the sources in this repository are used.
+      #
+      # The reused firmwarekit (v0.0.10) spawns that path directly and reads FIRMWAREKIT_IBOOT_PATCHER --
+      # checked in its strings, not assumed. Packages/FirmwareKit's own K48IBoot.patchIBoot runs it through
+      # /usr/bin/env instead, which Android has no such path for: a firmwarekit built from this tree, or
+      # reused from a newer tag, must stop spawning that (run the tool directly, or use /bin/env, which
+      # Android's toybox does provide) or the iPad path breaks again the moment the reuse tag moves.
+      - name: Build iBoot32Patcher and the spawn shim for arm64 Android
+        run: |
+          python3 - <<'PY' > /tmp/iboot32patcher-pin
+          import json
+          package = next(p for p in json.load(open('build-support/dependencies.json'))['packages']
+                         if p['name'] == 'iBoot32Patcher')
+          print(package['url'], package['sha256'], package['directory'])
+          PY
+          read -r URL SHA DIR < /tmp/iboot32patcher-pin
+          curl -fsSL --retry 3 -o /tmp/iboot32patcher.tar.gz "$URL"
+          echo "$SHA  /tmp/iboot32patcher.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/iboot32patcher.tar.gz -C /tmp
+          patch -p1 -d "/tmp/$DIR" < build-support/patches/iBoot32Patcher-ltm.patch
+          TOOLS="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # 16 KiB LOAD alignment, like every other executable this APK carries (Android/scripts/check-apk.py).
+          "$TOOLS/aarch64-linux-android29-clang" -O2 -Wno-multichar -Wno-int-conversion -I"/tmp/$DIR" \
+            -Wl,-z,max-page-size=16384 "/tmp/$DIR"/src/*.c -o ci/firmwarekit/android/iBoot32Patcher
+          chmod 755 ci/firmwarekit/android/iBoot32Patcher
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/iBoot32Patcher | grep -q 'AArch64'
+          python3 build-support/stage-iboot32patcher-notice.py ci/firmwarekit/android/licenses "/tmp/$DIR/LICENSE"
+          # The recipe launches the patcher as "env <patcher> <in> <out> --rsa ...": a bare name, which macOS
+          # resolves on PATH and Android does not (bionic's posix_spawn searches nothing). This library is put in
+          # front of that spawn with LD_PRELOAD: it runs the patcher directly where env was asked for, and logs
+          # every access and spawn the process makes, so a failure names the path that was actually wanted.
+          "$TOOLS/aarch64-linux-android29-clang" -O2 -fPIC -shared -Wl,-soname,libspawnshim.so \
+            -o ci/firmwarekit/android/spawn-shim.so Packages/FirmwareKit/build-support/spawn-shim.c -ldl
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/spawn-shim.so | grep -q 'AArch64'
+          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so
 
       # The patches carry changes to the engine's own build scripts (0012 adds
       # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for
@@ -666,6 +713,35 @@ jobs:
       # resolution or Kotlin/Java/AIDL error fails here, in about a minute, instead of
       # after the engine's three minutes in "Build the APK". Compilation needs neither the
       # engine nor firmwarekit: only the packaging tasks read those.
+      # The wrapper asks services.gradle.org, which answers with a redirect to a GitHub release asset, and that
+      # asset answered 504 for every run on 2026-11-09 -- the distribution could not be fetched at all, before
+      # anything in this repository ran. The archive is pinned by SHA-256 in gradle-wrapper.properties, so a
+      # mirror is another transport for the same bytes: try the canonical URL, then two mirrors, verify the
+      # digest, and hand the wrapper the verified local file (file: URLs are what the wrapper supports for this).
+      - name: Fetch the Gradle distribution (mirrors included)
+        run: |
+          EXPECTED="$(sed -n 's/^distributionSha256Sum=//p' Android/gradle/wrapper/gradle-wrapper.properties)"
+          [ -n "$EXPECTED" ] || { echo '::error::gradle-wrapper.properties has no distributionSha256Sum to verify against'; exit 1; }
+          OUT="$RUNNER_TEMP/gradle-8.11.1-bin.zip"
+          URLS=(
+            "https://services.gradle.org/distributions/gradle-8.11.1-bin.zip"
+            "https://mirrors.cloud.tencent.com/gradle/gradle-8.11.1-bin.zip"
+            "https://mirrors.huaweicloud.com/gradle/gradle-8.11.1-bin.zip"
+          )
+          for URL in "${URLS[@]}"; do
+            echo "trying $URL"
+            if curl -fsSL --retry 2 --retry-delay 3 --connect-timeout 20 --max-time 600 -o "$OUT" "$URL" &&
+               echo "$EXPECTED  $OUT" | sha256sum -c -; then
+              echo "verified the pinned archive from $URL"
+              sed -i "s#^distributionUrl=.*#distributionUrl=file\\\\://$OUT#" Android/gradle/wrapper/gradle-wrapper.properties
+              cat Android/gradle/wrapper/gradle-wrapper.properties
+              exit 0
+            fi
+            echo "::warning::$URL did not deliver the pinned archive"
+          done
+          echo "::error::no Gradle distribution source answered with the pinned archive"
+          exit 1
+
       - name: Preflight the Gradle build
         working-directory: Android
         run: |
@@ -868,6 +944,33 @@ jobs:
             "${angle_args[@]}" \
             ":app:assemble${DECLARED_VARIANT^}"
 
+      # firmwarekit's k48 recipe asks for "<nativeLibraryDir>/iBoot32Patcher": a bundle-style name an APK
+      # cannot carry through jniLibs, which packages only lib*.so. The entry is appended to the assembled APK
+      # instead (append mode leaves every existing entry, its compression and its alignment alone, which
+      # matters for resources.arsc), and the installer extracts lib/<abi>/ entries verbatim. The preloaded
+      # spawn shim also redirects that name to libiBoot32Patcher.so, so either route finds the tool.
+      - name: Add the patcher under the name firmwarekit looks for
+        working-directory: Android
+        run: |
+          APK="$(ls "app/build/outputs/apk/$DECLARED_VARIANT/"*.apk | head -1)"
+          python3 - "$APK" ../ci/firmwarekit/android/iBoot32Patcher <<'PY'
+          import sys, zipfile, pathlib
+          apk, patcher = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          data = patcher.read_bytes()
+          with zipfile.ZipFile(apk, "a") as archive:
+              names = archive.namelist()
+              entry = "lib/arm64-v8a/iBoot32Patcher"
+              if entry in names:
+                  raise SystemExit(f"{apk} already carries {entry}")
+              info = zipfile.ZipInfo(entry)
+              info.external_attr = 0o755 << 16
+              info.compress_type = zipfile.ZIP_DEFLATED
+              archive.writestr(info, data)
+          with zipfile.ZipFile(apk) as check:
+              assert check.read("lib/arm64-v8a/iBoot32Patcher") == data
+          print(f"added lib/arm64-v8a/iBoot32Patcher ({len(data)} bytes) to {apk}")
+          PY
+
       # AGP signs a debug build with whatever it finds (or makes) at
       # ~/.android/debug.keystore, which is not the cached key: a run would then
       # hand out an APK that cannot update the one before it. Sign with this
@@ -913,7 +1016,7 @@ jobs:
             echo "- engine revision: $(git -C qemu-ios rev-parse HEAD) ($ENGINE_REPO $ENGINE_REF)"
             echo "- engine build: arm64-v8a, NDK $ANDROID_NDK_VERSION, --android-api 29, $LT_JOBS jobs"
             echo "- reused from ${BASE_RELEASE_RESOLVED:-$DECLARED_BASE_RELEASE_REPO $DECLARED_BASE_RELEASE_TAG}: firmwarekit, lighttouch-oneshot, USB bridge, it_seal"
-            echo "- guest itpacks: serial 39 from guest-package run ${GUEST_PACKAGE_RUN_ID}"
+            echo "- guest itpacks: serial 42 from guest-package run ${GUEST_PACKAGE_RUN_ID}"
             ANGLE_TAG="${ANGLE_BUNDLE_URL:-}"; ANGLE_TAG="${ANGLE_TAG%/*}"; ANGLE_TAG="${ANGLE_TAG##*/}"
             if [ -n "${ANGLE_ARM64_MANIFEST_SHA256:-}" ]; then
               echo "- ARM64 ANGLE provider: $ANGLE_TAG (${ANGLE_BUNDLE_URL##*/}), closure $ANGLE_ARM64_MANIFEST_SHA256, notices $ANGLE_ARM64_NOTICES_SHA256"

@@ -15,6 +15,9 @@
 #include <cstring>
 #include <mutex>
 #include <vector>
+#if defined(__aarch64__)
+#include <arm_neon.h>   /* the sliced microphone path widens mono to stereo with NEON there */
+#endif
 
 #include "Portable/include/lighttouch.h"
 

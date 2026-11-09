@@ -124,18 +124,25 @@ val sourceRevision = providers.gradleProperty("sourceRevision").orElse(
 val sourceReference = providers.gradleProperty("sourceReference").orElse(
     sourceRevision.map { "https://github.com/KlugKlugTG/Un1box/tree/$it" }
 )
-// firmwarekit, the preparer every port shares (-PfirmwareKitDir: scripts/build.sh firmwarekit-android): it and
-// lighttouch-oneshot ship as executables in nativeLibraryDir, with the notices of what it links.
+// firmwarekit, the preparer every port shares (-PfirmwareKitDir: scripts/build.sh firmwarekit-android): it,
+// lighttouch-oneshot and iBoot32Patcher ship as executables in nativeLibraryDir, with the notices of what it
+// links. The patcher is what firmwarekit's iPad 1 (k48) recipe shells out to; nothing carried it on Android
+// before, so an iPad failed with "iBoot32Patcher (/iBoot32Patcher) not runnable". It launches it as
+// "env <patcher> ...", a bare name that Android's posix_spawn resolves against the working directory only, so
+// libspawnshim.so rides along: FirmwareService preloads it into firmwarekit, where it runs the patcher directly
+// in env's place and logs the access and spawn calls a failure needs.
 providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
     val kit = file(input)
-    require(listOf("firmwarekit", "lighttouch-oneshot", "licenses/manifest.json").all { kit.resolve(it).isFile }) {
-        "firmwareKitDir must hold firmwarekit, lighttouch-oneshot and licenses/ (scripts/build.sh firmwarekit-android)"
+    require(listOf("firmwarekit", "lighttouch-oneshot", "iBoot32Patcher", "spawn-shim.so", "licenses/manifest.json").all { kit.resolve(it).isFile }) {
+        "firmwareKitDir must hold firmwarekit, lighttouch-oneshot, iBoot32Patcher, spawn-shim.so and licenses/ (scripts/build.sh firmwarekit-android)"
     }
     val firmwareKitJniLibs = layout.buildDirectory.dir("generated/firmwareKitJniLibs")
     val firmwareKitNotices = layout.buildDirectory.dir("generated/firmwareKitNotices")
     val stage = tasks.register<Copy>("prepareFirmwareKit") {
         from(kit) { include("firmwarekit"); rename { "libfirmwarekit.so" } }
         from(kit) { include("lighttouch-oneshot"); rename { "liblighttouch_oneshot.so" } }
+        from(kit) { include("iBoot32Patcher"); rename { "libiBoot32Patcher.so" } }
+        from(kit) { include("spawn-shim.so"); rename { "libspawnshim.so" } }
         into(firmwareKitJniLibs.map { it.dir("arm64-v8a") })
     }
     val notices = tasks.register<Copy>("prepareFirmwareKitNotices") {

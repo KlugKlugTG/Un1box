@@ -38,6 +38,14 @@ import wiring  # noqa: E402
 
 PATCHES = ROOT / "ci" / "engine-patches"
 
+def patch_with(marker):
+    """The patch that carries a feature: the engine rework is applied in more than one file now."""
+    for candidate in sorted(PATCHES.glob("*.patch")):
+        if marker in candidate.read_text(errors="ignore"):
+            return candidate
+    raise AssertionError("no patch in ci/engine-patches carries " + marker)
+
+
 
 class Failure(RuntimeError):
     pass
@@ -63,7 +71,7 @@ def engine_from_git(path: Path, scratch: Path) -> Path:
         if applied.returncode:
             # 0009 alone is enough for the sliced device code; anything else means
             # the patch stack no longer fits this engine revision.
-            single = sh(["git", "apply", str(PATCHES / "0009-engine-microphone-input.patch")], cwd=target)
+            single = sh(["git", "apply", str(wiring.patch_with("host-mic"))], cwd=target)
             if single.returncode:
                 raise Failure(
                     f"{patch.name} does not apply to {path} at HEAD, and neither does 0009 alone: "

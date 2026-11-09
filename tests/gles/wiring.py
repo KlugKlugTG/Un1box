@@ -16,7 +16,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
-VAO_PATCH = PATCHES / "0014-engine-gles-vertex-arrays.patch"
+
+def patch_with(marker):
+    """The patch that carries a feature: the engine rework is applied in more than one file now."""
+    for candidate in sorted(PATCHES.glob("*.patch")):
+        if marker in candidate.read_text(errors="ignore"):
+            return candidate
+    raise AssertionError("no patch in ci/engine-patches carries " + marker)
+
+VAO_PATCH = patch_with("glBindVertexArrayEXT")
 TEST = ROOT / "tests" / "gles" / "vao.c"
 
 BRIDGE = "hw/arm/gles-host.c"
