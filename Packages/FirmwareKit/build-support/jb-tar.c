@@ -27,6 +27,10 @@
 //     0700, so the guest's own users could not read Cydia and its set-user-ID helpers would not be
 //     set-user-ID. The recipe records exactly these modes for its volume catalog anyway (Cydia.swift's
 //     "which tar, not run as root, doesn't restore"), so the two agree instead of fighting.
+//  3. A hard link the kernel refuses becomes a copy. The bootstrap has one (./bin/gunzip to
+//     ./bin/uncompress) and Android denies link() even to the shell in its own /data/local/tmp, so on a
+//     phone that entry can only be a second copy of the same bytes -- where a link would have failed the
+//     whole preparation with "Cannot link to ./bin/uncompress: Permission denied".
 //
 // The one thing the recipe reads out of the listings is -tv: its parser expects the bsdtar/Mac line
 //
@@ -313,6 +317,8 @@ static bool next_entry(struct input *in, struct entry *e, bool *ended, char **pe
 
 /* --- what the caller asked for ------------------------------------------------------------------- */
 
+static bool no_links;   /* JB_TAR_NO_LINKS: take the copy path a phone takes */
+
 struct options {
     bool list, verbose, extract, keep;
     const char *archive;
@@ -420,6 +426,62 @@ static bool exists(const char *path) {
     return lstat(path, &status) == 0;
 }
 
+/**
+ * `from`'s bytes and mode at `to`, which must not exist. This is what a hard link becomes when the
+ * kernel refuses one: Android denies link() even to the shell in its own /data/local/tmp (SELinux), so
+ * the bootstrap's one hard link (./bin/gunzip to ./bin/uncompress) cannot be a link on a phone. The
+ * guest gets the same bytes under both names, which is what the entry is for.
+ */
+static bool copy_file(const char *from, const char *to) {
+    struct stat status;
+    if (stat(from, &status) != 0) {
+        fail("%s: %s", from, strerror(errno));
+        return false;
+    }
+    int input = open(from, O_RDONLY);
+    if (input < 0) {
+        fail("%s: %s", from, strerror(errno));
+        return false;
+    }
+    int output = open(to, O_WRONLY | O_CREAT | O_EXCL, (mode_t) (status.st_mode & 07777));
+    if (output < 0) {
+        fail("%s: %s", to, strerror(errno));
+        close(input);
+        return false;
+    }
+    bool ok = true;
+    unsigned char buffer[64 * 1024];
+    for (;;) {
+        ssize_t got = read(input, buffer, sizeof buffer);
+        if (got < 0) {
+            fail("%s: %s", from, strerror(errno));
+            ok = false;
+            break;
+        }
+        if (got == 0) break;
+        ssize_t at = 0;
+        while (at < got) {
+            ssize_t written = write(output, buffer + at, (size_t) (got - at));
+            if (written <= 0) {
+                fail("%s: %s", to, strerror(errno));
+                ok = false;
+                break;
+            }
+            at += written;
+        }
+        if (!ok) break;
+    }
+    close(input);
+    close(output);
+    if (!ok) {
+        unlink(to);
+        return false;
+    }
+    if (chmod(to, (mode_t) (status.st_mode & 07777)) != 0 && errno != EPERM)
+        fprintf(stderr, "%s: %s: cannot set mode: %s\n", program, to, strerror(errno));
+    return true;
+}
+
 /** The extraction of one member, GNU tar's -k as the recipe means it: what is there is kept, quietly. */
 static bool extract_member(const struct options *o, struct input *in, const struct entry *e) {
     char path[NAME_MAX_TAR], full[NAME_MAX_TAR + 512];
@@ -464,9 +526,15 @@ static bool extract_member(const struct options *o, struct input *in, const stru
             fail("%s: link target too long", path);
             return false;
         }
-        if (link(target_full, full) != 0) {
-            fail("%s: cannot link to %s: %s", path, target, strerror(errno));
-            return false;
+        if (no_links || link(target_full, full) != 0) {
+            int why = no_links ? EPERM : errno;
+            // Android refuses hard links outright (see copy_file), and a phone is where this runs, so a
+            // refused link is a copy rather than a failure. JB_TAR_NO_LINKS makes a host take that path
+            // too, which is how the self-check exercises it.
+            if (!copy_file(target_full, full)) return false;
+            fprintf(stderr, "%s: %s: copied %s instead of linking it (%s)\n", program, path, target,
+                    strerror(why));
+            break;
         }
         break;
     }
@@ -565,6 +633,9 @@ static bool parse_options(int argc, char **argv, struct options *o) {
         return false;
     }
     if (o->directory == NULL) o->directory = ".";
+    /* The self-check's seam: a host can link, a phone cannot, and the fallback has to be exercised
+     * somewhere. Nothing in a preparation sets this. */
+    if (getenv("JB_TAR_NO_LINKS") != NULL) no_links = true;
     return true;
 }
 

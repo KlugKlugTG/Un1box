@@ -125,6 +125,7 @@ FIXTURE_ENTRIES = [
     ("./usr/bin", None, "dir", 0o775, ""),
     ("./usr/bin/tool", b"tool-bytes\n", "file", 0o755, ""),
     ("./usr/bin/tool-link", None, "symlink", 0o777, "tool"),
+    ("./usr/bin/gunzip", None, "hardlink", 0o755, "./usr/bin/tool"),
     ("./usr/bin/cydo", b"setuid-bytes\n", "file", 0o6755, ""),
     ("./private/var/Keychains/secret.plist", b"secret\n", "file", 0o600, ""),
     ("./private/var/mobile/Media", None, "dir", 0o755, ""),
@@ -148,6 +149,8 @@ def fixture(scratch, name, fmt, compress=False, deep=False):
                 info.type = tarfile.DIRTYPE
             elif kind == "symlink":
                 info.type, info.linkname = tarfile.SYMTYPE, target
+            elif kind == "hardlink":
+                info.type, info.linkname = tarfile.LNKTYPE, target
             else:
                 info.type, info.size = tarfile.REGTYPE, len(data)
             archive.addfile(info, io.BytesIO(data) if kind == "file" else None)
@@ -180,7 +183,7 @@ def pinned_archives():
 
 # --- comparing an extraction with the host tar's ----------------------------------------------------
 
-def tree(root):
+def tree(root, link_counts=True):
     """Every entry under `root`: type, mode, size, content or link target, and the link count."""
     records = {}
     for base, directories, files in os.walk(root):
@@ -195,7 +198,8 @@ def tree(root):
                 records[relative] = ("dir", oct(status.st_mode & 0o7777))
             elif stat.S_ISREG(status.st_mode):
                 records[relative] = ("file", oct(status.st_mode & 0o7777), status.st_size,
-                                     hashlib.sha256(path.read_bytes()).hexdigest(), status.st_nlink)
+                                     hashlib.sha256(path.read_bytes()).hexdigest(),
+                                     status.st_nlink if link_counts else 0)
             else:
                 records[relative] = ("other", oct(status.st_mode))
     return records
@@ -207,14 +211,14 @@ def members_of(path):
         return {member.name.removeprefix("./").rstrip("/") for member in archive.getmembers()}
 
 
-def compare_trees(ours, theirs, what, keys=None):
+def compare_trees(ours, theirs, what, keys=None, link_counts=True):
     """The two trees, entry for entry -- all of them, or only those the archive names.
 
     `keys` is for the directories a tar invents to hold a member whose parents the archive does not
     list: the host tar makes those with the umask (0700 under a phone's 0077), jb-tar makes them 0755
     because they end up in the guest, and that difference is asserted separately rather than compared.
     """
-    mine, host = tree(ours), tree(theirs)
+    mine, host = tree(ours, link_counts), tree(theirs, link_counts)
     if keys is not None:
         mine = {name: record for name, record in mine.items() if name in keys}
         host = {name: record for name, record in host.items() if name in keys}
@@ -388,6 +392,41 @@ def an_entry_the_volume_has_is_kept(tmp, tar, archives):
     return "; ".join(summaries)
 
 
+def a_refused_hard_link_becomes_a_copy(tmp, tar, archives):
+    """Android denies link() outright, so the bootstrap's ./bin/gunzip has to arrive some other way."""
+    name, path = archives[0]
+    with tarfile.open(path) as archive:
+        members = {member.name.removeprefix("./"): member for member in archive.getmembers()}
+    links = {key: member for key, member in members.items() if member.islnk()}
+    require(links, f"{name} carries no hard link: the fixtures must have one, or this check tests nothing")
+    source = next(iter(links))
+    target = links[source].linkname.removeprefix("./")
+    ours, theirs = tmp / f"nolinks-ours-{name}", tmp / f"nolinks-theirs-{name}"
+    for directory in (ours, theirs):
+        shutil.rmtree(directory, ignore_errors=True)
+        directory.mkdir(parents=True)
+    environment = {**os.environ, "JB_TAR_NO_LINKS": "1"}
+    mine = subprocess.run([str(tar), "-xkf", str(path), "-C", str(ours), *EXCLUDES],
+                          capture_output=True, text=True, env=environment)
+    host = run([*HOST_EXTRACT, str(path), "-C", str(theirs), *EXCLUDES])
+    require(host.returncode == 0, f"{name}: the host's tar failed: {host.stderr.strip()[-200:]}")
+    require(mine.returncode == 0,
+            f"{name}: a refused hard link failed the extraction: {mine.stderr.strip()[-300:]}")
+    require("instead of linking" in mine.stderr,
+            f"{name}: the copy happened without saying so: {mine.stderr.strip()[-200:]}")
+    entries = compare_trees(ours, theirs, f"{name} without links", keys=set(members), link_counts=False)
+    copied, linked = ours / source, ours / target
+    require(copied.is_file() and not copied.is_symlink(),
+            f"{name}: {source} is not a regular file after the fallback")
+    require(copied.read_bytes() == linked.read_bytes(),
+            f"{name}: {source} does not hold {target}'s bytes")
+    require(stat.S_IMODE(os.stat(copied).st_mode) == stat.S_IMODE(os.stat(linked).st_mode),
+            f"{name}: {source} and {target} differ in mode after the fallback")
+    require(os.stat(copied).st_nlink == 1,
+            f"{name}: {source} was linked after all, so this check tested nothing")
+    return f"{name}: {source} -> {target} copied, {entries} entries otherwise the host tar's"
+
+
 def a_damaged_header_and_an_escaping_member_are_refused(tmp, tar):
     damaged = fixture(tmp, "damaged.tar", tarfile.USTAR_FORMAT)
     raw = bytearray(damaged.read_bytes())
@@ -489,6 +528,8 @@ def main():
                    lambda: an_extraction_is_the_host_tars_tree(scratch, tar, archives))
         report.run("an entry the volume already has is kept, and the run still succeeds",
                    lambda: an_entry_the_volume_has_is_kept(scratch, tar, archives))
+        report.run("a hard link the kernel refuses becomes a copy",
+                   lambda: a_refused_hard_link_becomes_a_copy(scratch, tar, archives))
         report.run("a damaged header and an escaping member are refused",
                    lambda: a_damaged_header_and_an_escaping_member_are_refused(scratch, tar))
 
