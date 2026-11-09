@@ -116,9 +116,10 @@ internal fun DeviceDetails(device: DeviceSummary, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
     Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.testTag("device_details"), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onClose, modifier = Modifier.testTag("details_back")) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                Text(device.name, style = MaterialTheme.typography.titleLarge, maxLines = 1)
+            Row(Modifier.fillMaxWidth().height(68.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                GlassIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClose, tag = "details_back")
+                Spacer(Modifier.width(8.dp))
+                Text(device.name, style = MaterialTheme.typography.headlineSmall, maxLines = 1)
             }
             SelectionContainer {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
@@ -172,9 +173,10 @@ internal fun DeviceDetails(device: DeviceSummary, onClose: () -> Unit) {
 
 @Composable
 private fun Section(title: String, note: String? = null, content: @Composable ColumnScope.() -> Unit) {
-    Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 8.dp))
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(vertical = 6.dp), content = content)
+    SectionLabel(title)
+    GlassSurface(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), content = content)
+    }
     note?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp)) }
 }

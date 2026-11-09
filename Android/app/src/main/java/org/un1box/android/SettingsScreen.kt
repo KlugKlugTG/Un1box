@@ -17,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -26,6 +27,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 
+/**
+ * Every setting, grouped the way a person thinks about them: what the device does, how it
+ * sounds, how it looks, what it costs to run. Each group is one pane of glass with a quiet
+ * label above it, so a long list still reads as a handful of sections.
+ */
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
@@ -43,11 +49,16 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
         confirmButton = { TextButton(onClick = { headphonesInfo = false }) { Text("OK") } })
     Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }, color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack, modifier = Modifier.testTag("settings_back")) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                Text("Settings", style = MaterialTheme.typography.titleLarge)
+            Row(Modifier.fillMaxWidth().height(66.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                GlassIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tag = "settings_back")
+                Spacer(Modifier.width(14.dp))
+                Column {
+                    Text("Settings", style = MaterialTheme.typography.headlineSmall)
+                    Text(BuildConfig.VERSION_NAME.let { "Un1box $it" }, style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings")) {
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings")) {
                 Group("Language") {
                     // Four languages in one row: the segmented labels drop the row's indent
                     // and use the smaller label style, and the follow-system one is the short
@@ -130,23 +141,33 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
                     }
                     ActionRow(LtIcons.File, "Open source licenses", null, tag = "open_licenses") { host.openLicenses() }
                 }
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(28.dp))
             }
+            // The app's destinations stay reachable from here, so Settings is a page and not a trap.
+            LtNavBar(Screen.SETTINGS, host::navigate)
         }
     }
 }
 
+/** One section: a quiet label, then a pane of glass holding its rows. */
 @Composable
 private fun Group(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 8.dp))
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(vertical = 6.dp), content = content)
+    SectionLabel(title)
+    GlassSurface(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), content = content)
+    }
 }
 
+/** The leading glyph of a row, on its own quiet tile so the row has a left edge to line up on. */
 @Composable
 private fun RowIcon(icon: ImageVector?, alpha: Float = 1f) {
-    if (icon != null) { Icon(icon, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha)); Spacer(Modifier.width(16.dp)) }
-    else Spacer(Modifier.width(38.dp))
+    if (icon != null) {
+        Box(Modifier.size(34.dp).clip(RoundedCornerShape(11.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f * alpha)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = alpha))
+        }
+        Spacer(Modifier.width(20.dp))
+    } else Spacer(Modifier.width(54.dp))
 }
 
 @Composable
@@ -177,7 +198,7 @@ private fun <T> ChoiceRow(icon: ImageVector?, title: String, options: List<T>, s
             }
         }
         Spacer(Modifier.height(8.dp))
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = if (compact) 0.dp else 38.dp).then(if (tag != null) Modifier.testTag(tag) else Modifier)) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = if (compact) 0.dp else 54.dp).then(if (tag != null) Modifier.testTag(tag) else Modifier)) {
             options.forEachIndexed { i, option ->
                 SegmentedButton(selected = option == selected, onClick = { onSelect(option) }, shape = SegmentedButtonDefaults.itemShape(i, options.size),
                     icon = {}, label = { Text(label(option), maxLines = 1,

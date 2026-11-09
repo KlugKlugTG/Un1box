@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
@@ -46,11 +47,11 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), modifier = DialogTags.testTag("devices_sheet")) {
         SheetSystemBars()
         Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
-            Text("Devices", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
+            Text("Devices", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
             if (host.active) Text("Stop ${host.selected?.name ?: "the running device"} to switch to or add another.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
-            LazyColumn(Modifier.padding(top = 8.dp).weight(1f, fill = false)) {
+            LazyColumn(Modifier.padding(top = 12.dp).weight(1f, fill = false)) {
                 items(host.devices, key = { it.id }) { device ->
                     // A running device's record is marked in use, which is not a crash to recover from.
                     DeviceRow(device, switchable = !host.active && !host.busy, editable = !(host.active && device.selected),
@@ -59,16 +60,19 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
                         onDetails = { host.openDetails(device) }, onRename = { renaming = device }, onDelete = { deleting = device })
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(14.dp))
-                .clickable(enabled = !host.busy && !host.active) { onDismiss(); host.addDevice() }.padding(12.dp).testTag("add_device").alpha(if (host.active) 0.38f else 1f),
-                verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Filled.Add, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                }
-                Spacer(Modifier.width(16.dp))
-                Column {
-                    Text("Add device", style = MaterialTheme.typography.titleSmall)
-                    Text("From an IPSW, or a device image you have", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            GlassSurface(Modifier.fillMaxWidth().padding(horizontal = 12.dp).alpha(if (host.active) 0.38f else 1f),
+                shape = MaterialTheme.shapes.medium) {
+                Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+                    .clickable(enabled = !host.busy && !host.active) { onDismiss(); host.addDevice() }.padding(12.dp).testTag("add_device"),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(44.dp).background(Brush.linearGradient(LtGradients.mixed), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Add, null, tint = MaterialTheme.colorScheme.onPrimary)
+                    }
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text("Add device", style = MaterialTheme.typography.titleSmall)
+                        Text("From an IPSW, or a device image you have", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }
@@ -87,40 +91,42 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
 @Composable
 private fun DeviceRow(device: DeviceSummary, switchable: Boolean, editable: Boolean, needsRecovery: Boolean, onSelect: () -> Unit, onDetails: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
-    val rowColor = if (device.selected) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerLow
-    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(14.dp))
-        .background(rowColor)
-        .clickable(enabled = switchable && !device.selected, onClick = onSelect).padding(start = 12.dp, top = 10.dp, bottom = 10.dp)
-        .testTag("device_row"), verticalAlignment = Alignment.CenterVertically) {
-        Box {
-            Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
-                Icon(LtIcons.Phone, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    GlassSurface(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 6.dp), strong = device.selected,
+        shape = MaterialTheme.shapes.medium) {
+        Row(Modifier.clickable(enabled = switchable && !device.selected, onClick = onSelect).padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp)
+            .testTag("device_row"), verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(13.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = if (device.selected) 0.22f else 0.12f)), contentAlignment = Alignment.Center) {
+                    Icon(LtIcons.Phone, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
+                }
+                // It didn't shut down cleanly: the home screen offers Recover and start.
+                if (needsRecovery) Box(Modifier.align(Alignment.BottomEnd).offset(4.dp, 4.dp).size(20.dp)
+                    .background(MaterialTheme.colorScheme.errorContainer, CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Warning, "Needs recovery", Modifier.size(15.dp), tint = MaterialTheme.colorScheme.error)
+                }
             }
-            // It didn't shut down cleanly: the home screen offers Recover and start.
-            if (needsRecovery) Box(Modifier.align(Alignment.BottomEnd).offset(4.dp, 4.dp).size(20.dp).background(rowColor, CircleShape),
-                contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Warning, "Needs recovery", Modifier.size(15.dp), tint = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(device.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(device.subtitle, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-        }
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            Text(device.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(device.subtitle, style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (device.selected) Icon(Icons.Filled.Check, "Selected", tint = MaterialTheme.colorScheme.primary)
-        Box {
-            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "Options for ${device.name}") }
-            DropdownMenu(menu, { menu = false }) {
-                DropdownMenuItem(text = { Text("Details") }, leadingIcon = { Icon(LtIcons.Info, null) }, onClick = { menu = false; onDetails() },
-                    modifier = Modifier.testTag("device_details_item"))
-                DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, onClick = { menu = false; onRename() })
-                DropdownMenuItem(text = { Text("Delete") }, leadingIcon = { Icon(Icons.Filled.Delete, null) }, enabled = editable,
-                    onClick = { menu = false; onDelete() })
+            if (device.selected) Box(Modifier.size(24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Check, "Selected", Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onPrimary)
+            }
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "Options for ${device.name}") }
+                DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem(text = { Text("Details") }, leadingIcon = { Icon(LtIcons.Info, null) }, onClick = { menu = false; onDetails() },
+                        modifier = Modifier.testTag("device_details_item"))
+                    DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, onClick = { menu = false; onRename() })
+                    DropdownMenuItem(text = { Text("Delete") }, leadingIcon = { Icon(Icons.Filled.Delete, null) }, enabled = editable,
+                        onClick = { menu = false; onDelete() })
+                }
             }
         }
     }
-    Spacer(Modifier.height(4.dp))
 }
 
 @Composable
