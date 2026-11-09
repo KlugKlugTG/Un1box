@@ -14,6 +14,12 @@ import android.view.WindowInsetsController
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -386,7 +392,11 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                     // The guest layout stays composed under full-page overlays so its Surface and lease survive them.
                     if (base == Screen.FULLSCREEN) FullscreenScreen(this@MainActivity, guestSurface) else HomeScreen(this@MainActivity, guestSurface)
-                    when (overlay) {
+                    // Pages rise into place rather than appearing: the guest keeps running behind them.
+                    AnimatedContent(overlay, Modifier.fillMaxSize(), transitionSpec = {
+                        (fadeIn(tween(190)) + slideInVertically(tween(190)) { it / 28 }) togetherWith fadeOut(tween(120))
+                    }, label = "page") { page ->
+                    when (page) {
                         Screen.LOADING -> Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
                             CircularProgressIndicator(Modifier.size(32.dp), strokeWidth = 3.dp)
                         }
@@ -401,7 +411,8 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                             onPickLocal = { localIpa.launch(arrayOf("application/octet-stream", "*/*")) }) { overlay = null }
                         Screen.HITCH -> HitchInspector(hitchData, hitchError, onResume = ::closeHitch, onSave = ::saveHitch, saving = hitchSaving,
                             savedNotice = hitchNotice, onShare = hitchReport?.let { uri -> { shareReport(uri) } })
-                        else -> {}
+                            else -> {}
+                        }
                     }
                     if (preparationOpen) PrepareOverlay()
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(bottom = 96.dp))

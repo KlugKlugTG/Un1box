@@ -58,7 +58,11 @@ internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifi
         if (docked) {
             GuestScreen(host, guestSurface, Modifier.size(screenWidth, screenHeight).align(Alignment.Center), overlayScale = 1f, inDeviceView = false)
             Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height((maxHeight - screenHeight) / 2), contentAlignment = Alignment.Center) {
-                ButtonBar(host, Modifier.fillMaxWidth().height(64.dp)) { confirmStop = true }
+                // The hardware keys sit on their own pane, so the black border does not look like a gap.
+                Box(Modifier.padding(horizontal = 14.dp).clip(RoundedCornerShape(28.dp))
+                    .background(Color.White.copy(alpha = 0.05f)).border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(28.dp))) {
+                    ButtonBar(host, Modifier.fillMaxWidth().height(64.dp)) { confirmStop = true }
+                }
             }
         } else {
             var visible by remember { mutableStateOf(true) }

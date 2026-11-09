@@ -4,6 +4,7 @@ import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -92,17 +94,31 @@ internal val GuestHost.running get() = status == "running"
 internal val GuestHost.paused get() = status == "paused"
 internal val GuestHost.active get() = status in listOf("running", "paused", "starting", "stopping")
 
-/** A labelled icon button for the control dock. */
+/**
+ * A labelled control for the session dock: the glyph sits on its own tile, so the eye reads the
+ * row as a set of buttons rather than a list of words. [primary] fills that tile with the app's
+ * gradient, which is reserved for the one control a session is usually asking for.
+ */
 @Composable
 internal fun DockButton(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
-                        enabled: Boolean = true, tint: Color = MaterialTheme.colorScheme.onSurface, tag: String? = null) {
-    Column(modifier.clip(RoundedCornerShape(14.dp)).clickable(enabled = enabled, onClick = onClick)
+                        enabled: Boolean = true, tint: Color = MaterialTheme.colorScheme.onSurface, tag: String? = null,
+                        primary: Boolean = false) {
+    val interaction = remember { MutableInteractionSource() }
+    val scheme = MaterialTheme.colorScheme
+    Column(modifier.pressFeedback(interaction, enabled).clip(RoundedCornerShape(18.dp))
+        .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
         .then(if (tag != null) Modifier.testTag(tag) else Modifier).semantics(mergeDescendants = true) { contentDescription = label }
-        .padding(horizontal = 4.dp, vertical = 8.dp).alpha(if (enabled) 1f else 0.38f),
+        .padding(horizontal = 2.dp, vertical = 6.dp).alpha(if (enabled) 1f else 0.38f),
         horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(icon, null, Modifier.size(24.dp), tint = tint)
-        Spacer(Modifier.height(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1, textAlign = TextAlign.Center)
+        Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp))
+            .then(if (primary) Modifier.background(Brush.linearGradient(LtGradients.mixed))
+                else Modifier.background(scheme.surfaceContainerHigh.copy(alpha = 0.8f))),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, null, Modifier.size(21.dp), tint = if (primary) scheme.onPrimary else tint)
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = if (primary) scheme.primary else tint,
+            maxLines = 1, textAlign = TextAlign.Center)
     }
 }
 
@@ -111,10 +127,12 @@ internal fun DockButton(icon: ImageVector, label: String, onClick: () -> Unit, m
 internal fun ErrorBanner(message: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
     AnimatedVisibility(message.isNotEmpty(), modifier) {
         var expanded by remember(message) { mutableStateOf(false) }
-        Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(14.dp), shadowElevation = 6.dp,
+        Surface(color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f), shape = RoundedCornerShape(20.dp), shadowElevation = 10.dp,
             modifier = Modifier.fillMaxWidth().testTag("session_error").clickable { expanded = !expanded }) {
-            Row(Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.Top) {
-                Icon(Icons.Filled.Warning, null, Modifier.size(18.dp).padding(top = 1.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
+            Row(Modifier.padding(start = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.Top) {
+                Box(Modifier.size(26.dp).background(MaterialTheme.colorScheme.error.copy(alpha = 0.22f), CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Warning, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
+                }
                 Spacer(Modifier.width(10.dp))
                 Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer,
                     maxLines = if (expanded) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis)

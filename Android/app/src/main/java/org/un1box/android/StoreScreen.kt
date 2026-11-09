@@ -380,12 +380,13 @@ private fun ColumnScope.DeviceTab(model: StoreModel) {
 private fun StoreTopBar(model: StoreModel, running: Boolean, onPickLocal: () -> Unit, canSearch: Boolean, onBack: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val searching = model.searchOpen && canSearch
-    Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onBack, modifier = Modifier.testTag("store_close")) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+    Row(Modifier.fillMaxWidth().height(68.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        GlassIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tag = "store_close")
+        Spacer(Modifier.width(8.dp))
         if (searching) SearchField(model, Modifier.weight(1f))
         else {
             Column(Modifier.weight(1f)) {
-                Text("Legacy Store", style = MaterialTheme.typography.titleLarge)
+                Text("Legacy Store", style = MaterialTheme.typography.headlineSmall)
                 Text(model.target?.let { "${shortProductName(it.productType)} · iOS ${it.ios}" } ?: "No device selected",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
