@@ -129,7 +129,8 @@ internal class JailbreakStore {
      */
     fun notAnIndex(body: ByteArray, url: String): String? {
         if (body.isEmpty()) return "empty index at $url"
-        val head = body.take(64).toString(Charsets.UTF_8).trimStart()
+        // String(...), not take(64).toString(...): ByteArray.take gives a List<Byte>.
+        val head = String(body, 0, minOf(64, body.size), Charsets.UTF_8).trimStart()
         if (head.startsWith("<")) return "this repository answers with a web page, not an index"
         return null
     }
