@@ -748,6 +748,21 @@ internal object I18nRu {
         put("The device is not running. Start it to install packages; browsing works without it.", "Устройство не запущено. Запусти его, чтобы ставить пакеты; список работает и без него.")
         put("Packages are downloaded by the phone and installed by the device's own Cydia at its next start.", "Пакеты скачивает телефон, а ставит собственный Cydia устройства при следующем запуске.")
         put("This package is built for 64-bit iOS and cannot be installed on this device.", "Этот пакет собран только для 64-битной iOS и не установится на это устройство.")
+        put("Cydia", "Cydia")
+        put("Changes", "Изменения")
+        put("Updates", "Обновления")
+        put("Sections", "Разделы")
+        put("All packages", "Все пакеты")
+        put("Version", "Версия")
+        put("Size", "Размер")
+        put("Author", "Автор")
+        put("Update available", "Доступно обновление")
+        put("Installed version", "Установленная версия")
+        put("Nothing here yet", "Здесь пока пусто")
+        put("Reading", "Чтение")
+        put("Reload", "Обновить")
+        put("Open", "Открыть")
+        put("Install anyway", "Всё равно установить")
     }
 
     /** The English match, then the Russian replacement, with $1.. for its groups. */

@@ -748,6 +748,21 @@ internal object I18nZh {
         put("The device is not running. Start it to install packages; browsing works without it.", "设备未运行。安装软件包需要先启动；浏览无需启动。")
         put("Packages are downloaded by the phone and installed by the device's own Cydia at its next start.", "软件包由手机下载，设备下次启动时由其自带的 Cydia 安装。")
         put("This package is built for 64-bit iOS and cannot be installed on this device.", "此软件包仅适用于 64 位 iOS，无法安装到本设备。")
+        put("Cydia", "Cydia")
+        put("Changes", "变更")
+        put("Updates", "更新")
+        put("Sections", "分类")
+        put("All packages", "全部软件包")
+        put("Version", "版本")
+        put("Size", "大小")
+        put("Author", "作者")
+        put("Update available", "有可用更新")
+        put("Installed version", "已安装版本")
+        put("Nothing here yet", "这里还没有内容")
+        put("Reading", "读取中")
+        put("Reload", "刷新")
+        put("Open", "打开")
+        put("Install anyway", "仍然安装")
     }
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */

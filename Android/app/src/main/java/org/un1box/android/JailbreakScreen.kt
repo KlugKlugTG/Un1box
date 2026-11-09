@@ -82,7 +82,15 @@ internal fun JailbreakScreen(
     var staged by remember { mutableStateOf("") }
     var open by remember { mutableStateOf<String?>(null) }   // the package whose details are showing
     var installed by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var onlyInstalled by remember { mutableStateOf(false) }
+    var filterMode by remember { mutableStateOf(0) }   // 0: all, 1: installed, 2: updates
+    // What the list offers newer than the device has: Cydia's "Changes" in one line. Declared after
+    // `installed`, which it reads.
+    val updates = remember(packages.size, installed.size) {
+        packages.filter {
+            val have = installed[it.name]
+            have != null && JailbreakCatalog.compareVersions(it.version, have) > 0
+        }
+    }
 
     fun load(source: String) {
         chosenSource = source
@@ -189,14 +197,31 @@ internal fun JailbreakScreen(
                 OutlinedTextField(filter, { filter = it }, Modifier.weight(1f), singleLine = true,
                     label = { Text("Search") })
                 Spacer(Modifier.width(8.dp))
-                Text(if (onlyInstalled) "All" else "Installed ${installed.size}",
-                    Modifier.clickable { onlyInstalled = !onlyInstalled }, color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelMedium)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        when (filterMode) {
+                            1 -> "All"
+                            2 -> "Installed ${installed.size}"
+                            else -> "Updates ${updates.size}"
+                        },
+                        Modifier.clickable { filterMode = (filterMode + 1) % 3 },
+                        color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                }
             }
 
             val shown = packages
-                .filter { !onlyInstalled || installed.containsKey(it.name) }
-                .filter { filter.isBlank() || it.name.contains(filter, true) || it.summary.contains(filter, true) }
+                .filter {
+                    when (filterMode) {
+                        1 -> installed.containsKey(it.name)
+                        2 -> updates.any { update -> update.name == it.name }
+                        else -> true
+                    }
+                }
+                .filter {
+                    filter.isBlank() || it.name.contains(filter, true) ||
+                        it.summary.contains(filter, true) || it.section.contains(filter, true)
+                }
+                .sortedWith(compareBy({ it.section.ifBlank { "Other" }.lowercase() }, { it.name.lowercase() }))
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(shown, key = { it.name + it.version }) { pkg ->

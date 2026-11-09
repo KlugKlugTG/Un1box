@@ -141,6 +141,44 @@ class JailbreakStoreTest {
     }
 
     @Test
+    fun `the catalog keeps the newest version of a package and remembers which source failed`() {
+        val catalog = JailbreakCatalog()
+        catalog.add("http://one.example/", listOf(
+            JailbreakPackage("com.example.tweak", "1.2.3", "iphoneos-arm", 10, "debs/t.deb", "A tweak", "http://one.example/", "Tweaks")))
+        catalog.add("http://two.example/", listOf(
+            JailbreakPackage("com.example.tweak", "1.10", "iphoneos-arm", 12, "debs/t.deb", "A tweak", "http://two.example/", "Tweaks"),
+            JailbreakPackage("com.example.other", "0.1", "iphoneos-arm", 5, "debs/o.deb", "Other", "http://two.example/", "Utilities")))
+        catalog.failed("http://gone.example/", "this repository answers with a web page, not an index")
+
+        assertEquals(2, catalog.packages().size)
+        assertEquals("1.10", catalog.packages().first { it.name == "com.example.tweak" }.version)
+        assertEquals(1, catalog.failures.size)
+        assertEquals(listOf("Tweaks" to 1, "Utilities" to 1), catalog.sections())
+    }
+
+    @Test
+    fun `versions compare the way an upgrade question needs`() {
+        assertEquals(1, JailbreakCatalog.compareVersions("1.10", "1.2.3"))
+        assertEquals(-1, JailbreakCatalog.compareVersions("1.2.3", "1.10"))
+        assertEquals(0, JailbreakCatalog.compareVersions("2.0", "2.0"))
+        assertEquals(1, JailbreakCatalog.compareVersions("1.0.1", "1.0"))
+        assertEquals(-1, JailbreakCatalog.compareVersions("0.9", "1.0"))
+        assertEquals(1, JailbreakCatalog.compareVersions("1.0-2", "1.0-1"))
+    }
+
+    @Test
+    fun `the updates list is what the device has older, and installed is what it has at all`() {
+        val catalog = JailbreakCatalog()
+        catalog.add("http://one.example/", listOf(
+            JailbreakPackage("a", "2.0", "iphoneos-arm", 1, "a.deb", "", "http://one.example/"),
+            JailbreakPackage("b", "1.0", "iphoneos-arm", 1, "b.deb", "", "http://one.example/"),
+            JailbreakPackage("c", "3.0", "iphoneos-arm", 1, "c.deb", "", "http://one.example/")))
+        val installed = mapOf("a" to "1.0", "b" to "1.0", "z" to "9.9")
+        assertEquals(listOf("a"), catalog.updates(installed).map { it.name })
+        assertTrue(catalog.search("B").any { it.name == "b" })
+    }
+
+    @Test
     fun `a file name that is not a name cannot leave the install folder`() {
         val pkg = JailbreakPackage("x", "1", "iphoneos-arm", 1, "debs/../../etc/passwd", "", "http://repo.example/")
         val staged = store.stagedPath(pkg)

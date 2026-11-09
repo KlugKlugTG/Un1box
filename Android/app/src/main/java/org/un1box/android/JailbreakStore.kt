@@ -284,6 +284,91 @@ internal class JailbreakStore {
 }
 
 /**
+ * Every source's packages as one list, the way Cydia's lists are: one row per package name, the
+ * newest version of it, and the source that offered it. A source that did not answer is kept as a
+ * complaint rather than dropped silently -- "Cydia's Sources list would show it too".
+ */
+internal class JailbreakCatalog {
+    private val byName = LinkedHashMap<String, JailbreakPackage>()
+    private val complaints = LinkedHashMap<String, String>()
+
+    val failures: Map<String, String> get() = complaints
+
+    fun clear() {
+        byName.clear()
+        complaints.clear()
+    }
+
+    fun add(source: String, packages: List<JailbreakPackage>) {
+        complaints.remove(source)
+        for (package_ in packages) {
+            val known = byName[package_.name]
+            if (known == null || compareVersions(package_.version, known.version) > 0) byName[package_.name] = package_
+        }
+    }
+
+    fun failed(source: String, why: String) {
+        complaints[source] = why
+    }
+
+    fun packages(): List<JailbreakPackage> = byName.values.sortedBy { it.name.lowercase() }
+
+    /** What the list can be grouped by, with how many packages each has: Cydia's own section list. */
+    fun sections(): List<Pair<String, Int>> = byName.values
+        .groupingBy { it.section.ifBlank { "Other" } }
+        .eachCount()
+        .entries
+        .sortedByDescending { it.value }
+        .map { it.key to it.value }
+
+    /** Packages the device has at a different version than the list offers. */
+    fun updates(installed: Map<String, String>): List<JailbreakPackage> = packages()
+        .filter { installed[it.name] != null && compareVersions(it.version, installed[it.name]!!) > 0 }
+
+    fun search(text: String): List<JailbreakPackage> {
+        val needle = text.trim()
+        if (needle.isEmpty()) return emptyList()
+        return packages().filter {
+            it.name.contains(needle, true) || it.summary.contains(needle, true) ||
+                it.section.contains(needle, true)
+        }
+    }
+
+    /**
+     * Debian versions compared leniently: runs of digits as numbers, everything else as text. Enough
+     * for "is this an upgrade", which is what the tab asks -- not dpkg's own ordering, which no list
+     * of a few thousand packages needs.
+     */
+    companion object {
+        fun compareVersions(left: String, right: String): Int {
+            var a = 0
+            var b = 0
+            while (a < left.length || b < right.length) {
+                if (a < left.length && b < right.length && left[a].isDigit() && right[b].isDigit()) {
+                    var x = a
+                    var y = b
+                    while (x < left.length && left[x].isDigit()) x++
+                    while (y < right.length && right[y].isDigit()) y++
+                    val leftNumber = left.substring(a, x).trimStart('0')
+                    val rightNumber = right.substring(b, y).trimStart('0')
+                    if (leftNumber.length != rightNumber.length) return leftNumber.length - rightNumber.length
+                    if (leftNumber != rightNumber) return leftNumber.compareTo(rightNumber)
+                    a = x
+                    b = y
+                    continue
+                }
+                val leftChar = if (a < left.length) left[a] else '\u0000'
+                val rightChar = if (b < right.length) right[b] else '\u0000'
+                if (leftChar != rightChar) return leftChar.compareTo(rightChar)
+                a++
+                b++
+            }
+            return 0
+        }
+    }
+}
+
+/**
  * One package's way from a repository to the guest: downloaded by the phone, then staged in the
  * guest's AutoInstall folder over AFC, where the guest's own Cydia startup job installs it at the
  * next boot. Nothing runs in the guest: its 2010 TLS stack and its emulated CPU are what made
