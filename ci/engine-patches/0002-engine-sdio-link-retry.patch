@@ -1,0 +1,155 @@
+diff --git a/hw/arm/ipod_touch_sdio.c b/hw/arm/ipod_touch_sdio.c
+index 32b9e81a98..a776d65882 100644
+--- a/hw/arm/ipod_touch_sdio.c
++++ b/hw/arm/ipod_touch_sdio.c
+@@ -396,6 +396,15 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t event_type,
+ static const uint8_t default_bssid[6] = { 0x02, 0x00, 0x5e, 0x10, 0x00, 0x01 };
+ #define FAKE_SSID "qemu-ios"
+ 
++/* How long after a join the guest is given to use it, and how many times the association events
++ * are repeated. iOS 5 is why this exists: its first wifid scan lands about when the auto-join
++ * timer does, and the join that arrives in the middle of that scan is lost -- the driver drops
++ * it, the model believes itself associated, the Wi-Fi pane lists the network from the scan and
++ * the guest never gets a link or a lease (a browser sits on "Loading"). A guest that took the
++ * link says so within a second: its DHCP request is the first frame it hands the dongle. */
++#define SDIO_LINK_CHECK_NS (4 * NANOSECONDS_PER_SECOND)
++#define SDIO_LINK_RETRIES_MAX 4
++
+ /* Describe the network the model claims to be on, open and on channel 6. */
+ static void fill_bss_info(IPodTouchSDIOState *s, uint8_t *bi)
+ {
+@@ -487,6 +496,12 @@ static void sdio_send_assoc_events(IPodTouchSDIOState *s)
+     sdpcm_send_event(s, WLC_E_ASSOC, 0, 0);
+     sdpcm_send_event(s, WLC_E_SET_SSID, 0, 0);
+     sdpcm_send_event(s, WLC_E_LINK, 0, WLC_EVENT_MSG_LINK);
++    /* Look in a few seconds at whether the guest used the link (sdio_link_check). */
++    s->link_frames = s->guest_frames;
++    if (s->link_timer) {
++        timer_mod(s->link_timer,
++                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + SDIO_LINK_CHECK_NS);
++    }
+ }
+ 
+ /*
+@@ -516,6 +531,7 @@ static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload,
+     }
+ 
+     trace_sdio("[SDIO] WLC_SET_SSID '%s': associating\n", ssid);
++    s->link_retries = 0;   /* the driver is asking again: watch this join from the start */
+     sdio_send_assoc_events(s);
+ }
+ 
+@@ -569,6 +585,7 @@ static void sdio_arm_autojoin(IPodTouchSDIOState *s)
+     if (s->associated || !s->join_timer) {
+         return;
+     }
++    s->link_retries = 0;   /* a new arming (the host's interface came up): a new budget */
+     if (v && strtod(v, NULL) > 0) {
+         delay = strtod(v, NULL);
+     }
+@@ -576,6 +593,36 @@ static void sdio_arm_autojoin(IPodTouchSDIOState *s)
+               (int64_t)(delay * NANOSECONDS_PER_SECOND));
+ }
+ 
++/*
++ * A join the guest never took. The events above are what a dongle reports, but the driver can be
++ * busy with its own work when they arrive, and a join reported during a scan is lost for good --
++ * with the model believing itself associated, nothing ever repeats it. The guest's own traffic is
++ * the proof that the link is real: DHCP leaves within a second of a link the driver accepted. So
++ * a join with no frame from the guest after it is sent again, a few times, and only while no scan
++ * is outstanding (joining mid-scan is what the driver drops in the first place).
++ */
++static void sdio_link_check(void *opaque)
++{
++    IPodTouchSDIOState *s = (IPodTouchSDIOState *)opaque;
++
++    if (!s->associated || s->guest_frames != s->link_frames) {
++        return;   /* not associated, or the guest is using the link: nothing to repair */
++    }
++    if (!s->iscan_reported) {
++        trace_sdio("[SDIO] the guest has not used the link, and a scan is outstanding\n");
++        timer_mod(s->link_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++                  2 * NANOSECONDS_PER_SECOND);
++        return;
++    }
++    if (s->link_retries >= SDIO_LINK_RETRIES_MAX) {
++        trace_sdio("[SDIO] the guest never used the link; leaving it alone\n");
++        return;
++    }
++    s->link_retries++;
++    trace_sdio("[SDIO] the guest has not used the link: associating again (%u)\n", s->link_retries);
++    sdio_send_assoc_events(s);
++}
++
+ /*
+  * Answer one CDC control request. Everything is acknowledged with a zeroed
+  * payload for now; the point is to get the driver past initDongle and to see
+@@ -876,6 +923,9 @@ static void sdio_tx_data(IPodTouchSDIOState *s, const uint8_t *payload,
+         hexdump_frame("guest frame", payload + chosen, len - chosen);
+     }
+ 
++    /* The guest is talking: the link watchdog reads this (sdio_link_check). Counted even with no
++     * backend, because the frame proves the driver came up on the join either way. */
++    s->guest_frames++;
+     if (!s->nic) {
+         return;
+     }
+@@ -1529,6 +1579,7 @@ static void ipod_touch_sdio_init(Object *obj)
+     s->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, trigger_irq, s);
+     s->scan_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_scan_complete, s);
+     s->join_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_autojoin, s);
++    s->link_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdio_link_check, s);
+ 
+     s->rx_fifo = g_queue_new();
+ }
+@@ -1562,6 +1613,7 @@ static void ipod_touch_sdio_reset(DeviceState *dev)
+     timer_del(s->irq_timer);
+     timer_del(s->scan_timer);
+     timer_del(s->join_timer);
++    timer_del(s->link_timer);
+     while ((f = g_queue_pop_head(s->rx_fifo))) {
+         g_free(f->data);
+         g_free(f);
+@@ -1571,6 +1623,7 @@ static void ipod_touch_sdio_reset(DeviceState *dev)
+     s->fw_bytes = s->fw_bytes_logged = 0;
+     s->func2_seen = s->dongle_started = s->associated = s->host_netif = false;
+     s->iscan_reported = true;      /* no scan outstanding */
++    s->link_retries = s->guest_frames = s->link_frames = 0;
+     s->tx_seq = s->rx_seq = 0;
+     s->cdc_hdrlen = s->bdc_hdrlen = 0;
+     memset(s->sdiod_regs, 0, sizeof(s->sdiod_regs));
+@@ -1678,7 +1731,7 @@ static const VMStateDescription vmstate_sdio_toe = {
+ 
+ static const VMStateDescription vmstate_ipod_touch_sdio = {
+     .name = TYPE_IPOD_TOUCH_SDIO,
+-    .version_id = 1,
++    .version_id = 2,               /* 2: the link watchdog's state (link_timer and its counters) */
+     .minimum_version_id = 1,
+     .pre_load = sdio_pre_load,
+     .post_load = sdio_post_load,
+@@ -1713,6 +1766,10 @@ static const VMStateDescription vmstate_ipod_touch_sdio = {
+         VMSTATE_TIMER_PTR(irq_timer, IPodTouchSDIOState),
+         VMSTATE_TIMER_PTR(scan_timer, IPodTouchSDIOState),
+         VMSTATE_TIMER_PTR(join_timer, IPodTouchSDIOState),
++        VMSTATE_TIMER_PTR(link_timer, IPodTouchSDIOState),
++        VMSTATE_UINT32(link_retries, IPodTouchSDIOState),
++        VMSTATE_UINT32(guest_frames, IPodTouchSDIOState),
++        VMSTATE_UINT32(link_frames, IPodTouchSDIOState),
+         VMSTATE_SINGLE(backplane, IPodTouchSDIOState, 1, vmstate_sdio_backplane, GHashTable *),
+         VMSTATE_SINGLE(rx_fifo, IPodTouchSDIOState, 1, vmstate_sdio_frames, GQueue *),
+         VMSTATE_END_OF_LIST()
+diff --git a/include/hw/arm/ipod_touch_sdio.h b/include/hw/arm/ipod_touch_sdio.h
+index f90e161a22..5e0ba66048 100644
+--- a/include/hw/arm/ipod_touch_sdio.h
++++ b/include/hw/arm/ipod_touch_sdio.h
+@@ -373,6 +373,10 @@ typedef struct IPodTouchSDIOState
+     uint8_t bssid[6];        /* the access point's; "bssid" property */
+     bool host_netif;         /* the host set mcast_list: its network interface is attached */
+     QEMUTimer *join_timer;   /* auto-join clock, armed once the host is up and has a netif */
++    QEMUTimer *link_timer;   /* re-asserts a join the guest never used (sdio_link_check) */
++    unsigned link_retries;   /* associations re-sent for the current join */
++    unsigned guest_frames;   /* frames the guest has handed the dongle */
++    unsigned link_frames;    /* guest_frames when the join was last reported */
+     unsigned tx_log;
+     /* The TCP offload engine the host enabled ("toe", "toe_ol"). With TOE_TX_CSUM_OL the host leaves the IPv4 header
+      * and TCP/UDP checksums to the dongle (6.x's AppleBCMWLAN does), which fills them in before the frame goes out. */

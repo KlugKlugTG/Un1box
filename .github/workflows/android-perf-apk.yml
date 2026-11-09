@@ -931,6 +931,13 @@ jobs:
           python3 tests/branding/run.py
           python3 tests/idle/run.py
 
+      # The guest's Wi-Fi link: the dongle model's association watchdog, sliced out of the engine and
+      # driven with a fake clock (tests/network/run.py). iOS 5 drops a join that lands in the middle of
+      # its first scan and nothing repeated it -- an iPad 1 had no network while iOS 6 and 7.1.2 did.
+      - name: Self-check the guest's link
+        continue-on-error: true
+        run: python3 tests/network/run.py --engine qemu-ios
+
       # The archives firmwarekit's jailbreak option extracts, pinned by SHA-1 in SystemEdits/Cydia.swift:
       # the jailbreak self-check compares the tar this APK builds against the host's own on the real bytes
       # when they are here (a cache hit after the first run) and on its own fixtures when they are not.
