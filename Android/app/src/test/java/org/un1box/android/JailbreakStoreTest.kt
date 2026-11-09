@@ -67,11 +67,14 @@ class JailbreakStoreTest {
     }
 
     @Test
-    fun `a package's file is relative to the index's own directory`() {
+    fun `a package's file is relative to the archive root, not to the index's directory`() {
+        // Telesphoreo is the shape this is taken from: /dists/ios/main/binary-iphoneos-arm/Packages
+        // lists Filename: debs/..., and the file is at /debs/... (the index's own directory would 404).
         val pkg = store.parseIndex(index, "http://repo.example/")[0]
         val indexUrl = "http://repo.example/dists/stable/main/binary-iphoneos-arm/Packages.gz"
-        assertEquals("http://repo.example/dists/stable/main/binary-iphoneos-arm/debs/first_1.2.3_iphoneos-arm.deb",
-            store.packageUrl(pkg, indexUrl))
+        assertEquals("http://repo.example/debs/first_1.2.3_iphoneos-arm.deb", store.packageUrl(pkg, indexUrl))
+        assertEquals("http://repo.example", store.archiveRoot(indexUrl))
+        assertEquals("http://repo.example", store.archiveRoot("http://repo.example/Packages"))
     }
 
     @Test
@@ -98,7 +101,7 @@ class JailbreakStoreTest {
         val packages = store.parseIndex(index, "http://repo.example/", "http://repo.example/Packages")
         assertEquals(2, packages.size)
         assertEquals("http://repo.example/debs/first_1.2.3_iphoneos-arm.deb",
-            store.packageUrl(packages[0], "http://repo.example/Packages"))
+            store.packageUrl(packages[0], "http://repo.example/Packages"))   # the root itself
     }
 
     @Test

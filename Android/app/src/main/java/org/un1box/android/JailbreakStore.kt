@@ -185,15 +185,21 @@ internal class JailbreakStore {
         return packages
     }
 
-    /** The .deb's own URL: `Filename` is relative to the source root (or to the index's directory). */
+    /**
+     * The archive root a `Filename` is relative to. Debian's rule, and Telesphoreo is the check: its
+     * index lives in /dists/ios/main/binary-iphoneos-arm/ and its packages in /debs/, so joining the
+     * file name to the index's own directory asks for a 404.
+     */
+    fun archiveRoot(indexUrl: String): String {
+        val dists = indexUrl.indexOf("/dists/")
+        if (dists > 0) return indexUrl.substring(0, dists)
+        return indexUrl.substringBeforeLast('/', "")
+    }
+
+    /** The .deb's own URL: `Filename` relative to the archive root, or absolute as it is. */
     fun packageUrl(pkg: JailbreakPackage, indexUrl: String): String {
         if (pkg.filename.startsWith("http://") || pkg.filename.startsWith("https://")) return pkg.filename
-        val root = when {
-            indexUrl.endsWith("Packages") || indexUrl.endsWith("Packages.gz") ->
-                indexUrl.substringBeforeLast('/', "")
-            else -> indexUrl.trimEnd('/')
-        }
-        return root.trimEnd('/') + "/" + pkg.filename.trimStart('/')
+        return archiveRoot(indexUrl).trimEnd('/') + "/" + pkg.filename.trimStart('/')
     }
 
     /** Downloads the package beside the app's cache and returns the file. */
