@@ -209,6 +209,34 @@ class JailbreakStoreTest {
     }
 
     @Test
+    fun `a repository's icon is looked for beside its release first, then at the root`() {
+        // Telesphoreo and BigBoss both serve dists/<suite>/CydiaIcon.png; a root-level copy is the
+        // fallback for the repositories that use one.
+        val index = "http://apt.saurik.com/dists/ios/main/binary-iphoneos-arm/Packages"
+        assertEquals(listOf("http://apt.saurik.com/dists/ios/CydiaIcon.png", "http://apt.saurik.com/CydiaIcon.png"),
+            JailbreakIcons.repositoryIcons("http://apt.saurik.com/", index))
+        assertEquals(listOf("http://repo.example/CydiaIcon.png"),
+            JailbreakIcons.repositoryIcons("http://repo.example/", "http://repo.example/Packages"))
+    }
+
+    @Test
+    fun `a package's icon from the index is a guest path, so the row falls back to the box`() {
+        // BigBoss's Icon: values are file:///Library/... inside the device; the phone cannot fetch
+        // those, which is why the package lists show Cydia's box.
+        val withGuestIcon = """
+            Package: com.example.tweak
+            Version: 1.0
+            Icon: file:///Library/ActionMenu/icon-large.png
+            Filename: debs/tweak.deb
+
+        """.trimIndent()
+        val pkg = store.parseIndex(withGuestIcon, "http://repo.example/")[0]
+        assertEquals("file:///Library/ActionMenu/icon-large.png", pkg.icon)
+        assertEquals("http://repo.example/file:///Library/ActionMenu/icon-large.png",
+            JailbreakIcons.packageIcon(pkg, "http://repo.example/Packages"))
+    }
+
+    @Test
     fun `a visit's lists are reused while they are fresh, and a changed source list is not`() {
         val cache = JailbreakCache()
         val now = 1_000_000_000L

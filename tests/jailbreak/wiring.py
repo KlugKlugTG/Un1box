@@ -233,6 +233,12 @@ def the_bz2_indexes_have_a_decompressor():
             "the decompressor vendored upstream bzip2 after all: it is meant to be this project's own")
     require("JailbreakBunzip2" in read(STORE_KT) and "libjbBz2.so" in read(STORE_KT),
             "the store has no way to run the tool")
+    screen = read(SCREEN_KT)
+    require('Text("Add Source")' in screen and "OutlinedTextField(adding" in screen,
+            "the Sources list has no field to type a source into: adding one would open a notice with "
+            "nothing to type in, which is what the first device run showed")
+    require("repositoryIcons(" in screen and "firstIcon(" in read(STORE_KT),
+            "a source's icon is looked for in one guessed place again")
     return "built here, checked, staged, and run by the store"
 
 

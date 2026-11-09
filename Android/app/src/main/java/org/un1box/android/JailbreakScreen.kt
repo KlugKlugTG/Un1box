@@ -105,7 +105,6 @@ internal fun JailbreakScreen(
     var installed by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var query by remember { mutableStateOf("") }
     var newSource by remember { mutableStateOf("") }
-    var adding by remember { mutableStateOf(false) }
     var reading by remember { mutableStateOf("") }
     var revision by remember { mutableStateOf(0) }
     var error by remember { mutableStateOf("") }
@@ -193,13 +192,13 @@ internal fun JailbreakScreen(
                     is JailbreakPage.Package -> shown.package_.name
                 },
                 action = when (page) {
-                    JailbreakPage.Lists -> if (list == JailbreakList.SOURCES) "Add Source" else "Refresh"
+                    JailbreakPage.Lists -> "Refresh"
                     is JailbreakPage.Package -> "Install"
                     else -> null
                 },
                 onAction = {
                     when (val shown = page) {
-                        JailbreakPage.Lists -> if (list == JailbreakList.SOURCES) adding = true else refresh()
+                        JailbreakPage.Lists -> refresh()
                         is JailbreakPage.Package -> install(shown.package_)
                         else -> Unit
                     }
@@ -238,7 +237,15 @@ internal fun JailbreakScreen(
             // column and the tab bar below it lands off-screen, which is exactly what happened.
             Box(Modifier.weight(1f).fillMaxWidth()) {
             when (val shown = page) {
-                JailbreakPage.Lists -> ListsPage(list, catalog, installed, updates, sources, fetchedAt, query,
+                JailbreakPage.Lists -> ListsPage(list, newSource, { newSource = it }, {
+                    val url = newSource.trim()
+                    if (url.isNotEmpty() && sources.none { it.trimEnd('/') == url.trimEnd('/') }) {
+                        sources.add(url)
+                        JailbreakSources.write(context, sources.toList())
+                        refresh(url)
+                    }
+                    newSource = ""
+                }, catalog, installed, updates, sources, fetchedAt, query,
                     { query = it }, { refresh() }, { page = JailbreakPage.Source(it) },
                     { page = JailbreakPage.Section(it) }, { page = JailbreakPage.Package(it) },
                     { one -> sources.remove(one); JailbreakSources.write(context, sources.toList()); fetchedAt.remove(one) })
@@ -261,18 +268,6 @@ internal fun JailbreakScreen(
         }
     }
 
-    if (adding) {
-        Notice("Add Source", null, "Add" to {
-            val url = newSource.trim()
-            if (url.isNotEmpty() && sources.none { it.trimEnd('/') == url.trimEnd('/') }) {
-                sources.add(url)
-                JailbreakSources.write(context, sources.toList())
-                refresh(url)
-            }
-            newSource = ""
-            adding = false
-        }, "Dismiss" to { adding = false })
-    }
 }
 
 /** Cydia's header: a back arrow or the screen's name, and the one action the screen has. */
@@ -327,6 +322,9 @@ private fun Notice(title: String, detail: String?, vararg actions: Pair<String, 
 @Composable
 private fun ListsPage(
     list: JailbreakList,
+    adding: String,
+    onAdding: (String) -> Unit,
+    onAddSource: () -> Unit,
     catalog: JailbreakCatalog,
     installed: Map<String, String>,
     updates: List<JailbreakPackage>,
@@ -362,6 +360,17 @@ private fun ListsPage(
         JailbreakList.SOURCES -> LazyColumn(contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { GroupLabel("Sources", "Refresh", onRefresh) }
+            item {
+                // Cydia's own "Add Source": a field and a button, inline, where the sources are.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(adding, onAdding, Modifier.weight(1f), singleLine = true,
+                        placeholder = { Text("http://repo.example/") },
+                        label = { Text("Add Source") })
+                    Spacer(Modifier.width(8.dp))
+                    Text("Add", Modifier.clickable(enabled = adding.isNotBlank()) { onAddSource() },
+                        color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                }
+            }
             items(sources, key = { it }) { one ->
                 SourceCard(one, catalog.counts()[one] ?: 0, fetchedAt[one], { onSource(one) },
                     { onRemoveSource(one) })
@@ -467,7 +476,7 @@ private fun SourceCard(url: String, packages: Int, at: Long?, onOpen: () -> Unit
     Card(onClick = onOpen) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SourceIcon(JailbreakIcons.repositoryIcon(url))
+                SourceIcon(JailbreakIcons.repositoryIcons(url, catalog.indexOf(url)))
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(JailbreakSources.displayName(url), style = MaterialTheme.typography.bodyLarge)
@@ -648,9 +657,9 @@ private fun PackageIcon(large: Boolean = false, url: String = "") {
 
 /** A repository's icon, with the diamond standing in while it loads or when it has none. */
 @Composable
-private fun SourceIcon(url: String) {
-    val bitmap by produceState<Bitmap?>(null, url) {
-        value = withContext(Dispatchers.IO) { JailbreakIcons.icon(url) }
+private fun SourceIcon(urls: List<String>) {
+    val bitmap by produceState<Bitmap?>(null, urls) {
+        value = withContext(Dispatchers.IO) { JailbreakIcons.firstIcon(urls) }
     }
     Box(Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh),
         contentAlignment = Alignment.Center) {

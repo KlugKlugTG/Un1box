@@ -450,11 +450,34 @@ internal object JailbreakIcons {
      * file follows -- a source typed as its index URL still has its icon at the root, not beside the
      * index in dists/.
      */
-    fun repositoryIcon(source: String): String {
+    fun repositoryIcon(source: String): String = repositoryIcons(source, source).first()
+
+    /**
+     * Where a repository's icon may be, best first: the suite directory beside its Release -- what
+     * Telesphoreo and BigBoss both serve, checked -- then the archive root, which others use.
+     */
+    fun repositoryIcons(source: String, indexUrl: String): List<String> {
+        val found = ArrayList<String>()
+        val index = if (indexUrl.isNotEmpty()) indexUrl else source
+        val suite = index.indexOf("/dists/")
+        if (suite > 0) {
+            val after = index.substring(suite + "/dists/".length)
+            val suiteName = after.substringBefore('/')
+            found += index.substring(0, suite + "/dists/".length) + suiteName + "/CydiaIcon.png"
+        }
         val trimmed = source.trimEnd('/')
         val root = if (trimmed.endsWith("Packages") || trimmed.endsWith("Packages.gz") ||
             trimmed.endsWith("Packages.bz2")) JailbreakStore().archiveRoot(trimmed) else trimmed
-        return root.trimEnd('/') + "/CydiaIcon.png"
+        found += root.trimEnd('/') + "/CydiaIcon.png"
+        return found.distinct()
+    }
+
+    /** The first of `urls` that answers with an image, or null: what a source card draws. */
+    fun firstIcon(urls: List<String>): android.graphics.Bitmap? {
+        for (one in urls) {
+            icon(one)?.let { return it }
+        }
+        return null
     }
 
     /** A package's icon as a URL: absolute as the control file gives it, else under the archive root. */
