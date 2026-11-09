@@ -45,7 +45,11 @@ def sh(command, cwd=None):
 
 
 def engine_from_git(path: Path, scratch: Path) -> Path:
-    """A copy of the engine at HEAD with ci/engine-patches applied, as the APK build does."""
+    """A copy of the engine at HEAD with ci/engine-patches applied, as the APK build does.
+
+    A checkout the CI has already patched (it applies the series and commits it) is used as it is:
+    the suite then tests the same source the APK is built from, which is what it is for.
+    """
     # No text=True here: a tar stream is not text.
     archive = subprocess.run(["git", "-C", str(path), "archive", "HEAD"], capture_output=True)
     if archive.returncode:
@@ -57,6 +61,9 @@ def engine_from_git(path: Path, scratch: Path) -> Path:
                             capture_output=True)
     if unpack.returncode:
         raise Failure(f"tar failed: {unpack.stderr.decode(errors='ignore')[-400:]}")
+    already = "SDIO_LINK_RETRIES_MAX" in (tree / "hw" / "arm" / "ipod_touch_sdio.c").read_text(errors="ignore")
+    if already:
+        return tree
     for patch in sorted(PATCHES.glob("*.patch")):
         applied = sh(["git", "apply", "--whitespace=nowarn", str(patch)], cwd=tree)
         if applied.returncode:
