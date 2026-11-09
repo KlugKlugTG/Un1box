@@ -57,7 +57,10 @@ class JailbreakStoreTest {
         assertTrue(candidates.any { it == "http://repo.example/dists/stable/main/binary-iphoneos-arm/Packages.gz" })
         assertTrue(candidates.any { it == "http://repo.example/dists/ios/main/binary-iphoneos-arm/Packages.gz" })
         assertTrue(candidates.any { it == "http://repo.example/Packages.gz" })
-        assertFalse(candidates.any { it.contains("Packages.bz2") })   // Android cannot read bz2 itself
+        // bz2 is tried, last, through the app's own decompressor: BigBoss serves nothing else.
+        assertTrue(candidates.contains("http://repo.example/dists/stable/main/binary-iphoneos-arm/Packages.bz2"))
+        assertTrue(candidates.indexOf("http://repo.example/Packages.bz2") >
+            candidates.indexOf("http://repo.example/Packages.gz"))
     }
 
     @Test

@@ -423,7 +423,8 @@ internal class JailbreakCatalog {
  * draws the box Cydia draws for one.
  */
 internal object JailbreakIcons {
-    private val cache = android.util.LruCache<String, android.graphics.Bitmap>(160)
+    /** Created on the first icon: the URL helpers below are pure and the unit tests are a plain JVM. */
+    private val cache by lazy { android.util.LruCache<String, android.graphics.Bitmap>(160) }
 
     fun icon(url: String): android.graphics.Bitmap? {
         if (url.isEmpty()) return null
