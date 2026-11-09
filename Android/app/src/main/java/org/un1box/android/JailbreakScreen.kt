@@ -372,7 +372,8 @@ private fun ListsPage(
                 }
             }
             items(sources, key = { it }) { one ->
-                SourceCard(one, catalog.counts()[one] ?: 0, fetchedAt[one], { onSource(one) },
+                SourceCard(one, catalog.counts()[one] ?: 0, fetchedAt[one],
+                    JailbreakIcons.repositoryIcons(one, catalog.indexOf(one)), { onSource(one) },
                     { onRemoveSource(one) })
             }
         }
@@ -472,11 +473,18 @@ private fun PackageList(
 
 /** A source's card: its name, its URL, how many packages it offered and when it last answered. */
 @Composable
-private fun SourceCard(url: String, packages: Int, at: Long?, onOpen: () -> Unit, onRemove: () -> Unit) {
+private fun SourceCard(
+    url: String,
+    packages: Int,
+    at: Long?,
+    icons: List<String>,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit,
+) {
     Card(onClick = onOpen) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SourceIcon(JailbreakIcons.repositoryIcons(url, catalog.indexOf(url)))
+                SourceIcon(icons)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(JailbreakSources.displayName(url), style = MaterialTheme.typography.bodyLarge)
