@@ -202,13 +202,6 @@ class JailbreakStoreTest {
     }
 
     @Test
-    fun `a repository's icon is the one cydia keeps beside its index`() {
-        assertEquals("http://repo.example/CydiaIcon.png", JailbreakIcons.repositoryIcon("http://repo.example/"))
-        assertEquals("http://repo.example/CydiaIcon.png",
-            JailbreakIcons.repositoryIcon("http://repo.example/dists/ios/main/binary-iphoneos-arm/Packages"))
-    }
-
-    @Test
     fun `a repository's icon is looked for beside its release first, then at the root`() {
         // Telesphoreo and BigBoss both serve dists/<suite>/CydiaIcon.png; a root-level copy is the
         // fallback for the repositories that use one.
