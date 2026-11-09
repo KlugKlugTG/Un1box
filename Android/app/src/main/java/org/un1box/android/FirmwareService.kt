@@ -126,17 +126,24 @@ class FirmwareService : Service() {
     }
 
     /**
+     * Where firmwarekit is started, which is what decides how its bare "env" resolves: bionic's posix_spawn
+     * searches no PATH, so that name is looked up in the working directory alone. /system/bin holds toybox's env
+     * and is the first choice; the APK's own copy of env(1) sits beside firmwarekit in nativeLibraryDir, so a
+     * device where that directory cannot be entered still has one for the second attempt to find.
+     */
+    private fun start(builder: ProcessBuilder, libs: File): java.lang.Process = try {
+        builder.directory(File("/system/bin")).start()
+    } catch (error: java.io.IOException) {
+        builder.directory(libs).start()
+    }
+
+    /**
      * One firmwarekit command. Its stdout is a line of JSON per event (begin: each step's expected seconds; step;
      * progress: the step's fraction and what it is doing; error), turned into this worker's stage and a weighted done/total.
      */
     private fun run(libs: File, args: List<String>) {
         val builder = ProcessBuilder(listOf(File(libs, "libfirmwarekit.so").path) + args)
             .redirectError(File(cacheDir, "firmwarekit.log").apply { parentFile?.mkdirs() })
-            // firmwarekit runs iBoot32Patcher as "env <patcher> <in> <out> --rsa ...": a bare name, which macOS
-            // resolves on PATH and Android does not (bionic's posix_spawn searches nothing). The APK carries its
-            // own env(1) in nativeLibraryDir, so starting firmwarekit there makes the name resolve to it;
-            // PATH carries the same directory for a search that happens in Foundation instead.
-            .directory(libs)
         builder.environment().apply {
             put("LTM_QEMU_DYLIB", File(libs, "libqemu-arm.so").path)
             put("LD_LIBRARY_PATH", libs.path)
@@ -150,7 +157,7 @@ class FirmwareService : Service() {
             File(libs, "libiBoot32Patcher.so").takeIf { it.canExecute() }?.let { put("FIRMWAREKIT_IBOOT_PATCHER", it.path) }
         }
         check(!cancelling) { "Cancelled" }
-        val child = builder.start().also { process = it }
+        val child = start(builder, libs).also { process = it }
         var weights = listOf<Long>(); var step = 0
         var message = ""
         var stepName = ""; var stepStarted = 0L
