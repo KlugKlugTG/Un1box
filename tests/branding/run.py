@@ -50,7 +50,16 @@ def the_label_is_the_product_name():
     manifest = read(MANIFEST)
     label = re.search(r'android:label="([^"]+)"', manifest)
     require(label is not None, "the manifest names no app label, so the launcher shows the package")
-    require(label.group(1) == "Un1box", f'the launcher still shows "{label.group(1)}"')
+    # The label is a resource because the jailbreak build is a second application beside this one and
+    # names itself "Un1box JB" (build.gradle.kts, resValue app_name): what must stay the product name is
+    # the default, which is what a launcher shows for the normal build.
+    require(label.group(1) == "@string/app_name",
+            f'the manifest labels the app "{label.group(1)}": it must be the app_name resource, so a '
+            "launcher can tell the jailbreak application from this one")
+    gradle = read(GRADLE)
+    default = re.search(r'resValue\("string", "app_name", if \(jailbreak\) "[^"]+" else "([^"]+)"\)', gradle)
+    require(default is not None, "build.gradle.kts defines no app_name resource, so the label is unresolved")
+    require(default.group(1) == "Un1box", f'the launcher would show "{default.group(1)}"')
     require("LightTouch" not in manifest, "the manifest still carries the old product name")
 
 

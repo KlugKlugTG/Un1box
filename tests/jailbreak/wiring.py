@@ -1,0 +1,181 @@
+"""The jailbreak build's five layers, and that they meet, checked as text.
+
+The behaviour is tests/jailbreak/run.py's: it builds the tar and the shim and runs them. What it cannot
+see is whether the APK would *use* them, which is four names and one flag spread over four files:
+
+  gradle     -Pjailbreak becomes BuildConfig.JAILBREAK, and stages build-support/jb-tar.c's output as
+             libjbTar.so -- and requires it, so a jailbreak build without the tool fails rather than
+             preparing a device that cannot install Cydia
+  service    the worker passes --jailbreak to firmwarekit when that flag is set, and names the staged
+             tar in the child's environment (FIRMWAREKIT_TAR), the way it names iBoot32Patcher
+  shim       /usr/bin/tar is redirected, and the tar it points at is run without the shim preloaded
+  workflows  the build the APK comes from compiles that source with the NDK and passes -Pjailbreak; the
+             jailbreak workflow asks for the jailbreak build and builds nothing else
+
+Each check raises with one sentence when it fails, and returns a short note when it passes.
+"""
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+GRADLE = ROOT / "Android" / "app" / "build.gradle.kts"
+SERVICE = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "FirmwareService.kt"
+SHIM = ROOT / "Packages" / "FirmwareKit" / "build-support" / "spawn-shim.c"
+CYDA = ROOT / "Packages" / "FirmwareKit" / "Sources" / "FirmwareKit" / "SystemEdits" / "Cydia.swift"
+WORKFLOW = ROOT / ".github" / "workflows" / "android-perf-apk.yml"
+JAILBREAK_WORKFLOW = ROOT / ".github" / "workflows" / "jailbreak-apk.yml"
+
+
+def read(path):
+    if not path.is_file():
+        raise AssertionError(f"{path.relative_to(ROOT)} is missing")
+    return path.read_text(errors="ignore")
+
+
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+def gradle_carries_the_flag():
+    gradle = read(GRADLE)
+    require('gradleProperty("jailbreak")' in gradle,
+            "build.gradle.kts reads no -Pjailbreak property, so nothing can ask for the jailbreak build")
+    require(re.search(r'buildConfigField\("boolean",\s*"JAILBREAK"', gradle) is not None,
+            "the flag never reaches the app: there is no BuildConfig.JAILBREAK")
+    require(re.search(r'if \(jailbreak\) applicationIdSuffix = "\.jb"', gradle) is not None,
+            "the jailbreak build shares the normal applicationId: a phone could not hold both, it would "
+            "have to replace one with the other")
+    require(re.search(r'resValue\("string", "app_name", if \(jailbreak\) "([^"]+)" else "([^"]+)"\)', gradle)
+            is not None,
+            "the jailbreak build has no name of its own: two Un1box icons would sit side by side")
+    label = re.search(r'resValue\("string", "app_name", if \(jailbreak\) "([^"]+)" else "([^"]+)"\)', gradle)
+    require(label.group(2) == "Un1box",
+            f'the normal build is named "{label.group(2)}", not the product name')
+    require(re.search(r'\(if \(jailbreak\) listOf\("jb-tar"\) else emptyList\(\)\)', gradle) is not None,
+            "firmwareKitDir does not require jb-tar for a jailbreak build: Gradle would succeed with a "
+            "tar-less kit and the phone would fail instead")
+    stage = gradle.split('tasks.register<Copy>("prepareFirmwareKit")', 1)
+    require(len(stage) > 1, "the firmwarekit staging task is gone")
+    require(re.search(r'if \(jailbreak\) from\(kit\) \{ include\("jb-tar"\); rename \{ "libjbTar.so" \} \}',
+                      stage[1].split("\n    }", 1)[0]) is not None,
+            "the tar is not staged as libjbTar.so for the jailbreak build")
+    require('include("jb-tar")' not in gradle.split('tasks.register<Copy>("prepareFirmwareKit")', 1)[0],
+            "the tar is staged outside that task's jailbreak branch, so the normal APK would carry it too")
+    return "the flag reaches BuildConfig, gives it its own app id and name, and stages libjbTar.so"
+
+
+def service_passes_the_flag_and_names_the_tar():
+    service = read(SERVICE)
+    require('listOf("--jailbreak")' in service and "BuildConfig.JAILBREAK" in service,
+            "the worker never passes --jailbreak: a jailbreak build would prepare stock systems")
+    create = service.split('run(libs, listOf("create"', 1)[1][:1200]
+    require("--jailbreak" in create,
+            "the flag is not in the create command's arguments, so firmwarekit never hears it")
+    require('put("FIRMWAREKIT_TAR"' in service and "libjbTar.so" in service,
+            "the worker does not name the staged tar: the shim would still find the copy beside itself, "
+            "but the override is how one build points at one file")
+    require('put("LD_PRELOAD"' in service and "libspawnshim.so" in service,
+            "the shim is not preloaded into firmwarekit, so neither the patcher nor the tar is redirected")
+    return "--jailbreak on create, FIRMWAREKIT_TAR named, shim preloaded"
+
+
+def shim_redirects_tar():
+    shim = read(SHIM)
+    require('#define TAR_PATH "/usr/bin/tar"' in shim and '#define TAR_REAL "libjbTar.so"' in shim,
+            "the shim does not know the tar's paths, so a spawn of /usr/bin/tar finds nothing")
+    redirect = shim.split("static const char *redirected(", 1)[1].split("\n}", 1)[0]
+    require("TAR_PATH" in redirect and "TAR_ENV" in redirect,
+            "redirected() has no branch for the tar: the recipe's \"/usr/bin/tar\" stays as it is")
+    require("shim_quiet" in shim and "/proc/self/exe" in shim,
+            "the shim does not recognise the tar it spawns, so the extracted members' own accesses would "
+            "fill the log a preparation failure is read from")
+    require("without_preload" in shim and "(preload dropped)" in shim,
+            "the tar inherits LD_PRELOAD, so the shim interposes inside it as well")
+    for wrapper in ("posix_spawn", "posix_spawnp", "execve"):
+        body = shim.split(f"int {wrapper}(", 1)[1].split("\n}", 1)[0]
+        require("without_preload" in body,
+                f"{wrapper}() does not drop LD_PRELOAD for the tar: which spawn firmwarekit uses would "
+                "decide whether the shim is in front of it")
+    return "/usr/bin/tar redirected, the tar spawned without the shim"
+
+
+def workflows_build_the_jailbreak_apk_only():
+    workflow = read(WORKFLOW)
+    jailbreak = read(JAILBREAK_WORKFLOW)
+    require("build-support/jb-tar.c" in workflow,
+            "the APK workflow never builds the tar, so the staged libjbTar.so would not exist")
+    require("-Pjailbreak=\"$DECLARED_JAILBREAK\"" in workflow,
+            "the APK workflow does not pass the flag to Gradle")
+    require("workflow_call:" in workflow and "jailbreak:" in workflow.split("workflow_call:", 1)[1][:2000],
+            "the APK workflow cannot be called with a jailbreak input")
+    require("tests/jailbreak/run.py" in workflow,
+            "the APK workflow does not run the jailbreak self-check")
+    require("uses: ./.github/workflows/android-perf-apk.yml" in jailbreak,
+            "the jailbreak workflow does not call the APK workflow")
+    require("jailbreak: \"true\"" in jailbreak,
+            "the jailbreak workflow does not ask for the jailbreak build")
+    require("assemble" not in jailbreak and "gradlew" not in jailbreak,
+            "the jailbreak workflow builds the APK itself as well as calling the build: there would be two "
+            "definitions of the same APK")
+    return "one build, called with jailbreak true, self-checked"
+
+
+def the_archives_are_the_pinned_ones():
+    """The self-check can only compare the real bytes if the build fetches exactly what the recipe pins."""
+    cyda = read(CYDA)
+    workflow = read(WORKFLOW)
+    revision = re.search(r"Legacy-iOS-Kit/([0-9a-f]{40})/resources/jailbreak/", cyda)
+    require(revision is not None, "Cydia.swift no longer pins the Legacy-iOS-Kit revision the archives come from")
+    require(revision.group(1) in workflow,
+            "the workflow fetches the jailbreak archives from a different revision than the recipe pins, so "
+            "the self-check would compare against bytes no preparation ever extracts")
+    pinned = re.findall(r'\(name: "([^"]+)", sha1: "([0-9a-f]{40})"\)', cyda)
+    require(len(pinned) >= 3, f"Cydia.swift names {len(pinned)} archives; the bootstrap, Substrate and HTTPatch are three")
+    for name, sha1 in pinned:
+        require(name in workflow and sha1 in workflow,
+                f"the workflow does not fetch and verify {name} ({sha1[:12]}), so a failed download would "
+                "go unnoticed")
+    require("tests/jailbreak/archives" in workflow,
+            "the workflow does not put the archives where tests/jailbreak/run.py looks for them")
+    return f"{len(pinned)} archives at {revision.group(1)[:8]}, verified by the workflow"
+
+
+def the_jailbreak_apk_is_signed_with_its_own_key():
+    """Its own application id means it may have its own key, and the checks must expect the right one."""
+    workflow = read(WORKFLOW)
+    require("ci/jailbreak.keystore" in workflow and "un1boxjailbreak" in workflow,
+            "the workflow has no jailbreak keystore: the two applications would share a signing key")
+    sign = workflow.split("Sign the APK with the workflow's keystore", 1)
+    require(len(sign) > 1, "the signing step is gone")
+    require("jailbreak.keystore" in sign[1].split("- name:", 1)[0] and "DECLARED_JAILBREAK" in sign[1][:1200],
+            "the signing step does not choose the jailbreak keystore for a jailbreak build")
+    check = workflow.split("Check the APK and write provenance", 1)
+    require(len(check) > 1, "the APK check step is gone")
+    require("LT_JB_SIGNER_SHA256" in check[1].split("- name:", 1)[0],
+            "the APK check compares the jailbreak APK against the normal key, so a correctly signed "
+            "jailbreak build would be rejected")
+    keystore = workflow.split("Cache the signing key", 1)[1].split("- name:", 1)[0]
+    jailbreak_cache = workflow.split("Cache the jailbreak signing key", 1)
+    require(len(jailbreak_cache) > 1,
+            "the jailbreak keystore has no cache entry of its own: adding it to the debug key's entry "
+            "would rewrite that entry without debug.keystore, and every normal build after would sign "
+            "with a new key")
+    require("ci/jailbreak.keystore" in jailbreak_cache[1].split("- name:", 1)[0],
+            "the jailbreak cache entry does not cache the jailbreak keystore")
+    require("ci/jailbreak.keystore" not in keystore,
+            "the jailbreak keystore is cached in the debug key's entry, which would drop debug.keystore "
+            "from that cache when this run saves it")
+    return "its own keystore, cached in its own entry, and the check expects its digest"
+
+
+CHECKS = [
+    ("gradle: -Pjailbreak reaches BuildConfig and stages the tar", gradle_carries_the_flag),
+    ("service: the worker passes --jailbreak and names the tar", service_passes_the_flag_and_names_the_tar),
+    ("shim: /usr/bin/tar is redirected and the tar is spawned clean", shim_redirects_tar),
+    ("workflows: the jailbreak APK comes from the one build, self-checked",
+     workflows_build_the_jailbreak_apk_only),
+    ("workflows: the jailbreak application has its own signing key",
+     the_jailbreak_apk_is_signed_with_its_own_key),
+    ("workflows: the self-check gets the archives the recipe pins", the_archives_are_the_pinned_ones),
+]

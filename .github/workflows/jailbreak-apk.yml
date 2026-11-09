@@ -1,0 +1,101 @@
+name: Jailbreak APK
+
+# Builds only the jailbreak APK: the same engine, guest packages, NDK tools, signing key and checks as the
+# normal build, with every preparation passing --jailbreak. The normal APK is android-perf-apk.yml's
+# business; this workflow neither builds it nor changes it.
+#
+# It calls that workflow instead of copying it. The engine build, the dependency and engine caches, the
+# guest-package pairing, the keystore and the APK checks are exactly the parts a second copy would drift
+# from, and the run costs the same ten minutes either way -- what makes the result the jailbreak build is
+# the one input this passes.
+#
+# What that input changes (Android/app/build.gradle.kts, FirmwareService.kt, build-support/spawn-shim.c):
+#
+#   preparation   passes --jailbreak, so a prepared device comes up with afc2 (the whole file system
+#                 over USB), Cydia and Substrate, from the Legacy-iOS-Kit bootstrap the recipe pins by
+#                 address and SHA-1 (SystemEdits/Cydia.swift). The recipe patches the kernel's sandbox
+#                 check and adds amfi_get_out_of_my_way=1 to the boot arguments, as the jailbreaks of the
+#                 time did. A recipe that does not implement the option says so rather than preparing a
+#                 stock system in silence (N45's: "the jailbreak option needs iPhone OS 2.0 or later").
+#   jb-tar        ships as libjbTar.so, and the preloaded spawn shim points the Cydia step's "/usr/bin/tar"
+#                 at it: Android has no /usr/bin/tar, and toybox's has neither -k nor --exclude, so the
+#                 step otherwise fails on every phone. tests/jailbreak/run.py checks that tar against the
+#                 host's own on the archives it is pinned to, and checks the redirect through a real spawn.
+#   its own app   the APK is org.un1box.android.jb, signed with this repository's jailbreak keystore, and
+#                 it calls itself "Un1box JB". It installs *beside* the normal Un1box rather than over it,
+#                 which is the point: one phone can keep a stock builder and a jailbreaking one. The price
+#                 is that the two do not share state -- devices are prepared again inside the new app.
+#   naming        the APK, the artifact and the release tag carry "jailbreak" / the "jb-" prefix, and the
+#                 version name reads "0.0.13-jailbreak", so a build can be told from the normal one by name
+#                 alone.
+#
+# Everything else is the normal workflow's: release variant, ARM64 ANGLE provider, the serial-42 guest
+# itpacks, the reused firmwarekit, and the same build steps -- the jailbreak APK is signed with the
+# jailbreak keystore, which the workflow generates once and caches beside the normal one.
+on:
+  workflow_dispatch:
+    inputs:
+      engine_repository:
+        description: Engine source repository
+        required: true
+        default: KlugKlugTG/qemu-ios
+      engine_ref:
+        description: Engine branch, tag or commit to build
+        required: true
+        default: perf
+      base_release_repository:
+        description: Release whose APK supplies firmwarekit, the USB bridge and the guest tools
+        required: true
+        default: blake-lucas/LightTouch
+      base_release_tag:
+        description: Tag of that release
+        required: true
+        default: v0.0.10
+      debuggable:
+        description: Whether the APK is debuggable (the runtime then trusts debug-env settings)
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
+      dependency_verification:
+        description: Gradle dependency verification against Android/gradle/verification-metadata.xml
+        type: choice
+        options:
+          - strict
+          - lenient
+          - off
+        default: strict
+      create_release:
+        description: Attach the APK to a pre-release of this repository (tag jb-<engine>-r<run>)
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  # One jailbreak build per branch at a time, and never in the normal workflow's group: the two write
+  # different releases and must not queue behind each other.
+  group: jailbreak-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  jailbreak:
+    name: Build the jailbreak APK
+    uses: ./.github/workflows/android-perf-apk.yml
+    with:
+      engine_repository: ${{ inputs.engine_repository }}
+      engine_ref: ${{ inputs.engine_ref }}
+      base_release_repository: ${{ inputs.base_release_repository }}
+      base_release_tag: ${{ inputs.base_release_tag }}
+      variant: release
+      debuggable: ${{ inputs.debuggable }}
+      angle_arm64: "true"
+      dependency_verification: ${{ inputs.dependency_verification }}
+      create_release: ${{ inputs.create_release }}
+      jailbreak: "true"
