@@ -104,7 +104,7 @@ def engine_patch_ships_the_conversion():
 
 def engine_patch_refuses_a_size_that_is_not_a_mode():
     isp = file_body(CAMERA_PATCH, "hw/arm/s5l8930_isp.c")
-    require("w <= 4096 && h <= 4096" in isp and "!(w & 1)" in isp,
+    require("w <= ISP_OUT_MAX && h <= ISP_OUT_MAX" in isp and "!(w & 1)" in isp,
             "a frame size the sensors never had is no longer skipped: it would be allocated and DMAed")
     require("y > 0x1000" in isp, "the ISP no longer checks that the guest gave it a buffer")
 

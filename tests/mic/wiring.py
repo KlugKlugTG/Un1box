@@ -34,8 +34,8 @@ BOARDS_PATCH = patch_with("host-mic")
 # microphone was a patch of its own, and -- since the port grew the A4-only property -- that same
 # call behind the property. The series is one patch now, so both checks below look for the call site
 # itself rather than for one spelling of it.
-MIC_CALL = "if (host_mic_read_frame(s->rx_frame))"
-GATED_MIC_CALL = "if (s->host_mic && host_mic_read_frame(s->rx_frame))"
+MIC_CALL = "if (host_mic_read_frame("
+GATED_MIC_CALL = "if (s->host_mic && host_mic_read_frame("
 API_DEFINE = re.compile(r"^([+-])#define QEMU_IOS_API_VERSION \(\(2u << 16\) \| (\d+)u\)", re.M)
 
 ENGINE_SYMBOLS = ("qemu_ios_microphone_write", "qemu_ios_microphone_flush", "qemu_ios_microphone_state")
@@ -128,7 +128,7 @@ def engine_patch_gives_the_microphone_to_the_a4_boards_only():
     require('DEFINE_PROP_BOOL("host-mic"' in body,
             "the port has no host-mic property, so every board sharing the model asks the frontend's "
             "ring -- including the iPhone 3GS and the iPod touch 2G, which record silence")
-    require("if (s->host_mic && host_mic_read_frame(s->rx_frame))" in body,
+    require(GATED_MIC_CALL in body,
             "i2s_next_frame() reads the ring on a board that has no microphone")
     require("if (!s->tone_hz && s->host_mic)" in body,
             "i2s_set_in_rate() resamples for a board that has no microphone")

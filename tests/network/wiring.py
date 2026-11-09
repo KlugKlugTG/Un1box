@@ -12,8 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "ci" / "engine-patches" / "0002-engine-sdio-link-retry.patch"
-HEADER = "include/hw/arm/ipod_touch_sdio.h"
-SOURCE = "hw/arm/ipod_touch_sdio.c"
+HEADER = "include/hw/net/bcm_fullmac.h"
+SOURCE = "hw/arm/bcm_fullmac.c"
 
 
 def read(path):
@@ -33,7 +33,7 @@ def require(condition, message):
 
 def the_watchdog_is_armed_by_every_association():
     patch = read(PATCH)
-    require("static void sdio_link_check(void *opaque)" in added_lines(PATCH),
+    require("static void bcm_fullmac_link_check(void *opaque)" in added_lines(PATCH),
             "the patch adds no link check: a join the guest drops is never repeated")
     # The hunk header names the function it patches (git puts it there), so the arming is looked for
     # in the hunk that changes sdio_send_assoc_events rather than anywhere in the file.
@@ -52,7 +52,7 @@ def the_watchdog_is_armed_by_every_association():
 
 def the_guest_s_own_traffic_is_the_signal():
     body = added_lines(PATCH)
-    check = body.split("static void sdio_link_check", 1)
+    check = body.split("static void bcm_fullmac_link_check", 1)
     require(len(check) > 1, "the check itself is gone")
     check = check[1].split("\n}", 1)[0]
     require("s->guest_frames != s->link_frames" in check,
@@ -61,7 +61,7 @@ def the_guest_s_own_traffic_is_the_signal():
     require(re.search(r"if \(!s->iscan_reported\)", check) is not None,
             "the check does not defer while a scan is outstanding, and a join during a scan is the "
             "one the driver drops -- what the retry must not run into")
-    require("SDIO_LINK_RETRIES_MAX" in check,
+    require("BCM_LINK_RETRIES_MAX" in check,
             "the retries are unbounded: a guest that never comes up would be joined at for ever")
     require("s->guest_frames++" in body,
             "nothing counts the guest's frames, so the check can never see the guest talking: the "
@@ -78,12 +78,19 @@ def the_state_lives_and_dies_with_the_machine():
             "the machine's reset does not stop the check: a stale timer would fire into a new session")
     require(re.search(r"s->link_retries = s->guest_frames = s->link_frames = 0;", body) is not None,
             "the machine's reset does not clear the counters")
-    require(re.search(r"s->link_timer = timer_new_ns\(QEMU_CLOCK_VIRTUAL, sdio_link_check, s\);", body)
+    require(re.search(r"s->link_timer = timer_new_ns\(QEMU_CLOCK_VIRTUAL, bcm_fullmac_link_check, s\);", body)
             is not None,
             "the check's timer is never created, so the arming has nothing to arm")
-    require("VMSTATE_TIMER_PTR(link_timer" in body and "version_id = 2" in body,
-            "a saved machine does not carry the watchdog (or its version was not raised for the new "
-            "fields)")
+    # The full-MAC model keeps no vmstate at all in the incoming engine (nothing of its state is
+    # migrated, the join clock and the scan clock included), so the watchdog follows it: when that
+    # changes, these fields have to be carried with the rest.
+    fullmac_migrated = "VMSTATE_BOOL(associated" in read(PATCH) or "vmstate_bcm_fullmac" in read(PATCH)
+    if fullmac_migrated:
+        require("VMSTATE_TIMER_PTR(link_timer" in body,
+                "the full-MAC model is migrated now, and the watchdog's state is not carried with it")
+    else:
+        require("VMSTATE_TIMER_PTR(link_timer" not in body,
+                "the watchdog claims a vmstate the model around it has not got")
     require(re.search(r"s->link_retries = 0;", body) is not None,
             "a join the driver asks for does not get a fresh retry budget")
     return "created, reset, saved (version 2), and a driver-asked join starts over"
