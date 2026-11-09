@@ -442,12 +442,13 @@ internal object JailbreakIcons {
         }.getOrNull()?.also { cache.put(url, it) }
     }
 
-    /** A repository's own icon, where Cydia keeps it: CydiaIcon.png beside its index. */
-    fun repositoryIcon(source: String): String {
-        val root = if (source.endsWith("Packages") || source.endsWith("Packages.gz") || source.endsWith("Packages.bz2"))
-            source.substringBeforeLast('/', "") else source.trimEnd('/')
-        return "$root/CydiaIcon.png"
-    }
+    /**
+     * A repository's own icon: CydiaIcon.png at the archive root, which is the same rule a package's
+     * file follows -- a source typed as its index URL still has its icon at the root, not beside the
+     * index in dists/.
+     */
+    fun repositoryIcon(source: String): String =
+        JailbreakStore().archiveRoot(source.trimEnd('/')).trimEnd('/') + "/CydiaIcon.png"
 
     /** A package's icon as a URL: absolute as the control file gives it, else under the archive root. */
     fun packageIcon(pkg: JailbreakPackage, indexUrl: String): String {
