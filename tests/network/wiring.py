@@ -109,6 +109,5 @@ CHECKS = [
     ("the patch: every association arms the check", the_watchdog_is_armed_by_every_association),
     ("the patch: the guest's own traffic is the signal", the_guest_s_own_traffic_is_the_signal),
     ("the patch: the state is created, reset and saved", the_state_lives_and_dies_with_the_machine),
-]
     ("the engine: the Android resolver caches its answers", the_resolver_caches_what_the_phone_answered),
 ]
