@@ -127,12 +127,14 @@ val sourceReference = providers.gradleProperty("sourceReference").orElse(
 // firmwarekit, the preparer every port shares (-PfirmwareKitDir: scripts/build.sh firmwarekit-android): it,
 // lighttouch-oneshot and iBoot32Patcher ship as executables in nativeLibraryDir, with the notices of what it
 // links. The patcher is what firmwarekit's iPad 1 (k48) recipe shells out to; nothing carried it on Android
-// before, so an iPad failed with "iBoot32Patcher (/iBoot32Patcher) not runnable", and FirmwareService passes
-// its path in nativeLibraryDir as FIRMWAREKIT_IBOOT_PATCHER (the override K48IBoot.patcher reads first).
+// before, so an iPad failed with "iBoot32Patcher (/iBoot32Patcher) not runnable". It launches it as
+// "env <patcher> ...", a bare name that Android's posix_spawn resolves against the working directory only,
+// so a copy of env(1) ships beside it (keeping its name) and FirmwareService starts firmwarekit in
+// nativeLibraryDir, with the patcher named through FIRMWAREKIT_IBOOT_PATCHER.
 providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
     val kit = file(input)
-    require(listOf("firmwarekit", "lighttouch-oneshot", "iBoot32Patcher", "licenses/manifest.json").all { kit.resolve(it).isFile }) {
-        "firmwareKitDir must hold firmwarekit, lighttouch-oneshot, iBoot32Patcher and licenses/ (scripts/build.sh firmwarekit-android)"
+    require(listOf("firmwarekit", "lighttouch-oneshot", "iBoot32Patcher", "env", "licenses/manifest.json").all { kit.resolve(it).isFile }) {
+        "firmwareKitDir must hold firmwarekit, lighttouch-oneshot, iBoot32Patcher, env and licenses/ (scripts/build.sh firmwarekit-android)"
     }
     val firmwareKitJniLibs = layout.buildDirectory.dir("generated/firmwareKitJniLibs")
     val firmwareKitNotices = layout.buildDirectory.dir("generated/firmwareKitNotices")
@@ -140,6 +142,8 @@ providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
         from(kit) { include("firmwarekit"); rename { "libfirmwarekit.so" } }
         from(kit) { include("lighttouch-oneshot"); rename { "liblighttouch_oneshot.so" } }
         from(kit) { include("iBoot32Patcher"); rename { "libiBoot32Patcher.so" } }
+        // env keeps its name: it is looked up as a working-directory entry, not as a shared library.
+        from(kit) { include("env") }
         into(firmwareKitJniLibs.map { it.dir("arm64-v8a") })
     }
     val notices = tasks.register<Copy>("prepareFirmwareKitNotices") {

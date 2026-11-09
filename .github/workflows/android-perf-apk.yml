@@ -516,14 +516,17 @@ jobs:
       # lines of C with no dependencies beyond libc, pinned with its patch in build-support, so it is built
       # here from that pin and staged like the other executables: the Gradle build packages
       # ci/firmwarekit/android/iBoot32Patcher as libiBoot32Patcher.so, and FirmwareService names it in the
-      # child's environment. Only the NDK's compiler, readelf and the patch in this repository are used.
+      # child's environment. The same step builds the env(1) firmwarekit launches it through: it passes a bare
+      # "env", which Android's posix_spawn resolves against the working directory only (FirmwareService starts
+      # firmwarekit in nativeLibraryDir, where this file sits). Only the NDK's compiler, readelf and the patch in
+      # this repository are used.
       #
       # The reused firmwarekit (v0.0.10) spawns that path directly and reads FIRMWAREKIT_IBOOT_PATCHER --
       # checked in its strings, not assumed. Packages/FirmwareKit's own K48IBoot.patchIBoot runs it through
       # /usr/bin/env instead, which Android has no such path for: a firmwarekit built from this tree, or
       # reused from a newer tag, must stop spawning that (run the tool directly, or use /bin/env, which
       # Android's toybox does provide) or the iPad path breaks again the moment the reuse tag moves.
-      - name: Build iBoot32Patcher for arm64 Android
+      - name: Build iBoot32Patcher and env for arm64 Android
         run: |
           python3 - <<'PY' > /tmp/iboot32patcher-pin
           import json
@@ -543,7 +546,13 @@ jobs:
           chmod 755 ci/firmwarekit/android/iBoot32Patcher
           "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/iBoot32Patcher | grep -q 'AArch64'
           python3 build-support/stage-iboot32patcher-notice.py ci/firmwarekit/android/licenses "/tmp/$DIR/LICENSE"
-          ls -la ci/firmwarekit/android/iBoot32Patcher
+          # The patcher is launched as "env <patcher> <in> <out> --rsa ...": a bare name, which macOS resolves on
+          # PATH and Android does not (bionic's posix_spawn searches nothing). This APK carries its own env next
+          # to firmwarekit and FirmwareService starts firmwarekit in that directory, so the name resolves there.
+          "$TOOLS/aarch64-linux-android29-clang" -O2 -o ci/firmwarekit/android/env Packages/FirmwareKit/build-support/env.c
+          chmod 755 ci/firmwarekit/android/env
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/env | grep -q 'AArch64'
+          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/env
 
       # The patches carry changes to the engine's own build scripts (0012 adds
       # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for

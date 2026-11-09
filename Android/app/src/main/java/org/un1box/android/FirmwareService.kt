@@ -93,7 +93,7 @@ class FirmwareService : Service() {
             note("complete")
             foreground("Your device is prepared. Open Un1box to add it.")
         } catch (e: Exception) {
-            if (cancelling) state = "cancelled" else { failure = e.message ?: "Firmware preparation failed"; state = "failed" }
+            if (cancelling) state = "cancelled" else { failure = listOf(e.message ?: "Firmware preparation failed", diagnosis(libs)).joinToString("\n"); state = "failed" }
             writable(out); out.deleteRecursively()
             if (cancelling) PreparationNote.clear(this) else note("failed")
         } finally {
@@ -105,21 +105,48 @@ class FirmwareService : Service() {
     }
 
     /**
+     * What the preparation needed from this build and what the app could see of it, appended to a failure so a
+     * report names the link that broke: the patcher and env(1) beside firmwarekit, and whether this process can
+     * run the patcher at all. The app spawns it the way firmwarekit does, but through Java, which does not depend
+     * on Foundation's idea of where a bare name lives. The patcher prints its usage and exits, so this is cheap.
+     */
+    private fun diagnosis(libs: File): String {
+        val patcher = File(libs, "libiBoot32Patcher.so")
+        val env = File(libs, "env")
+        val spawn = try {
+            val child = ProcessBuilder(patcher.path).redirectErrorStream(true).start()
+            child.inputStream.readBytes()
+            child.waitFor()
+            "ran (exit ${child.exitValue()})"
+        } catch (error: Exception) {
+            "failed: ${error.message ?: error.javaClass.simpleName}"
+        }
+        return "tools: iBoot32Patcher ${if (patcher.canExecute()) "present" else "missing"}, " +
+            "env ${if (env.canExecute()) "present" else "missing"}; app ran the patcher: $spawn"
+    }
+
+    /**
      * One firmwarekit command. Its stdout is a line of JSON per event (begin: each step's expected seconds; step;
      * progress: the step's fraction and what it is doing; error), turned into this worker's stage and a weighted done/total.
      */
     private fun run(libs: File, args: List<String>) {
         val builder = ProcessBuilder(listOf(File(libs, "libfirmwarekit.so").path) + args)
             .redirectError(File(cacheDir, "firmwarekit.log").apply { parentFile?.mkdirs() })
+            // firmwarekit runs iBoot32Patcher as "env <patcher> <in> <out> --rsa ...": a bare name, which macOS
+            // resolves on PATH and Android does not (bionic's posix_spawn searches nothing). The APK carries its
+            // own env(1) in nativeLibraryDir, so starting firmwarekit there makes the name resolve to it;
+            // PATH carries the same directory for a search that happens in Foundation instead.
+            .directory(libs)
         builder.environment().apply {
             put("LTM_QEMU_DYLIB", File(libs, "libqemu-arm.so").path)
             put("LD_LIBRARY_PATH", libs.path)
             put("HOME", filesDir.path); put("TMPDIR", cacheDir.path)
+            put("PATH", libs.path + ":/system/bin:/system/xbin")
             // firmwarekit's k48 (iPad 1) recipe shells out to iBoot32Patcher. On macOS it sits next to the
-            // app's executable; here it is one of the executables in nativeLibraryDir, which firmwarekit
-            // does not look in by name, so it is named explicitly. K48IBoot.patcher reads this override
-            // after the two directories it derives, so a build without the tool keeps firmwarekit's own
-            // "iBoot32Patcher ... not runnable" error rather than being pointed at nothing.
+            // app's executable; here it is one of the executables in nativeLibraryDir, which firmwarekit does
+            // not look in by name, so it is named explicitly. K48IBoot.patcher reads this override after the two
+            // directories it derives, so a build without the tool keeps firmwarekit's own "iBoot32Patcher ...
+            // not runnable" error rather than being pointed at nothing.
             File(libs, "libiBoot32Patcher.so").takeIf { it.canExecute() }?.let { put("FIRMWAREKIT_IBOOT_PATCHER", it.path) }
         }
         check(!cancelling) { "Cancelled" }
