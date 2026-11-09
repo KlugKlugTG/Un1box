@@ -79,11 +79,21 @@ static int names_patcher(const char *path) {
 }
 
 /**
- * The path firmwarekit asked for, as the path that exists here: the bundle-style patcher name becomes the
- * library the APK ships beside this shim. Anything else is returned unchanged.
+ * The path firmwarekit asked for, as the path that exists here.
+ *
+ * The recipe tests what it is about to run before it runs it, so both macOS-only paths have to answer for the
+ * checks as well as for the spawn: the bundle-style patcher name becomes the library the APK ships beside this
+ * shim, and env(1) -- which the recipe spells "/usr/bin/env", a directory Android does not have -- becomes
+ * toybox's, in /system/bin. Anything else is returned unchanged.
  */
 static const char *redirected(const char *path, char *buffer, size_t size) {
-    if (path == NULL || shim_dir[0] == '\0') return path;
+    if (path == NULL) return path;
+    if (strcmp(path, "env") == 0 || strcmp(path, "/usr/bin/env") == 0 || strcmp(path, "/bin/env") == 0) {
+        snprintf(buffer, size, "/system/bin/env");
+        shim_log("spawn-shim: %s -> %s\n", path, buffer);
+        return buffer;
+    }
+    if (shim_dir[0] == '\0') return path;
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     if (strcmp(base, PATCHER_NAME) != 0) return path;

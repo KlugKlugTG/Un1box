@@ -129,7 +129,7 @@ class FirmwareService : Service() {
     private fun shimLog(): String {
         val log = File(filesDir, "spawn-shim.log")
         if (!log.isFile) return ""
-        val lines = log.readLines().takeLast(20)
+        val lines = log.readLines().takeLast(40)
         return if (lines.isEmpty()) "" else "\nspawn shim:\n" + lines.joinToString("\n")
     }
 
