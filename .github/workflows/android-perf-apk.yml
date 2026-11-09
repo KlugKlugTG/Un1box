@@ -944,6 +944,33 @@ jobs:
             "${angle_args[@]}" \
             ":app:assemble${DECLARED_VARIANT^}"
 
+      # firmwarekit's k48 recipe asks for "<nativeLibraryDir>/iBoot32Patcher": a bundle-style name an APK
+      # cannot carry through jniLibs, which packages only lib*.so. The entry is appended to the assembled APK
+      # instead (append mode leaves every existing entry, its compression and its alignment alone, which
+      # matters for resources.arsc), and the installer extracts lib/<abi>/ entries verbatim. The preloaded
+      # spawn shim also redirects that name to libiBoot32Patcher.so, so either route finds the tool.
+      - name: Add the patcher under the name firmwarekit looks for
+        working-directory: Android
+        run: |
+          APK="$(ls "app/build/outputs/apk/$DECLARED_VARIANT/"*.apk | head -1)"
+          python3 - "$APK" ../ci/firmwarekit/android/iBoot32Patcher <<'PY'
+          import sys, zipfile, pathlib
+          apk, patcher = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          data = patcher.read_bytes()
+          with zipfile.ZipFile(apk, "a") as archive:
+              names = archive.namelist()
+              entry = "lib/arm64-v8a/iBoot32Patcher"
+              if entry in names:
+                  raise SystemExit(f"{apk} already carries {entry}")
+              info = zipfile.ZipInfo(entry)
+              info.external_attr = 0o755 << 16
+              info.compress_type = zipfile.ZIP_DEFLATED
+              archive.writestr(info, data)
+          with zipfile.ZipFile(apk) as check:
+              assert check.read("lib/arm64-v8a/iBoot32Patcher") == data
+          print(f"added lib/arm64-v8a/iBoot32Patcher ({len(data)} bytes) to {apk}")
+          PY
+
       # AGP signs a debug build with whatever it finds (or makes) at
       # ~/.android/debug.keystore, which is not the cached key: a run would then
       # hand out an APK that cannot update the one before it. Sign with this

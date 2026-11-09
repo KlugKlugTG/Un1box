@@ -109,6 +109,78 @@ int access(const char *path, int mode) {
     return status;
 }
 
+int faccessat(int dirfd, const char *path, int mode, int flags) {
+    static int (*real)(int, const char *, int, int) = NULL;
+    if (real == NULL) real = dlsym(RTLD_NEXT, "faccessat");
+    char buffer[PATH_MAX];
+    const char *target = redirected(path, buffer, sizeof buffer);
+    int status = real(dirfd, target, mode, flags);
+    if (status != 0) shim_log("spawn-shim: faccessat %s (mode %d) failed: %s\n", path ? path : "(null)", mode,
+                              strerror(errno));
+    return status;
+}
+
+int fstatat(int dirfd, const char *path, struct stat *info, int flags) {
+    static int (*real)(int, const char *, struct stat *, int) = NULL;
+    if (real == NULL) real = dlsym(RTLD_NEXT, "fstatat");
+    char buffer[PATH_MAX];
+    const char *target = redirected(path, buffer, sizeof buffer);
+    int status = real(dirfd, target, info, flags);
+    if (status != 0) shim_log("spawn-shim: fstatat %s failed: %s\n", path ? path : "(null)", strerror(errno));
+    return status;
+}
+
+int mkdir(const char *path, mode_t mode) {
+    static int (*real)(const char *, mode_t) = NULL;
+    if (real == NULL) real = dlsym(RTLD_NEXT, "mkdir");
+    int status = real(path, mode);
+    if (status != 0 && errno != EEXIST) shim_log("spawn-shim: mkdir %s failed: %s\n", path ? path : "(null)", strerror(errno));
+    return status;
+}
+
+int mkdirat(int dirfd, const char *path, mode_t mode) {
+    static int (*real)(int, const char *, mode_t) = NULL;
+    if (real == NULL) real = dlsym(RTLD_NEXT, "mkdirat");
+    int status = real(dirfd, path, mode);
+    if (status != 0 && errno != EEXIST) shim_log("spawn-shim: mkdirat %s failed: %s\n", path ? path : "(null)", strerror(errno));
+    return status;
+}
+
+int unlink(const char *path) {
+    static int (*real)(const char *) = NULL;
+    if (real == NULL) real = dlsym(RTLD_NEXT, "unlink");
+    int status = real(path);
+    if (status != 0 && errno != ENOENT) shim_log("spawn-shim: unlink %s failed: %s\n", path ? path : "(null)", strerror(errno));
+    return status;
+}
+
+int unlinkat(int dirfd, const char *path, int flags) {
+    static int (*real)(int, const char *, int) = NULL;
+    if (real == NULL) real = dlsym(RTLD_NEXT, "unlinkat");
+    int status = real(dirfd, path, flags);
+    if (status != 0 && errno != ENOENT) shim_log("spawn-shim: unlinkat %s failed: %s\n", path ? path : "(null)", strerror(errno));
+    return status;
+}
+
+int rename(const char *from, const char *to) {
+    static int (*real)(const char *, const char *) = NULL;
+    if (real == NULL) real = dlsym(RTLD_NEXT, "rename");
+    int status = real(from, to);
+    if (status != 0) shim_log("spawn-shim: rename %s -> %s failed: %s\n", from ? from : "(null)", to ? to : "(null)", strerror(errno));
+    return status;
+}
+
+FILE *fopen(const char *path, const char *mode) {
+    static FILE *(*real)(const char *, const char *) = NULL;
+    if (real == NULL) real = dlsym(RTLD_NEXT, "fopen");
+    char buffer[PATH_MAX];
+    const char *target = redirected(path, buffer, sizeof buffer);
+    FILE *file = real(target, mode);
+    if (file == NULL) shim_log("spawn-shim: fopen %s (mode %s) failed: %s\n", path ? path : "(null)",
+                               mode ? mode : "?", strerror(errno));
+    return file;
+}
+
 int stat(const char *path, struct stat *info) {
     static int (*real)(const char *, struct stat *) = NULL;
     if (real == NULL) real = dlsym(RTLD_NEXT, "stat");
@@ -136,9 +208,7 @@ int open(const char *path, int flags, ...) {
     char buffer[PATH_MAX];
     const char *target = redirected(path, buffer, sizeof buffer);
     int fd = real(target, flags, mode);
-    if (fd < 0 && path != NULL && (strstr(path, PATCHER_NAME) != NULL || strstr(path, "k48") != NULL)) {
-        shim_log("spawn-shim: open %s failed: %s\n", path, strerror(errno));
-    }
+    if (fd < 0) shim_log("spawn-shim: open %s failed: %s\n", path ? path : "(null)", strerror(errno));
     return fd;
 }
 
@@ -155,9 +225,7 @@ int openat(int dirfd, const char *path, int flags, ...) {
     char buffer[PATH_MAX];
     const char *target = redirected(path, buffer, sizeof buffer);
     int fd = real(dirfd, target, flags, mode);
-    if (fd < 0 && path != NULL && (strstr(path, PATCHER_NAME) != NULL || strstr(path, "k48") != NULL)) {
-        shim_log("spawn-shim: openat %s failed: %s\n", path, strerror(errno));
-    }
+    if (fd < 0) shim_log("spawn-shim: openat %s failed: %s\n", path ? path : "(null)", strerror(errno));
     return fd;
 }
 
