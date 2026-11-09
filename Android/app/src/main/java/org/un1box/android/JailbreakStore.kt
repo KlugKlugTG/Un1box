@@ -94,7 +94,11 @@ internal class JailbreakStore {
         return dists.flatMap { dist -> indexes.map { index -> if (dist.isEmpty()) "$base/$index" else "$base/$dist/$index" } }
     }
 
-    /** The index of `source`, unpacked: gzip is what the phone can read itself (no bz2 in Android). */
+    /**
+     * The index of `source`, unpacked. gzip and plain are what the phone reads itself (Android has no
+     * bz2), and a repository that answers with its own web page -- several of these are retired -- is
+     * reported as that rather than as an index with nothing in it.
+     */
     fun fetchIndex(source: String): Pair<String, ByteArray> {
         var last = "no index found"
         for (candidate in indexCandidates(source)) {
@@ -105,7 +109,8 @@ internal class JailbreakStore {
                 val raw = connection.inputStream.use { it.readBytes() }
                 val body = if (raw.size > 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte())
                     GZIPInputStream(BufferedInputStream(raw.inputStream())).use { it.readBytes() } else raw
-                if (body.isEmpty()) { last = "empty index at $candidate"; continue }
+                val complaint = notAnIndex(body, candidate)
+                if (complaint != null) { last = complaint; continue }
                 return candidate to body
             } catch (error: IOException) {
                 last = error.message ?: error.javaClass.simpleName
@@ -117,6 +122,18 @@ internal class JailbreakStore {
     }
 
     /** The index's own URL and its packages: one download, whichever the caller needs. */
+    /**
+     * Why these bytes are not a package index, or null when they are. Several of these repositories
+     * are retired and answer with their own web page -- a payment page, a "this repo is gone" notice --
+     * and that is worth saying instead of showing an empty list.
+     */
+    fun notAnIndex(body: ByteArray, url: String): String? {
+        if (body.isEmpty()) return "empty index at $url"
+        val head = body.take(64).toString(Charsets.UTF_8).trimStart()
+        if (head.startsWith("<")) return "this repository answers with a web page, not an index"
+        return null
+    }
+
     fun packages(source: String): Pair<String, List<JailbreakPackage>> {
         val (url, body) = fetchIndex(source)
         return url to parseIndex(body.toString(Charsets.UTF_8), source, url)

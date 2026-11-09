@@ -83,6 +83,25 @@ class JailbreakStoreTest {
     }
 
     @Test
+    fun `a repository that answers with a web page is reported as that, not as an empty index`() {
+        val page = "<!DOCTYPE html>\n<html><body>This repository is closed</body></html>".toByteArray()
+        assertEquals("this repository answers with a web page, not an index",
+            store.notAnIndex(page, "http://repo.example/Packages"))
+        val control = "Package: com.example.first\nVersion: 1\nFilename: x.deb\n".toByteArray()
+        assertEquals(null, store.notAnIndex(control, "http://repo.example/Packages"))
+        assertEquals("empty index at http://repo.example/Packages",
+            store.notAnIndex(ByteArray(0), "http://repo.example/Packages"))
+    }
+
+    @Test
+    fun `a plain index, which is what the live repositories serve, parses like a gzipped one`() {
+        val packages = store.parseIndex(index, "http://repo.example/", "http://repo.example/Packages")
+        assertEquals(2, packages.size)
+        assertEquals("http://repo.example/debs/first_1.2.3_iphoneos-arm.deb",
+            store.packageUrl(packages[0], "http://repo.example/Packages"))
+    }
+
+    @Test
     fun `a file name that is not a name cannot leave the install folder`() {
         val pkg = JailbreakPackage("x", "1", "iphoneos-arm", 1, "debs/../../etc/passwd", "", "http://repo.example/")
         val staged = store.stagedPath(pkg)

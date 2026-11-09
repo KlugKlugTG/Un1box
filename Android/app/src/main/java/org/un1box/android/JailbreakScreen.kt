@@ -80,6 +80,7 @@ internal fun JailbreakScreen(
     var error by remember { mutableStateOf("") }
     var newSource by remember { mutableStateOf("") }
     var staged by remember { mutableStateOf("") }
+    var open by remember { mutableStateOf<String?>(null) }   // the package whose details are showing
 
     fun load(source: String) {
         chosenSource = source
@@ -184,13 +185,26 @@ internal fun JailbreakScreen(
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(shown, key = { it.name + it.version }) { pkg ->
+                    val key = pkg.name + pkg.version
+                    val expanded = open == key
                     GlassSurface {
-                        Column(Modifier.padding(12.dp)) {
+                        Column(Modifier.padding(12.dp).clickable { open = if (expanded) null else key }) {
                             Text(pkg.title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
                             Text(pkg.detail, style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                             if (pkg.summary.isNotEmpty()) Text(pkg.summary, style = MaterialTheme.typography.bodySmall,
-                                maxLines = 2)
+                                maxLines = if (expanded) 8 else 2)
+                            if (!expanded) {
+                                Spacer(Modifier.height(4.dp))
+                                Text("Details", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            } else {
+                                Spacer(Modifier.height(6.dp))
+                                Text(pkg.architecture, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(pkg.source, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                             Spacer(Modifier.height(6.dp))
                             Text("Install", Modifier.clickable(enabled = busy.isEmpty()) {
                                 error = ""; note = ""

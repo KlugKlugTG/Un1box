@@ -231,6 +231,20 @@ def the_helper_can_put_a_file_into_the_guest():
     return "push over AFC (afc2 first), path-checked, wired to the screen"
 
 
+def the_tab_may_speak_cleartext():
+    """Cydia's repositories are http:// and Android refuses cleartext without this: the tab showed
+    "Cleartext HTTP traffic to apt.saurik.com not permitted" instead of any package."""
+    manifest = read(ROOT / "Android" / "app" / "src" / "main" / "AndroidManifest.xml")
+    require('android:usesCleartextTraffic="true"' in manifest,
+            "the manifest forbids cleartext, and every repository these systems have is http://")
+    store = read(STORE_KT)
+    require("Packages.gz" in store and '"Packages"' in store,
+            "the tab does not try a plain index: the live repositories serve Packages (and .bz2), not .gz")
+    require("notAnIndex" in store and "not an index" in store,
+            "a repository that answers with a web page is not reported as such")
+    return "cleartext allowed, plain index tried, a web page reported as one"
+
+
 def the_catalogues_cover_the_tab():
     """The app draws English sources and translates them; a missing entry is an English word on a
     Chinese or Russian screen."""
@@ -256,5 +270,6 @@ CHECKS = [
     ("jailbreak tab: a destination of its own", the_tab_is_a_destination_of_its_own),
     ("jailbreak tab: the browsing and the download happen on the phone", the_store_browses_on_the_phone),
     ("jailbreak tab: the helper stages the file in the guest", the_helper_can_put_a_file_into_the_guest),
+    ("jailbreak tab: it may speak cleartext, and reads a plain index", the_tab_may_speak_cleartext),
     ("jailbreak tab: the catalogues carry its strings", the_catalogues_cover_the_tab),
 ]
