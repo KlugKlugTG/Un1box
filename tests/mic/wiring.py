@@ -19,8 +19,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
-MIC_PATCH = sorted(PATCHES.glob("*.patch"))[0]
-BOARDS_PATCH = sorted(PATCHES.glob("*.patch"))[0]
+
+def patch_with(marker):
+    """The patch that carries a feature: the engine rework is applied in more than one file now."""
+    for candidate in sorted(PATCHES.glob("*.patch")):
+        if marker in candidate.read_text(errors="ignore"):
+            return candidate
+    raise AssertionError("no patch in ci/engine-patches carries " + marker)
+
+MIC_PATCH = patch_with("host-mic")
+BOARDS_PATCH = patch_with("host-mic")
 
 ENGINE_SYMBOLS = ("qemu_ios_microphone_write", "qemu_ios_microphone_flush", "qemu_ios_microphone_state")
 PORTABLE_SYMBOLS = ("lt_runtime_mic_write", "lt_runtime_mic_info", "lt_runtime_mic_flush")
