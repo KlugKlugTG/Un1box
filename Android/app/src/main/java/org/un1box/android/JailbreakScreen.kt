@@ -394,6 +394,21 @@ private fun ListsPage(
     }
 }
 
+/** The packages of one source or one section: Cydia's list of rows. */
+@Composable
+private fun PackageList(
+    packages: List<JailbreakPackage>,
+    installed: Map<String, String>,
+    onOpen: (JailbreakPackage) -> Unit,
+) {
+    LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (packages.isEmpty()) item { Empty("Nothing here yet") }
+        items(packages, key = { it.name + it.version }) { pkg ->
+            PackageRow(pkg, installed[pkg.name], onOpen)
+        }
+    }
+}
+
 /** A source's card: its name, its URL, how many packages it offered and when it last answered. */
 @Composable
 private fun SourceCard(url: String, packages: Int, at: Long?, onOpen: () -> Unit, onRemove: () -> Unit) {

@@ -34,7 +34,6 @@ internal object LtIcons {
     /** The Cydia-shaped Jailbreak tab: its package, its source and its download. */
     val Package by lazy { icon("Package", "M12 2 3 6.5v11L12 22l9-4.5v-11L12 2zm0 2.31 5.9 2.95L12 10.2 6.1 7.26 12 4.31zM5 9.06l6 3v7.5l-6-3v-7.5zm14 0v7.5l-6 3v-7.5l6-3z") }
     val Sources by lazy { icon("Sources", "M19 3H5L2 9l10 12L22 9l-3-6zm-1.6 2-1 3H7.6l-1-3h10.8zM6.9 10h10.2l-5.1 6.1L6.9 10z") }
-    val Download by lazy { icon("Download", "M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z") }
     val History by lazy { icon("History", "M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z") }
     val Save by lazy { icon("Save", "M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z") }
     val Message by lazy { icon("Message", "M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z") }

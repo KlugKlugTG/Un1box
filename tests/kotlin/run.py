@@ -196,6 +196,17 @@ def nested_comments(path):
     return None
 
 
+def duplicate_icon_names(path):
+    """Two `val X by lazy` of the same name in Icons.kt: a build that stops on 'Conflicting declarations'."""
+    if path.name != "Icons.kt":
+        return None
+    names = re.findall(r"val (\w+) by lazy", read(path))
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        raise Failure(f"{path.relative_to(ROOT)}: {', '.join(twice)} declared twice")
+    return None
+
+
 def balanced(path):
     code, _ = read_code(path)
     for opening, closing in (("{", "}"), ("(", ")"), ("[", "]")):
@@ -210,6 +221,7 @@ CHECKS = [
     ("no tuple assignments", tuple_assignments),
     ("no take(n).toString(charset)", byte_array_take),
     ("no '/*' inside a comment", nested_comments),
+    ("no icon declared twice", duplicate_icon_names),
     ("braces and brackets balance", balanced),
 ]
 
