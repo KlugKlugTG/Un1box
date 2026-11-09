@@ -101,16 +101,21 @@ private fun HomeTopBar(host: GuestHost) {
  */
 @Composable
 private fun DeviceStage(host: GuestHost, screen: @Composable (Modifier) -> Unit) {
-    val pulse = rememberInfiniteTransition(label = "stage")
-    val beat by pulse.animateFloat(0.55f, 1f, infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Reverse), label = "beat")
-    val lit = if (host.running) beat else 0.35f
     val glow = when (host.status) {
         "running" -> LtColors.Accent
         "starting", "stopping" -> LtColors.Warning
         "failed" -> LtColors.Danger
         else -> LtColors.Violet
     }
+    // The pulse exists only while a session does: an idle home screen should not ask for frames, and
+    // the value is read inside the draw lambda so a beat redraws the light instead of recomposing the
+    // device (which holds the guest's surface).
+    val beat: State<Float>? = if (host.active) {
+        val pulse = rememberInfiniteTransition(label = "stage")
+        pulse.animateFloat(0.55f, 1f, infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Reverse), label = "beat")
+    } else null
     Box(Modifier.fillMaxSize().drawBehind {
+        val lit = beat?.value ?: 0.45f
         // A pool of light on the floor, and the bloom the device is standing in.
         drawRect(Brush.radialGradient(listOf(glow.copy(alpha = 0.20f * lit), Color.Transparent),
             center = Offset(size.width / 2f, size.height * 0.52f), radius = size.minDimension * 0.95f))
