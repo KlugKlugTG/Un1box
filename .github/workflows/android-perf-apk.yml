@@ -517,6 +517,12 @@ jobs:
       # here from that pin and staged like the other executables: the Gradle build packages
       # ci/firmwarekit/android/iBoot32Patcher as libiBoot32Patcher.so, and FirmwareService names it in the
       # child's environment. Only the NDK's compiler, readelf and the patch in this repository are used.
+      #
+      # The reused firmwarekit (v0.0.10) spawns that path directly and reads FIRMWAREKIT_IBOOT_PATCHER --
+      # checked in its strings, not assumed. Packages/FirmwareKit's own K48IBoot.patchIBoot runs it through
+      # /usr/bin/env instead, which Android has no such path for: a firmwarekit built from this tree, or
+      # reused from a newer tag, must stop spawning that (run the tool directly, or use /bin/env, which
+      # Android's toybox does provide) or the iPad path breaks again the moment the reuse tag moves.
       - name: Build iBoot32Patcher for arm64 Android
         run: |
           python3 - <<'PY' > /tmp/iboot32patcher-pin
