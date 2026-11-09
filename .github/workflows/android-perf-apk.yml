@@ -1024,6 +1024,18 @@ jobs:
           ls -la ci/engine/arm64-v8a
           file ci/engine/arm64-v8a/libqemu-arm.so
 
+      # The Jailbreak tab's own logic, where a wrong field or a wrong URL is invisible until an install
+      # does nothing: the index parser, the source probing and the name a package is staged under
+      # (Android/app/src/test, Android/app/src/main/java/org/un1box/android/JailbreakStore.kt).
+      - name: Run the JVM unit tests
+        continue-on-error: true
+        working-directory: Android
+        run: |
+          ./gradlew --no-daemon --max-workers="$LT_JOBS" \
+            '-Dorg.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m' \
+            --dependency-verification="$DECLARED_DEPENDENCY_VERIFICATION" \
+            :app:testReleaseUnitTest
+
       - name: Build the APK
         working-directory: Android
         run: |

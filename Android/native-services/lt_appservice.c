@@ -1041,9 +1041,189 @@ static void parent_death_guard(void)
 		_exit(1);
 }
 
+/*
+ * push: one file of the phone's into the guest, over AFC.
+ *
+ * The jailbreak tab downloads a package on the phone -- a modern TLS stack and the phone's own
+ * connection, rather than the guest's 2010 one -- and stages it where the guest's own Cydia startup
+ * job installs packages from: private/var/mobile/Media/AutoInstall. That job runs dpkg at boot, so
+ * the install completes on the next start of the guest and nothing has to be executed here.
+ *
+ * The service is afc2 by default (the whole file system, which is what the jailbreak installs and
+ * what reaches private/var); the media partition's own afc service is the fallback, and it is where
+ * AutoInstall lives anyway.
+ *
+ * The remote path is checked here as well as computed in the app: an absolute path, no "..", no
+ * empty segment. Nothing this helper uploads is chosen by the guest.
+ */
+static int action_push(struct session *s, const char *local, const char *remote, const char *service)
+{
+	int fd = open(local, O_RDONLY | O_CLOEXEC);
+	struct stat st;
+	if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
+		emit_error("The file cannot be read: %s", fd < 0 ? strerror(errno) : "not a non-empty regular file");
+		if (fd >= 0)
+			close(fd);
+		return 1;
+	}
+	uint64_t total = (uint64_t)st.st_size;
+
+	if (!remote || remote[0] != '/' || strlen(remote) > 480) {
+		emit_error("The guest path must be absolute.");
+		close(fd);
+		return 1;
+	}
+	for (const char *at = remote; *at;) {
+		const char *slash = strchr(at, '/');
+		size_t n = slash ? (size_t)(slash - at) : strlen(at);
+		if (n == 0 && at != remote && at[1] != '\0') {
+			emit_error("The guest path has an empty segment.");
+			close(fd);
+			return 1;
+		}
+		if (n == 2 && at[0] == '.' && at[1] == '.') {
+			emit_error("The guest path may not step above its directory.");
+			close(fd);
+			return 1;
+		}
+		if (!slash)
+			break;
+		at = slash + 1;
+	}
+
+	lockdownd_service_descriptor_t descriptor = start_service(s, service && *service ? service : "com.apple.afc2");
+	afc_client_t afc = NULL;
+	if (descriptor) {
+		afc_error_t err = afc_client_new(s->device, descriptor, &afc);
+		lockdownd_service_descriptor_free(descriptor);
+		if (err != AFC_E_SUCCESS)
+			afc = NULL;
+	}
+	if (!afc) {
+		/* No afc2 (a device prepared without the jailbreak): the media partition's service still
+		 * reaches the AutoInstall folder, which is where packages go. */
+		descriptor = start_service(s, AFC_SERVICE_NAME);
+		if (!descriptor) {
+			emit_error("The guest offers no file service yet. Try again after iOS finishes starting.");
+			close(fd);
+			return 1;
+		}
+		afc_error_t err = afc_client_new(s->device, descriptor, &afc);
+		lockdownd_service_descriptor_free(descriptor);
+		if (err != AFC_E_SUCCESS) {
+			emit_error("Connecting to the guest's file service failed (device error %d).", (int)err);
+			close(fd);
+			return 1;
+		}
+	}
+
+	int rc = 1;
+	uint64_t handle = 0;
+	int opened = 0;
+	char *buffer = NULL;
+	char *parent = NULL;
+
+	char *free_text = NULL;
+	if (afc_check(afc_get_device_info_key(afc, "FSFreeBytes", &free_text), "query free space") != 0)
+		goto out;
+	char *end = NULL;
+	errno = 0;
+	unsigned long long available = free_text ? strtoull(free_text, &end, 10) : 0;
+	int bad = !free_text || errno || end == free_text;
+	free(free_text);
+	if (bad) {
+		emit_error("The guest returned invalid free-space metadata.");
+		goto out;
+	}
+	if (available < total + (4ull << 20)) {
+		emit_error("The guest needs %" PRIu64 " MiB free; it has %llu MiB.", (total + (4ull << 20)) >> 20,
+			   available >> 20);
+		goto out;
+	}
+
+	/* The folder is the guest's own (Cydia's startup job reads it); creating it is harmless. */
+	parent = strdup(remote);
+	if (parent) {
+		char *slash = strrchr(parent, '/');
+		if (slash && slash != parent) {
+			*slash = '\0';
+			afc_make_directory(afc, parent);
+		}
+	}
+
+	if (afc_check(afc_file_open(afc, remote, AFC_FOPEN_WRONLY, &handle), "open the guest file") != 0)
+		goto out;
+	opened = 1;
+
+	buffer = malloc(UPLOAD_CHUNK);
+	if (!buffer) {
+		emit_error("out of memory");
+		goto out;
+	}
+	uint64_t sent = 0;
+	int last_percent = -1;
+	for (;;) {
+		ssize_t got = read(fd, buffer, UPLOAD_CHUNK);
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got < 0) {
+			emit_error("Reading the file failed: %s", strerror(errno));
+			goto out;
+		}
+		if (got == 0)
+			break;
+		uint32_t offset = 0;
+		while (offset < (uint32_t)got) {
+			uint32_t written = 0;
+			uint32_t remaining = (uint32_t)got - offset;
+			if (afc_check(afc_file_write(afc, handle, buffer + offset, remaining, &written), "upload") != 0)
+				goto out;
+			if (written == 0 || written > remaining) {
+				emit_error("The guest returned an invalid upload length.");
+				goto out;
+			}
+			offset += written;
+			sent += written;
+		}
+		if (sent > total) {
+			emit_error("The file changed while it was being uploaded.");
+			goto out;
+		}
+		int percent = (int)(sent * 100 / total);
+		if (percent != last_percent) {
+			last_percent = percent;
+			struct buf b = {0};
+			buf_puts(&b, "{\"phase\":\"upload\",\"percent\":");
+			buf_printf(&b, "%d}", percent);
+			emit(&b);
+		}
+	}
+	if (sent != total) {
+		emit_error("The file changed while it was being uploaded.");
+		goto out;
+	}
+	{
+		struct buf b = {0};
+		buf_puts(&b, "{\"result\":{\"path\":");
+		json_string(&b, remote);
+		buf_printf(&b, ",\"bytes\":%" PRIu64 "}}", sent);
+		emit(&b);
+	}
+	rc = 0;
+out:
+	free(buffer);
+	free(parent);
+	if (opened)
+		afc_file_close(afc, handle);
+	afc_client_free(afc);
+	close(fd);
+	return rc;
+}
+
 static void usage_error(const char *detail)
 {
-	emit_error("%s Usage: info|list|crashlog --socket PATH, install --socket PATH --ipa PATH --bundle-id ID, or syslog --socket PATH --seconds 1..600", detail);
+	emit_error("%s Usage: info|list|crashlog --socket PATH, install --socket PATH --ipa PATH --bundle-id ID, "
+		   "push --socket PATH --local PATH --remote PATH [--service NAME], or syslog --socket PATH --seconds 1..600", detail);
 }
 
 int main(int argc, char **argv)
@@ -1057,6 +1237,7 @@ int main(int argc, char **argv)
 	}
 	const char *action = argv[1];
 	const char *socket_path = NULL, *ipa = NULL, *bundle_id = NULL, *seconds_text = NULL;
+	const char *local_path = NULL, *remote_path = NULL, *service_name = NULL;
 	int verbose = 0;
 	for (int i = 2; i < argc; i++) {
 		const char **slot = NULL;
@@ -1068,6 +1249,12 @@ int main(int argc, char **argv)
 			slot = &bundle_id;
 		else if (strcmp(argv[i], "--seconds") == 0)
 			slot = &seconds_text;
+		else if (strcmp(argv[i], "--local") == 0)
+			slot = &local_path;
+		else if (strcmp(argv[i], "--remote") == 0)
+			slot = &remote_path;
+		else if (strcmp(argv[i], "--service") == 0)
+			slot = &service_name;
 		else if (strcmp(argv[i], "--verbose") == 0) {
 			verbose = 1;
 			continue;
@@ -1083,7 +1270,8 @@ int main(int argc, char **argv)
 	}
 	int is_install = strcmp(action, "install") == 0;
 	int is_syslog = strcmp(action, "syslog") == 0;
-	if (!is_install && !is_syslog && strcmp(action, "info") != 0 && strcmp(action, "list") != 0 && strcmp(action, "crashlog") != 0) {
+	int is_push = strcmp(action, "push") == 0;
+	if (!is_install && !is_syslog && !is_push && strcmp(action, "info") != 0 && strcmp(action, "list") != 0 && strcmp(action, "crashlog") != 0) {
 		usage_error("Unknown action.");
 		return 1;
 	}
@@ -1101,6 +1289,18 @@ int main(int argc, char **argv)
 	}
 	if (!is_install && (ipa || bundle_id)) {
 		usage_error("--ipa/--bundle-id apply to install only.");
+		return 1;
+	}
+	if (is_push && (!local_path || !*local_path || !remote_path || !*remote_path)) {
+		emit_error("push needs --local and --remote.");
+		return 1;
+	}
+	if (!is_push && (local_path || remote_path)) {
+		usage_error("--local/--remote apply to push only.");
+		return 1;
+	}
+	if (service_name && !is_push) {
+		usage_error("--service applies to push only.");
 		return 1;
 	}
 	unsigned seconds = 0;
@@ -1138,6 +1338,8 @@ int main(int argc, char **argv)
 	if (emit_target(&s) == 0) {
 		if (is_install) {
 			rc = action_install(&s, ipa, bundle_id);
+		} else if (is_push) {
+			rc = action_push(&s, local_path, remote_path, service_name);
 		} else if (strcmp(action, "list") == 0) {
 			rc = action_list(&s);
 		} else if (strcmp(action, "crashlog") == 0) {

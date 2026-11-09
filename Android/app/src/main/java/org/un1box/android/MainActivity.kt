@@ -409,6 +409,13 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                         Screen.DETAILS -> detailsDevice?.let { DeviceDetails(it) { overlay = null; openDevices() } }
                         Screen.STORE -> StoreScreen(store, running = status == "running" && muxSocket.isNotEmpty(),
                             onPickLocal = { localIpa.launch(arrayOf("application/octet-stream", "*/*")) }) { overlay = null }
+                        // The Jailbreak tab: what Cydia would show, browsed and downloaded by the phone.
+                        // A staged package waits for the guest's own Cydia startup job, which runs at its
+                        // next boot, so the tab offers the restart instead of pretending it is installed.
+                        Screen.JAILBREAK -> JailbreakScreen(running = status == "running" && muxSocket.isNotEmpty(),
+                            socket = muxSocket, onRestart = {
+                                stop(); handler.postDelayed({ if (status != "running") start() }, 2500)
+                            }) { overlay = null }
                         Screen.HITCH -> HitchInspector(hitchData, hitchError, onResume = ::closeHitch, onSave = ::saveHitch, saving = hitchSaving,
                             savedNotice = hitchNotice, onShare = hitchReport?.let { uri -> { shareReport(uri) } })
                             else -> {}

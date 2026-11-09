@@ -22,6 +22,13 @@ GRADLE = ROOT / "Android" / "app" / "build.gradle.kts"
 SERVICE = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "FirmwareService.kt"
 SHIM = ROOT / "Packages" / "FirmwareKit" / "build-support" / "spawn-shim.c"
 CYDA = ROOT / "Packages" / "FirmwareKit" / "Sources" / "FirmwareKit" / "SystemEdits" / "Cydia.swift"
+SHELL_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "Shell.kt"
+UIKIT_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "UiKit.kt"
+ACTIVITY_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "MainActivity.kt"
+STORE_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "JailbreakStore.kt"
+SCREEN_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "JailbreakScreen.kt"
+HELPER_C = ROOT / "Android" / "native-services" / "lt_appservice.c"
+GUESTAPPS_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "GuestApps.kt"
 WORKFLOW = ROOT / ".github" / "workflows" / "android-perf-apk.yml"
 JAILBREAK_WORKFLOW = ROOT / ".github" / "workflows" / "jailbreak-apk.yml"
 
@@ -169,6 +176,74 @@ def the_jailbreak_apk_is_signed_with_its_own_key():
     return "its own keystore, cached in its own entry, and the check expects its digest"
 
 
+def the_tab_is_a_destination_of_its_own():
+    """The button the user asked for: a fourth place in the bar, and a screen behind it."""
+    require("JAILBREAK" in read(SHELL_KT),
+            "Shell.kt has no JAILBREAK destination: the tab has nowhere to go")
+    nav = read(UIKIT_KT)
+    require('Triple(Screen.JAILBREAK' in nav and '"Jailbreak"' in nav,
+            "the navigation bar does not offer the Jailbreak tab")
+    require('Screen.JAILBREAK to "open_jailbreak"' in nav,
+            "the tab has no test tag, so nothing can open it in a check")
+    require("Screen.JAILBREAK ->" in read(ACTIVITY_KT),
+            "MainActivity does not draw the Jailbreak screen for that destination")
+    return "a fourth destination, its bar entry and its screen"
+
+
+def the_store_browses_on_the_phone():
+    """What makes the tab faster than Cydia: the index and the .deb are fetched here, not in the guest."""
+    store = read(STORE_KT)
+    require("GZIPInputStream" in store and "HttpURLConnection" in store,
+            "the tab does not fetch an index itself: it would have to ask the guest's 2010 stack")
+    require("dists/stable/main/binary-iphoneos-arm" in store and "dists/ios/main/binary-iphoneos-arm" in store,
+            "the sources are not probed at Cydia's own layout, so a repository root would never resolve")
+    require("private/var/mobile/Media/AutoInstall" in store,
+            "the packages are not staged where the guest's own Cydia installs from at boot")
+    require("stagedPath" in store and "replace" not in store.split("fun stagedPath", 1)[1][:400].replace("it in", ""),
+            "the staged name is not sanitised: a file name from an index could leave the folder")
+    require("parseIndex" in store and "lastKey" in store,
+            "the control file's folded fields are not unfolded, so descriptions and versions would be wrong")
+    require("Packages.bz2" in store or "bz2" not in store,
+            "the tab claims to read bz2, which Android cannot: a source would fail instead of saying so")
+    return "index and package fetched by the phone, staged in AutoInstall"
+
+
+def the_helper_can_put_a_file_into_the_guest():
+    """The one thing the guest cannot do for itself: receive the file."""
+    helper = read(HELPER_C)
+    require("static int action_push" in helper, "the app-service helper has no push: nothing can stage a .deb")
+    parser = helper.split("int main(", 1)[1]
+    require('"--local"' in parser and '"--remote"' in parser,
+            "the helper takes no --local/--remote, so push cannot be called")
+    push = helper.split("static int action_push", 1)[1].split("\nstatic ", 1)[0]
+    require("remote[0] != '/'" in push, "push accepts a relative guest path")
+    require("if (n == 2 && at[0] == '.' && at[1] == '.')" in push,
+            "push accepts a path that steps above its directory")
+    require("afc_file_write" in push and "afc_file_open" in push,
+            "push does not write over AFC")
+    require("com.apple.afc2" in push,
+            "push does not try afc2 first: a jailbroken device's whole file system is behind it")
+    require("fun push(" in read(GUESTAPPS_KT) and '"push"' in read(GUESTAPPS_KT),
+            "GuestApps has no push, so the screen cannot reach the helper")
+    installer = read(STORE_KT)
+    require("apps.push(" in installer and "GuestApps(context)" in installer,
+            "the installer does not use the helper: a download would never reach the guest")
+    return "push over AFC (afc2 first), path-checked, wired to the screen"
+
+
+def the_catalogues_cover_the_tab():
+    """The app draws English sources and translates them; a missing entry is an English word on a
+    Chinese or Russian screen."""
+    for catalogue in ("I18nRu.kt", "I18nZh.kt"):
+        text = read(ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / catalogue)
+        for string in ("Jailbreak", "Sources", "Install", "Search", "Restart the device"):
+            require(f'put("{string}"' in text, f"{catalogue} has no translation for \"{string}\"")
+    screen = read(SCREEN_KT)
+    for english in ("Jailbreak", "Sources", "Install", "Search", "Restart the device"):
+        require(f'"{english}"' in screen, f"the screen does not use the string \"{english}\" the catalogues translate")
+    return "both catalogues carry the tab's strings"
+
+
 CHECKS = [
     ("gradle: -Pjailbreak reaches BuildConfig and stages the tar", gradle_carries_the_flag),
     ("service: the worker passes --jailbreak and names the tar", service_passes_the_flag_and_names_the_tar),
@@ -178,4 +253,8 @@ CHECKS = [
     ("workflows: the jailbreak application has its own signing key",
      the_jailbreak_apk_is_signed_with_its_own_key),
     ("workflows: the self-check gets the archives the recipe pins", the_archives_are_the_pinned_ones),
+    ("jailbreak tab: a destination of its own", the_tab_is_a_destination_of_its_own),
+    ("jailbreak tab: the browsing and the download happen on the phone", the_store_browses_on_the_phone),
+    ("jailbreak tab: the helper stages the file in the guest", the_helper_can_put_a_file_into_the_guest),
+    ("jailbreak tab: the catalogues carry its strings", the_catalogues_cover_the_tab),
 ]

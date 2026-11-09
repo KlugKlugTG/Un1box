@@ -1,0 +1,92 @@
+package org.un1box.android
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * What the Jailbreak tab reads out of a repository: the control file's stanzas, the URLs they turn
+ * into, and the name the .deb is staged under.
+ *
+ * The index is the one thing the tab depends on that a person cannot see it get wrong: a field that
+ * is not unfolded, a `Filename` joined to the wrong root or a package staged under a name dpkg does
+ * not recognise each produce a silently useless install. These are the shapes a real `Packages` file
+ * has, including the folded description Cydia shows as a summary.
+ */
+class JailbreakStoreTest {
+    private val store = JailbreakStore()
+
+    private val index = """
+        Package: com.example.first
+        Version: 1.2.3
+        Architecture: iphoneos-arm
+        Size: 40960
+        Filename: debs/first_1.2.3_iphoneos-arm.deb
+        Description: The first line is the summary
+         and this line is part of it, with a blank line below.
+
+        Package: com.example.second
+        Version: 2.0
+        Architecture: iphoneos-arm
+        Filename: ./debs/second.deb
+        Description: Second
+    """.trimIndent()
+
+    @Test
+    fun `every stanza becomes one package`() {
+        val packages = store.parseIndex(index, "http://repo.example/")
+        assertEquals(2, packages.size)
+        assertEquals("com.example.first", packages[0].name)
+        assertEquals("1.2.3", packages[0].version)
+        assertEquals(40960L, packages[0].bytes)
+        assertEquals("The first line is the summary", packages[0].summary)
+        assertEquals("com.example.second", packages[1].name)
+    }
+
+    @Test
+    fun `a stanza without a name or a file is not a package`() {
+        val packages = store.parseIndex(
+            "Package: no-file\nVersion: 1\n\nFilename: no-name.deb\nVersion: 1\n", "http://repo.example/")
+        assertTrue(packages.isEmpty())
+    }
+
+    @Test
+    fun `a repository root is probed where cydia's layout puts the index`() {
+        val candidates = store.indexCandidates("http://repo.example/")
+        assertTrue(candidates.any { it == "http://repo.example/dists/stable/main/binary-iphoneos-arm/Packages.gz" })
+        assertTrue(candidates.any { it == "http://repo.example/dists/ios/main/binary-iphoneos-arm/Packages.gz" })
+        assertTrue(candidates.any { it == "http://repo.example/Packages.gz" })
+        assertFalse(candidates.any { it.contains("Packages.bz2") })   // Android cannot read bz2 itself
+    }
+
+    @Test
+    fun `an index url the user typed is used as it is`() {
+        val typed = "http://repo.example/dists/ios/main/binary-iphoneos-arm/Packages.gz"
+        assertEquals(listOf(typed), store.indexCandidates(typed))
+    }
+
+    @Test
+    fun `a package's file is relative to the index's own directory`() {
+        val pkg = store.parseIndex(index, "http://repo.example/")[0]
+        val indexUrl = "http://repo.example/dists/stable/main/binary-iphoneos-arm/Packages.gz"
+        assertEquals("http://repo.example/dists/stable/main/binary-iphoneos-arm/debs/first_1.2.3_iphoneos-arm.deb",
+            store.packageUrl(pkg, indexUrl))
+    }
+
+    @Test
+    fun `a package is staged where the guest's cydia installs it, under its own file name`() {
+        val packages = store.parseIndex(index, "http://repo.example/")
+        assertEquals("/private/var/mobile/Media/AutoInstall/first_1.2.3_iphoneos-arm.deb",
+            store.stagedPath(packages[0]))
+        assertEquals("/private/var/mobile/Media/AutoInstall/second.deb", store.stagedPath(packages[1]))
+    }
+
+    @Test
+    fun `a file name that is not a name cannot leave the install folder`() {
+        val pkg = JailbreakPackage("x", "1", "iphoneos-arm", 1, "debs/../../etc/passwd", "", "http://repo.example/")
+        val staged = store.stagedPath(pkg)
+        assertTrue(staged.startsWith("/private/var/mobile/Media/AutoInstall/"))
+        assertFalse(staged.contains(".."))
+    }
+}
