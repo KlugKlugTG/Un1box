@@ -117,6 +117,13 @@ on:
           - "true"
           - "false"
         default: "true"
+      jailbreak:
+        description: Build the jailbreak APK (--jailbreak on every preparation, jb-tar shipped)
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
   # The jailbreak build's entry point (jailbreak-apk.yml): the same build, with preparation passing
   # --jailbreak and jb-tar shipped for it. Only the inputs that workflow sets are declared here; the rest
   # keep the workflow_dispatch defaults above.
