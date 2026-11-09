@@ -1,0 +1,176 @@
+From ba01212eab874524cb7f4d6789f6c9a2fb723824 Mon Sep 17 00:00:00 2001
+From: Un1box <un1box@localhost>
+Date: Sun, 25 Oct 2026 19:22:43 +0000
+Subject: [PATCH 1/2] gles: resolve a presented frame's guest pages once
+
+The synchronous present wrote a frame's rows into the guest one gles_guest_rw
+at a time: 640 calls for a 960x640 frame, each probing its page, looking up the
+current mmu index and splitting at the page boundary, to write 2.4 MB through
+pointers that are the same for every row. Nothing runs in the guest while a
+present copies, so the mapping cannot change under it.
+
+Resolve the block once and copy the rows through it, on both the IOSurface path
+and the readback path. A page that needs the full path -- a fault to be raised,
+MMIO, dirty tracking -- fails the map, and the rows go back through
+gles_guest_rw, which is also what raises the fault that reissues the present.
+The GL thread's hook and a pending fault also choose that path, so the
+behaviour of a page that is not there yet is unchanged.
+---
+ hw/arm/gles-host.c                   | 30 ++++++++++++++
+ hw/arm/guest-gles.c                  | 59 ++++++++++++++++++++++++++++
+ include/hw/arm/guest-services/gles.h | 10 +++++
+ 3 files changed, 99 insertions(+)
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index 24e3fe7..985a0f8 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -4024,6 +4024,19 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+         }
+         gles_present_mark(sample, PRESENT_ACQUIRE);
+         if (frame) {
++            GlesGuestPages pages;
++            /*
++             * The destination's pages once for the whole frame, not once a row: the copy wrote
++             * every row with its own gles_guest_rw, which probes the page, looks up the mmu index
++             * and splits at the page boundary again for each of up to 640 rows. A page that needs
++             * the full path fails the map and the rows go back through gles_guest_rw, which is
++             * also what raises the fault that reissues the present.
++             */
++            bool mapped = !gles_guest_rw_hook && !gles_guest_fault_pending() &&
++                          gles_guest_pages_map(&pages, cpu, base,
++                                               (uint64_t)base + (uint64_t)(rh - 1) * stride +
++                                               (uint64_t)rw * 4);
++
+             if (sample) {
+                 sample->path = 1;
+             }
+@@ -4032,6 +4045,11 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+                 const uint8_t *src = frame + (size_t)(rh - 1 - y) * fstride;
+ 
+                 src = gles_frame_row(src, gh.readback, rw);
++                if (mapped) {
++                    gles_guest_pages_write(&pages, (uint64_t)base + (uint64_t)y * stride,
++                                           src, (size_t)rw * 4);
++                    continue;
++                }
+                 if (gles_guest_rw(cpu, base + (hwaddr)y * stride,
+                                         (void *)src, rw * 4, 1) != 0) {
+                     /* a page being faulted in reissues the whole present: not a refusal */
+@@ -4145,6 +4163,13 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+         }
+         gles_present_mark(sample, PRESENT_CONVERT);
+ 
++        GlesGuestPages pages;
++        /* As on the surface path above: one mapping for the frame, or the row-at-a-time copy. */
++        bool mapped = !gles_guest_rw_hook && !gles_guest_fault_pending() &&
++                      gles_guest_pages_map(&pages, cpu, base,
++                                           (uint64_t)base + (uint64_t)(rh - 1) * stride +
++                                           (uint64_t)rw * bpp);
++
+         for (y = 0; y < rh; y++) {
+             /* GL's origin is bottom-left, the surface's is top-left. Only the
+              * rw*4 bytes the row actually covers are written, so the staging
+@@ -4152,6 +4177,11 @@ static int gles_present_to_surface_impl(CPUState *cpu, uint32_t base, uint32_t s
+              * already in the destination's layout. */
+             uint8_t *src = gh.readback + (size_t)(rh - 1 - y) * rw * bpp;
+ 
++            if (mapped) {
++                gles_guest_pages_write(&pages, (uint64_t)base + (uint64_t)y * stride,
++                                       src, (size_t)rw * bpp);
++                continue;
++            }
+             if (gles_guest_rw(cpu, base + (hwaddr)y * stride,
+                                     src, rw * bpp, 1) != 0) {
+                 if (!gles_guest_fault_pending() && gles_refuse("present:write")) {
+diff --git a/hw/arm/guest-gles.c b/hw/arm/guest-gles.c
+index b4d9258..75521df 100644
+--- a/hw/arm/guest-gles.c
++++ b/hw/arm/guest-gles.c
+@@ -103,6 +103,65 @@ bool guest_rw_ram(CPUState *cpu, uint64_t va, uint8_t *buf, size_t len, bool wri
+     return true;
+ }
+ 
++/*
++ * A presented frame's destination pages, resolved once for the whole frame.
++ *
++ * The copy wrote each row with its own gles_guest_rw: a 960x640 frame made 640 of them, each probing
++ * its page, looking up the current mmu index and splitting the row at the page boundary, to write
++ * 2.4 MB through pointers that are the same for every row. Nothing runs in the guest while a present
++ * copies, so the mapping cannot change under it. Only pages the caller's TLB resolves to plain RAM
++ * are taken; a page that needs the full path (a fault to be raised, MMIO, dirty tracking) fails the
++ * whole map and the caller keeps its row-at-a-time loop, which is what reissues the present.
++ */
++static uint8_t **gles_pages_host;
++static size_t gles_pages_cap;
++
++bool gles_guest_pages_map(GlesGuestPages *pages, CPUState *cpu, uint64_t va, uint64_t end)
++{
++    CPUArchState *env = cpu_env(cpu);
++    int idx = cpu_mmu_index(cpu, false);
++    uint64_t first = va & ~((uint64_t)TARGET_PAGE_SIZE - 1);
++    size_t npages;
++
++    if (end < va || end > UINT32_MAX) {
++        return false;
++    }
++    npages = (end - first + TARGET_PAGE_SIZE - 1) >> TARGET_PAGE_BITS;
++    if (gles_pages_cap < npages) {
++        gles_pages_host = g_renew(uint8_t *, gles_pages_host, npages);
++        gles_pages_cap = npages;
++    }
++    for (size_t i = 0; i < npages; i++) {
++        void *host;
++
++        if (probe_access_flags(env, first + i * TARGET_PAGE_SIZE, 0, MMU_DATA_STORE, idx,
++                               true, &host, 0) || !host) {
++            return false;
++        }
++        gles_pages_host[i] = host;
++    }
++    pages->first = first;
++    pages->npages = npages;
++    pages->page = gles_pages_host;
++    return true;
++}
++
++void gles_guest_pages_write(const GlesGuestPages *pages, uint64_t va,
++                            const void *buf, size_t len)
++{
++    uint64_t off = va - pages->first;
++    size_t done = 0;
++
++    while (done < len) {
++        size_t in = (off + done) & (TARGET_PAGE_SIZE - 1);
++        size_t n = MIN(len - done, TARGET_PAGE_SIZE - in);
++
++        memcpy(pages->page[(off + done) >> TARGET_PAGE_BITS] + in,
++               (const uint8_t *)buf + done, n);
++        done += n;
++    }
++}
++
+ int gles_guest_rw(CPUState *cpu, vaddr va, void *buf, size_t len, bool write)
+ {
+     if (gles_guest_rw_hook) {
+diff --git a/include/hw/arm/guest-services/gles.h b/include/hw/arm/guest-services/gles.h
+index 8de0b7c..4b12cdf 100644
+--- a/include/hw/arm/guest-services/gles.h
++++ b/include/hw/arm/guest-services/gles.h
+@@ -404,6 +404,16 @@ extern __thread int (*gles_guest_rw_hook)(vaddr va, void *buf, size_t len, bool
+ /* Guest memory through the host pointers in the vCPU's TLB, as its own loads and stores reach it. False, having
+  * possibly copied part, when a page needs the full path (not plain RAM in the TLB, unmapped, not permitted). */
+ bool guest_rw_ram(CPUState *cpu, uint64_t va, uint8_t *buf, size_t len, bool write);
++/* A guest range written row by row, as a present writes a frame: its pages resolved once, then each
++ * row copied through them. False, having stored nothing, when a page needs the full path. */
++typedef struct GlesGuestPages {
++    uint64_t first;             /* guest address of the first page */
++    size_t npages;
++    uint8_t **page;             /* host address of each page */
++} GlesGuestPages;
++bool gles_guest_pages_map(GlesGuestPages *pages, CPUState *cpu, uint64_t va, uint64_t end);
++void gles_guest_pages_write(const GlesGuestPages *pages, uint64_t va,
++                            const void *buf, size_t len);
+ bool gles_guest_fault_pending(void);
+ void qc_gles_dump_stats(void);
+ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
