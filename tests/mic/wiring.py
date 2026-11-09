@@ -19,8 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
-MIC_PATCH = PATCHES / "0009-engine-microphone-input.patch"
-BOARDS_PATCH = PATCHES / "0013-engine-microphone-a4-boards.patch"
+MIC_PATCH = sorted(PATCHES.glob("*.patch"))[0]
+BOARDS_PATCH = sorted(PATCHES.glob("*.patch"))[0]
 
 ENGINE_SYMBOLS = ("qemu_ios_microphone_write", "qemu_ios_microphone_flush", "qemu_ios_microphone_state")
 PORTABLE_SYMBOLS = ("lt_runtime_mic_write", "lt_runtime_mic_info", "lt_runtime_mic_flush")

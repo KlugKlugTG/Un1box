@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
-CAMERA_PATCH = PATCHES / "0010-engine-camera-input.patch"
+CAMERA_PATCH = sorted(PATCHES.glob("*.patch"))[0]
 
 
 def read(relative):

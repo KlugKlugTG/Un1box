@@ -63,7 +63,7 @@ def engine_from_git(path: Path, scratch: Path) -> Path:
         if applied.returncode:
             # 0009 alone is enough for the sliced device code; anything else means
             # the patch stack no longer fits this engine revision.
-            single = sh(["git", "apply", str(PATCHES / "0009-engine-microphone-input.patch")], cwd=target)
+            single = sh(["git", "apply", str(sorted(PATCHES.glob("*.patch"))[0])], cwd=target)
             if single.returncode:
                 raise Failure(
                     f"{patch.name} does not apply to {path} at HEAD, and neither does 0009 alone: "

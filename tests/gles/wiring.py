@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
-VAO_PATCH = PATCHES / "0014-engine-gles-vertex-arrays.patch"
+VAO_PATCH = sorted(PATCHES.glob("*.patch"))[0]
 TEST = ROOT / "tests" / "gles" / "vao.c"
 
 BRIDGE = "hw/arm/gles-host.c"
