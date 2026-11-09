@@ -15,6 +15,17 @@ enum class OverlayGraph(val label: String) { FRAME_TIME("Frame time"), FPS("Fram
 enum class ScreenScaling(val label: String, val native: Int) { SMOOTH("Smooth", 0), SHARP("Sharp", 1) }
 enum class GraphicsProvider(val label: String, val nativeChoice: Int) { PLATFORM("Native GLES", 0), ANGLE("ANGLE", 1) }
 
+/** Whether the fullscreen menu offers the fake SMS. Not offered: on the iPhone 4 with iOS
+ *  7.1.2 the modem refuses it (or the guest ignores the +CMT), and the model's own message is
+ *  all the diagnosis there was. The dialog, the plumbing and the engine's properties stay;
+ *  the AT trace (IOS_BB_TRACE, an engine switch) is how to pick it up again. */
+const val FAKE_SMS_OFFERED = false
+
+/** Whether the fullscreen menu offers the fake battery. Not offered: the write reaches the
+ *  machine (no refusal, the model's gauge and PMU voltage follow), but the guest does not show
+ *  the level -- the iOS 7.1.2 side needs the power-event nudge the TODO records. */
+const val FAKE_BATTERY_OFFERED = false
+
 /** Whether Settings offers the bundled ANGLE provider. It is staged, selectable and permitted in
  *  code, but not offered: choosing it boots the guest and then a null GL entry on the engine's
  *  GL thread kills it (adb tombstone: SIGSEGV, Instruction Abort at 0x0, thread gles-gl). Flip

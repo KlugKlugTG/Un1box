@@ -141,7 +141,6 @@ struct Engine {
     // Optional together: the engine that has one of the fake drives has both.
     decltype(&qemu_ios_ui_battery_set) battery_set = nullptr;
     decltype(&qemu_ios_ui_modem_write) modem_write = nullptr;
-    decltype(&qemu_ios_ui_modem_error) modem_error = nullptr;
     template <class F> F symbol(const char *n) {
         auto p = dlsym(library, n);
         require(p, std::string("engine symbol missing: ") + n, LT_UNSUPPORTED);
@@ -210,7 +209,6 @@ struct Engine {
                 reinterpret_cast<decltype(package_report)>(dlsym(library, "qemu_ios_guest_package_report"));
             battery_set = reinterpret_cast<decltype(battery_set)>(dlsym(library, "qemu_ios_ui_battery_set"));
             modem_write = reinterpret_cast<decltype(modem_write)>(dlsym(library, "qemu_ios_ui_modem_write"));
-            modem_error = reinterpret_cast<decltype(modem_error)>(dlsym(library, "qemu_ios_ui_modem_error"));
         } catch (...) {
             dlclose(library);
             library = nullptr;
@@ -1092,16 +1090,6 @@ lt_status lt_runtime_modem(lt_runtime *r, const char *property, const char *valu
         lt::require(value && strlen(value) < 256, "modem property value", LT_INVALID);
         lt::require(r->engine->modem_write(property, value),
                     "this machine has no modem, or no such property", LT_UNSUPPORTED);
-    });
-}
-
-lt_status lt_runtime_modem_error(lt_runtime *r, char *text, uint32_t capacity, lt_error *e) {
-    return lt::guard(e, [&] {
-        lt::require(r && r->started && !r->done, "runtime not active", LT_AGAIN);
-        lt::require(text && capacity, "modem error buffer", LT_INVALID);
-        text[0] = 0;
-        lt::require(r->engine->modem_error, "this engine has no modem error channel", LT_UNSUPPORTED);
-        r->engine->modem_error(text, capacity);
     });
 }
 

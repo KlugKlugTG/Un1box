@@ -107,8 +107,8 @@ private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Uni
             Box {
                 SmallKey(Icons.Filled.MoreVert, "More", { onInteract(); menu = true }, true, tag = "fullscreen_menu")
                 if (fakeCall) FakeCallDialog(host) { fakeCall = false }
-                if (fakeSms) FakeSmsDialog(host) { fakeSms = false }
-                if (fakeBattery) FakeBatteryDialog(host) { fakeBattery = false }
+                if (FAKE_SMS_OFFERED && fakeSms) FakeSmsDialog(host) { fakeSms = false }
+                if (FAKE_BATTERY_OFFERED && fakeBattery) FakeBatteryDialog(host) { fakeBattery = false }
                 DropdownMenu(menu, { menu = false }) {
                     DropdownMenuItem(text = { Text("Exit full screen") }, leadingIcon = { Icon(LtIcons.FullscreenExit, null) },
                         onClick = { menu = false; host.navigate(Screen.HOME) }, modifier = Modifier.testTag("exit_fullscreen"))
@@ -119,11 +119,15 @@ private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Uni
                     if (cellular) {
                         DropdownMenuItem(text = { Text("Fake call") }, leadingIcon = { Icon(LtIcons.Phone, null) },
                             onClick = { menu = false; fakeCall = true }, enabled = host.status in listOf("running", "paused"), modifier = Modifier.testTag("fake_call"))
-                        DropdownMenuItem(text = { Text("Fake SMS") }, leadingIcon = { Icon(LtIcons.Message, null) },
-                            onClick = { menu = false; fakeSms = true }, enabled = host.status in listOf("running", "paused"), modifier = Modifier.testTag("fake_sms"))
+                        if (FAKE_SMS_OFFERED) {
+                            DropdownMenuItem(text = { Text("Fake SMS") }, leadingIcon = { Icon(LtIcons.Message, null) },
+                                onClick = { menu = false; fakeSms = true }, enabled = host.status in listOf("running", "paused"), modifier = Modifier.testTag("fake_sms"))
+                        }
                     }
-                    DropdownMenuItem(text = { Text("Fake battery") }, leadingIcon = { Icon(LtIcons.Battery, null) },
-                        onClick = { menu = false; fakeBattery = true }, enabled = host.status in listOf("running", "paused"), modifier = Modifier.testTag("fake_battery"))
+                    if (FAKE_BATTERY_OFFERED) {
+                        DropdownMenuItem(text = { Text("Fake battery") }, leadingIcon = { Icon(LtIcons.Battery, null) },
+                            onClick = { menu = false; fakeBattery = true }, enabled = host.status in listOf("running", "paused"), modifier = Modifier.testTag("fake_battery"))
+                    }
                     DropdownMenuItem(text = { Text("Inspect frames") }, leadingIcon = { Icon(LtIcons.Timeline, null) },
                         onClick = { menu = false; host.openHitch() }, enabled = host.status in listOf("running", "paused"))
                     DropdownMenuItem(text = { Text("Performance overlay: ${host.settings.overlay.label}") }, leadingIcon = { Icon(LtIcons.Speed, null) },
