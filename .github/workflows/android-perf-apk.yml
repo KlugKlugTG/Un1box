@@ -574,6 +574,39 @@ jobs:
       # /usr/bin/env instead, which Android has no such path for: a firmwarekit built from this tree, or
       # reused from a newer tag, must stop spawning that (run the tool directly, or use /bin/env, which
       # Android's toybox does provide) or the iPad path breaks again the moment the reuse tag moves.
+      # The app-service helper is what carries a package into the guest (its push and pull actions),
+      # and the one in the base release predates them: without this, the Jailbreak tab's Install says
+      # "Unknown argument" and nothing is staged. Android/native-services/lt_appservice.c is built here
+      # with the pinned libraries Android/packaging/build-mobile-android.py fetches by hash; the
+      # extracted copy stays as the fallback, and the built one is checked for the actions themselves
+      # (strings is what a host can ask an Android binary).
+      - name: Cache the guest app services built here
+        uses: actions/cache@v4
+        with:
+          path: ci/mobile-services-built
+          key: lt-mobile-services-${{ hashFiles('Android/native-services/lt_appservice.c', 'Android/packaging/build-mobile-android.py', 'build-support/dependencies.json') }}
+
+      - name: Build the guest app services for arm64 Android
+        continue-on-error: true
+        run: |
+          if [ -f ci/mobile-services-built/arm64-v8a/liblt_appservice.so ]; then
+            echo "restored from the cache"
+          else
+            python3 Android/packaging/build-mobile-android.py ci/mobile-services-built \
+              --ndk "$ANDROID_NDK_ROOT" --jobs "$LT_JOBS"
+          fi
+          for name in liblt_appservice.so libusbmuxd_qemu.so; do
+            file="ci/mobile-services-built/arm64-v8a/$name"
+            [ -f "$file" ] || { echo "::error::the services build left no $name"; exit 1; }
+          done
+          if strings ci/mobile-services-built/arm64-v8a/liblt_appservice.so | grep -q 'push|pull'; then
+            cp ci/mobile-services-built/arm64-v8a/*.so ci/mobile-services/arm64-v8a/
+            echo "the APK will carry this build's app-service helper"
+          else
+            echo "::error::the helper built here has no push/pull: the APK would keep the base release's"
+            exit 1
+          fi
+
       - name: Build iBoot32Patcher and the spawn shim for arm64 Android
         run: |
           python3 - <<'PY' > /tmp/iboot32patcher-pin
@@ -607,8 +640,14 @@ jobs:
           "$TOOLS/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
             -o ci/firmwarekit/android/jb-tar Packages/FirmwareKit/build-support/jb-tar.c -lz
           "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/jb-tar | grep -q 'AArch64'
+          # The repositories of these systems serve their package indexes as .bz2 (BigBoss's 9 973
+          # packages are only there) and Android has no bzip2 at all: this small decompressor is what
+          # the Jailbreak tab runs. Staged as libjbBz2.so for a jailbreak build, like jb-tar.
+          "$TOOLS/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
+            -o ci/firmwarekit/android/jb-bunzip2 Packages/FirmwareKit/build-support/jb-bunzip2.c
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/jb-bunzip2 | grep -q 'AArch64'
           "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/spawn-shim.so | grep -q 'AArch64'
-          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so ci/firmwarekit/android/jb-tar
+          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so ci/firmwarekit/android/jb-tar ci/firmwarekit/android/jb-bunzip2
 
       # The patches carry changes to the engine's own build scripts (0012 adds
       # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for
@@ -930,6 +969,19 @@ jobs:
         run: |
           python3 tests/branding/run.py
           python3 tests/idle/run.py
+          # The catalogues: every English key the screens pass to Text, and how much of the UI each
+          # translation covers (tests/i18n/run.py, the check the catalogues' own docstrings name).
+          python3 tests/i18n/run.py
+          # Kotlin habits that cost a build each: a '#' comment, a tuple assignment, take(n) on a
+          # ByteArray, a '/*' inside a doc comment (Kotlin's comments nest).
+          python3 tests/kotlin/run.py
+
+      # The guest's Wi-Fi link: the dongle model's association watchdog, sliced out of the engine and
+      # driven with a fake clock (tests/network/run.py). iOS 5 drops a join that lands in the middle of
+      # its first scan and nothing repeated it -- an iPad 1 had no network while iOS 6 and 7.1.2 did.
+      - name: Self-check the guest's link
+        continue-on-error: true
+        run: python3 tests/network/run.py --engine qemu-ios
 
       # The archives firmwarekit's jailbreak option extracts, pinned by SHA-1 in SystemEdits/Cydia.swift:
       # the jailbreak self-check compares the tar this APK builds against the host's own on the real bytes
@@ -1016,6 +1068,18 @@ jobs:
           cp ci/engine-build/portable-manifest.json ci/engine/arm64-v8a/ 2>/dev/null || true
           ls -la ci/engine/arm64-v8a
           file ci/engine/arm64-v8a/libqemu-arm.so
+
+      # The Jailbreak tab's own logic, where a wrong field or a wrong URL is invisible until an install
+      # does nothing: the index parser, the source probing and the name a package is staged under
+      # (Android/app/src/test, Android/app/src/main/java/org/un1box/android/JailbreakStore.kt).
+      - name: Run the JVM unit tests
+        continue-on-error: true
+        working-directory: Android
+        run: |
+          ./gradlew --no-daemon --max-workers="$LT_JOBS" \
+            '-Dorg.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m' \
+            --dependency-verification="$DECLARED_DEPENDENCY_VERIFICATION" \
+            :app:testReleaseUnitTest
 
       - name: Build the APK
         working-directory: Android

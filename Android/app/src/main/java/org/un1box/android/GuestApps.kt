@@ -38,6 +38,32 @@ internal class GuestApps(private val context: Context) {
     private val helper get() = File(context.applicationInfo.nativeLibraryDir, "liblt_appservice.so")
     val available get() = helper.canExecute()
 
+    /**
+     * Puts one file of the phone's into the guest, over AFC, and returns the guest path it is at.
+     *
+     * The Jailbreak tab's .deb: it is downloaded here (a modern TLS stack and the phone's own
+     * connection) and staged in the guest's AutoInstall folder, which the guest's own Cydia startup
+     * job installs from at its next boot -- nothing has to be executed in the guest, and a device
+     * without afc2 is served over the media partition's own file service.
+     */
+    fun push(socket: String, local: File, remotePath: String, timeoutSeconds: Long = 600,
+             cancelled: () -> Boolean = { false }, event: (JSONObject) -> Unit = {}): JSONObject {
+        if (!local.isFile || local.length() == 0L) throw Failure("The package is not downloaded.")
+        return run(socket, listOf("push", "--local", local.absolutePath, "--remote", remotePath),
+            timeoutSeconds, cancelled, event)
+    }
+
+    /**
+     * Takes one file of the guest's onto the phone, over AFC: the other direction of [push], and how
+     * the Jailbreak tab learns what a device already has (dpkg's own status file).
+     */
+    fun pull(socket: String, remotePath: String, local: File, timeoutSeconds: Long = 120,
+             cancelled: () -> Boolean = { false }, event: (JSONObject) -> Unit = {}): JSONObject {
+        local.parentFile?.mkdirs()
+        return run(socket, listOf("pull", "--local", local.absolutePath, "--remote", remotePath),
+            timeoutSeconds, cancelled, event)
+    }
+
     /** Streams each JSON event to [event]; returns the final "result" object or throws its "error". */
     fun run(socket: String, args: List<String>, timeoutSeconds: Long, cancelled: () -> Boolean = { false }, event: (JSONObject) -> Unit = {}): JSONObject {
         if (!available) throw Failure("Guest app services are not included in this build.")

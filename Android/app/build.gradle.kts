@@ -154,7 +154,7 @@ val sourceReference = providers.gradleProperty("sourceReference").orElse(
 providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
     val kit = file(input)
     val required = listOf("firmwarekit", "lighttouch-oneshot", "iBoot32Patcher", "spawn-shim.so", "licenses/manifest.json") +
-        (if (jailbreak) listOf("jb-tar") else emptyList())
+        (if (jailbreak) listOf("jb-tar", "jb-bunzip2") else emptyList())
     require(required.all { kit.resolve(it).isFile }) {
         "firmwareKitDir must hold ${required.joinToString(", ")} (scripts/build.sh firmwarekit-android)"
     }
@@ -166,6 +166,7 @@ providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
         from(kit) { include("iBoot32Patcher"); rename { "libiBoot32Patcher.so" } }
         from(kit) { include("spawn-shim.so"); rename { "libspawnshim.so" } }
         if (jailbreak) from(kit) { include("jb-tar"); rename { "libjbTar.so" } }
+        if (jailbreak) from(kit) { include("jb-bunzip2"); rename { "libjbBz2.so" } }
         into(firmwareKitJniLibs.map { it.dir("arm64-v8a") })
     }
     val notices = tasks.register<Copy>("prepareFirmwareKitNotices") {

@@ -185,8 +185,10 @@ internal fun LtNavBar(current: Screen, onNavigate: (Screen) -> Unit, modifier: M
     val items = listOf(
         Triple(Screen.HOME, LtIcons.Phone, "Device"),
         Triple(Screen.STORE, LtIcons.Bag, "Store"),
+        Triple(Screen.JAILBREAK, LtIcons.Puzzle, "Jailbreak"),
         Triple(Screen.SETTINGS, Icons.Filled.Settings, "Settings"))
-    val tags = mapOf(Screen.STORE to "open_store", Screen.SETTINGS to "open_settings")
+    val tags = mapOf(Screen.STORE to "open_store", Screen.JAILBREAK to "open_jailbreak",
+        Screen.SETTINGS to "open_settings")
     // Callers already inset their page against the system bars, so this only leaves a margin.
     GlassSurface(modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 10.dp), raised = true) {
         Row(Modifier.fillMaxWidth().padding(6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {

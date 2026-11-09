@@ -1,0 +1,121 @@
+--- a/net/slirp-dns.c
++++ b/net/slirp-dns.c
+@@ -128,6 +128,72 @@
+ 
+ /* The Android answer: getaddrinfo in netd, which is what every app on the phone uses.
+  * Runs on the job's own thread, so a slow lookup delays no other query. */
++/*
++ * What the phone's resolver answered, kept for a short while.
++ *
++ * This is the one call the guest waits on that the phone can make slow: netd answers in tens of
++ * milliseconds on a good path and in seconds behind a VPN's DNS, and Cydia asks for the same names
++ * again and again (its sources, the mirrors they redirect to, every icon). A resolver on the
++ * internet caches for exactly this reason; the guest's own resolver does too, but it asks us again
++ * for every name it has not seen -- and every one of those was a fresh getaddrinfo.
++ */
++#define DNS_CACHE_ENTRIES 32
++#define DNS_CACHE_RECORDS 8
++#define DNS_CACHE_NAME 128
++#define DNS_CACHE_TTL_S 60
++#define DNS_CACHE_FAILURE_TTL_S 10
++
++typedef struct DNSCacheEntry {
++    char name[DNS_CACHE_NAME];
++    uint16_t qtype;
++    int rcode;
++    int records;
++    uint16_t lengths[DNS_CACHE_RECORDS];
++    uint8_t rdata[DNS_CACHE_RECORDS][16];
++    int64_t expires;                    /* realtime seconds */
++} DNSCacheEntry;
++
++static DNSCacheEntry dns_cache[DNS_CACHE_ENTRIES];
++static unsigned dns_cache_next;
++G_LOCK_DEFINE_STATIC(dns_cache);
++
++/** The answers this job has for the name, or false when the cache has none that are still good. */
++static bool dns_cache_lookup(DNSJob *j, const char *name, uint16_t qtype)
++{
++    int64_t now = g_get_real_time() / G_USEC_PER_SEC;
++    bool answered = false;
++
++    G_LOCK(dns_cache);
++    for (unsigned i = 0; i < DNS_CACHE_ENTRIES; i++) {
++        DNSCacheEntry *e = &dns_cache[i];
++        if (e->expires <= now || e->qtype != qtype || strcmp(e->name, name) != 0) {
++            continue;
++        }
++        j->rcode = e->rcode;
++        for (int r = 0; r < e->records; r++) {
++            dns_add_answer(j, e->lengths[r] == 16 ? 28 : 1, e->rdata[r], e->lengths[r]);
++        }
++        answered = true;
++        break;
++    }
++    G_UNLOCK(dns_cache);
++    return answered;
++}
++
++static void dns_cache_store(const char *name, uint16_t qtype, const DNSCacheEntry *fresh)
++{
++    int64_t now = g_get_real_time() / G_USEC_PER_SEC;
++
++    G_LOCK(dns_cache);
++    unsigned slot = dns_cache_next++ % DNS_CACHE_ENTRIES;
++    DNSCacheEntry *e = &dns_cache[slot];
++    *e = *fresh;
++    snprintf(e->name, sizeof e->name, "%s", name);
++    e->qtype = qtype;
++    e->expires = now + (e->rcode == 0 ? DNS_CACHE_TTL_S : DNS_CACHE_FAILURE_TTL_S);
++    G_UNLOCK(dns_cache);
++}
++
+ static void dns_resolve_android(DNSJob *j, const char *name, uint16_t qtype)
+ {
+     /* getaddrinfo supplies addresses, not fabricated MX/TXT answers. */
+@@ -135,6 +201,11 @@
+         j->rcode = 0;
+         return;
+     }
++    if (dns_cache_lookup(j, name, qtype)) {
++        return;
++    }
++    DNSCacheEntry fresh;
++    memset(&fresh, 0, sizeof fresh);
+     struct addrinfo hints = {
+         .ai_family = qtype == 28 ? AF_INET6 : qtype == 1 ? AF_INET : AF_UNSPEC,
+         .ai_socktype = SOCK_STREAM,
+@@ -156,17 +227,31 @@
+         missing = missing || rc == EAI_NODATA;
+ #endif
+         j->rcode = exists ? 0 : missing ? 3 : 2;
++        dns_cache_store(name, qtype, &fresh);
+         return;
+     }
+     j->rcode = 0;
+     for (const struct addrinfo *a = res; a; a = a->ai_next) {
+         if (a->ai_family == AF_INET6) {
+-            dns_add_answer(j, 28, &((const struct sockaddr_in6 *)a->ai_addr)->sin6_addr, 16);
++            const void *address = &((const struct sockaddr_in6 *)a->ai_addr)->sin6_addr;
++            if (fresh.records < DNS_CACHE_RECORDS) {
++                memcpy(fresh.rdata[fresh.records], address, 16);
++                fresh.lengths[fresh.records] = 16;
++                fresh.records++;
++            }
++            dns_add_answer(j, 28, address, 16);
+         } else if (a->ai_family == AF_INET) {
+-            dns_add_answer(j, 1, &((const struct sockaddr_in *)a->ai_addr)->sin_addr, 4);
++            const void *address = &((const struct sockaddr_in *)a->ai_addr)->sin_addr;
++            if (fresh.records < DNS_CACHE_RECORDS) {
++                memcpy(fresh.rdata[fresh.records], address, 4);
++                fresh.lengths[fresh.records] = 4;
++                fresh.records++;
++            }
++            dns_add_answer(j, 1, address, 4);
+         }
+     }
+     freeaddrinfo(res);
++    dns_cache_store(name, qtype, &fresh);
+ }
+ #endif
+ 
