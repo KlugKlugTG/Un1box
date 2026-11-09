@@ -136,7 +136,9 @@ private fun SessionStats(host: GuestHost) {
     ChipRow(Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState())) {
         if (clock.isNotEmpty()) StatChip("Session", clock, LtColors.Violet)
         if (host.perf.fps > 0) StatChip("FPS", "%.0f".format(host.perf.fps), LtColors.OverlayFps)
-        if (host.perf.vcpuPercent > 0) StatChip("CPU", "%.0f%%".format(host.perf.vcpuPercent), LtColors.OverlayCpu)
+        // The worker reports guest CPU only when it could read it, so this is a chip that comes and goes.
+        val cpu = host.perf.vcpuPercent
+        if (cpu != null && cpu > 0f) StatChip("CPU", "%.0f%%".format(cpu), LtColors.OverlayCpu)
     }
 }
 
