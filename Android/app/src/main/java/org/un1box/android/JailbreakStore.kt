@@ -235,8 +235,9 @@ internal class JailbreakStore {
 
     /**
      * Where the guest's own Cydia startup job installs from. Not a guess: the pinned bootstrap's
-     * /usr/libexec/cydia/startup does `debs=(/var/root/Media/Cydia/AutoInstall/*.deb)` and `dpkg -i`
-     * on them, so that folder -- root's Media, not mobile's -- is where a package has to land.
+     * /usr/libexec/cydia/startup installs the .deb files of /var/root/Media/Cydia/AutoInstall with
+     * dpkg, so that folder -- root's Media, not mobile's -- is where a package has to land. (No glob
+     * in this comment on purpose: Kotlin's block comments nest, and a slash-star in one never closes.)
      */
     val autoInstallDir get() = "/private/var/root/Media/Cydia/AutoInstall"
 
