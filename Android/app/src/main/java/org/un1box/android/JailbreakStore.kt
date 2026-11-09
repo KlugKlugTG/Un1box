@@ -250,7 +250,9 @@ internal class JailbreakStore {
         var state = ""
         fun flush() {
             if (name != null && state.startsWith("install ok installed")) installed[name!!] = version
-            name, version, state = null, "", ""
+            name = null
+            version = ""
+            state = ""
         }
         for (line in status.lineSequence()) {
             when {
