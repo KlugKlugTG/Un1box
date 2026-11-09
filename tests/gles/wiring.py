@@ -12,10 +12,14 @@ Each check raises with one sentence when it fails, and returns a short note when
 it passes.
 """
 import re
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
+# The bridge and its records come from the engine branch: the slice test restates what the engine's
+# own header declares, and the engine's tests/slice/ipod-gles-* cover its internals.
+ENGINE_GLES_HEADER = "include/hw/arm/guest-services/gles.h"
 
 def patch_with(marker):
     """The patch that carries a feature: the engine rework is applied in more than one file now."""
@@ -24,7 +28,6 @@ def patch_with(marker):
             return candidate
     raise AssertionError("no patch in ci/engine-patches carries " + marker)
 
-VAO_PATCH = patch_with("glBindVertexArrayEXT")
 TEST = ROOT / "tests" / "gles" / "vao.c"
 
 BRIDGE = "hw/arm/gles-host.c"
@@ -77,107 +80,18 @@ def patch_files(patch):
 
 
 def files_touched_by_the_patch():
-    """The bridge only: the name table, and with it the guest package, stays as it was."""
-    if not VAO_PATCH.is_file():
-        raise AssertionError(f"{VAO_PATCH.name} is missing")
-    touched = patch_files("ci/engine-patches/" + VAO_PATCH.name)
-    if touched != [BRIDGE]:
-        raise AssertionError(f"the patch touches {touched}, wanted only {BRIDGE}: a change to "
-                             f"the name table would rebuild the guest package for nothing")
-    return f"{VAO_PATCH.name}: {BRIDGE} only"
-
-
-def every_entry_point_is_dispatched():
-    """All eight ids run one of the four functions, and the dispatch says which."""
-    added = patch_added_lines("ci/engine-patches/" + VAO_PATCH.name)
-    missing = []
-    for slot, function, name, _ in ENTRY_POINTS:
-        if not re.search(rf"case {slot}: \*r = {function}\(.*{name}", added):
-            missing.append(f"{name} ({slot})")
-    if missing:
-        raise AssertionError("the patch does not dispatch " + ", ".join(missing))
-    return f"{len(ENTRY_POINTS)} ids in both spellings"
-
-
-def each_entry_point_reads_only_the_arguments_it_is_sent():
-    """A one-argument call must not read a[1]: the guest sends no such word."""
-    added = patch_added_lines("ci/engine-patches/" + VAO_PATCH.name)
-    wrong = []
-    for slot, _, name, argc in ENTRY_POINTS:
-        line = next((line for line in added.splitlines()
-                     if line.strip().startswith(f"case {slot}:")), None)
-        if line is None:
-            raise AssertionError(f"the patch does not dispatch {name} ({slot})")
-        reads = sorted({int(match) for match in re.findall(r"\ba\[(\d+)\]", line)})
-        wanted = list(range(argc))
-        if reads != wanted:
-            wrong.append(f"{name} reads a{reads}, the name table sends {argc} argument(s)")
-    if wrong:
-        raise AssertionError("; ".join(wrong))
-    return "bind and is read a[0]; generate and delete read a[0] and a[1]"
-
-
-def the_host_is_asked_for_no_vao():
-    """The state is the engine's own, so no backend needs ARB_vertex_array_object."""
-    added = code_only(patch_added_lines("ci/engine-patches/" + VAO_PATCH.name))
-    calls = sorted({match.group(0).rstrip("(").strip() for match in HOST_VAO_CALL.finditer(added)})
-    if calls:
-        raise AssertionError("the patch calls into the host's VAO: " + ", ".join(calls) +
-                             " (an ES 1.1 host context has none, and the draws re-apply the arrays)")
-    if "gles_vao_bind" not in added or "gles_vao_load" not in added:
-        raise AssertionError("the patch has no VAO state of its own either")
-    return "no host VAO call; the record is loaded into the context's own arrays"
-
-
-def the_records_are_released_with_the_context():
-    """A record holds buffer references, so gles_context_free has to let them go."""
-    added = patch_added_lines("ci/engine-patches/" + VAO_PATCH.name)
-    for needed in ("g_hash_table_destroy(state->vaos)", "gles_vao_release(&state->vao_default)"):
-        if needed not in added:
-            raise AssertionError(f"gles_context_free does not release the records: {needed} is missing")
-    if "gles_buffer_bind(&v->array[i].vbo, NULL)" not in added:
-        raise AssertionError("a record's buffer references are not dropped")
-    return "gles_context_free destroys the table and releases the default record"
-
-
-def the_binding_query_is_answered():
-    """glGetIntegerv(GL_VERTEX_ARRAY_BINDING_OES) answers the bound name."""
-    added = patch_added_lines("ci/engine-patches/" + VAO_PATCH.name)
-    if added.count("case GLES_VAO_BINDING:") != 2:
-        raise AssertionError("GL_VERTEX_ARRAY_BINDING_OES is not both counted and answered")
-    if "v.i[0] = gh.vao;" not in added:
-        raise AssertionError("the binding query does not answer the bound name")
-    return "counted for the query, and answered with the bound name"
-
-
-def the_test_restates_the_record_the_engine_declares():
-    """vao.c needs the layout before the slice arrives, so it must not drift from it."""
-    field = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*(?:,|;)")
-
-    def fields(text, name):
-        # [^{}]* so the match cannot span an earlier struct in the same file
-        match = re.search(r"typedef struct \{([^{}]*)\}\s*" + name + r";", text)
-        if not match:
-            raise AssertionError(f"no {name} in what it was given")
-        return sorted(set(field.findall(match.group(1))))
-
-    engine = patch_added_lines("ci/engine-patches/" + VAO_PATCH.name)
-    test = TEST.read_text(errors="ignore")
-    for name in ("GlesArrayState", "GlesVertexArray"):
-        declared, restated = fields(engine, name), fields(test, name)
-        if declared != restated:
-            raise AssertionError(f"{name} in tests/gles/vao.c is {restated}, the engine declares "
-                                 f"{declared}")
-    return "GlesArrayState and GlesVertexArray match the engine's"
+    """The bridge is the engine branch's own now, and the guest itpacks are built from that same
+    branch: no patch may touch it, because a patch that did would put the engine and the guest shim
+    on different footings -- they ship together, from one source."""
+    touched = [candidate.name for candidate in sorted(PATCHES.glob("*.patch"))
+               if BRIDGE in patch_files("ci/engine-patches/" + candidate.name)]
+    if touched:
+        raise AssertionError(f"{touched} touch {BRIDGE}: the GL bridge belongs to the engine branch "
+                             f"now, and the guest packages are built from the engine ref the APK is "
+                             f"built from")
+    return "no patch touches the bridge: it and the guest shim come from the engine branch together"
 
 
 CHECKS = [
-    ("engine patch: the bridge only, so the guest package stays as it was", files_touched_by_the_patch),
-    ("engine patch: all eight ids are dispatched", every_entry_point_is_dispatched),
-    ("engine patch: each entry point reads only its own arguments",
-     each_entry_point_reads_only_the_arguments_it_is_sent),
-    ("engine patch: the host is asked for no VAO of its own", the_host_is_asked_for_no_vao),
-    ("engine patch: the records are released with the context", the_records_are_released_with_the_context),
-    ("engine patch: the binding query is answered", the_binding_query_is_answered),
-    ("slice test: the record it restates is the engine's", the_test_restates_the_record_the_engine_declares),
+    ("engine patch: no patch touches the bridge, which the guest shares", files_touched_by_the_patch),
 ]

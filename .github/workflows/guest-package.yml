@@ -8,7 +8,10 @@ on:
     branches: [main]
     paths:
       - .github/workflows/guest-package.yml
-      - ci/engine-patches/0011-engine-gles-map-buffer.patch
+      # Every patch in the series: the guest itpacks share the engine's GL records and its guest
+      # shim, so anything that changes them is worth rebuilding for. A change on the engine branch
+      # itself is a manual dispatch (the workflow takes engine_ref).
+      - ci/engine-patches/**
   workflow_dispatch:
     inputs:
       engine_repository:
@@ -96,7 +99,7 @@ jobs:
           xcrun ld -v
           if ! command -v ldid >/dev/null; then brew install ldid; fi
 
-      - name: Build guest packages serial 42
+      - name: Build guest packages serial 43
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/guest-package"
@@ -117,7 +120,7 @@ jobs:
             echo '::error::guest package build emitted warnings; refusing to upload partial packages'
             exit 1
           fi
-          grep -E 'armv6 serial 42|armv7 serial 42|serial 42' "$RUNNER_TEMP/guest-package.log" || true
+          grep -E 'armv6 serial 43|armv7 serial 43|serial 43' "$RUNNER_TEMP/guest-package.log" || true
           test -s "$OUT/armv6.itpack"
           test -s "$OUT/armv7.itpack"
           shasum -a 256 "$OUT/armv6.itpack" "$OUT/armv7.itpack" | tee "$OUT/SHA256SUMS"
@@ -125,7 +128,7 @@ jobs:
       - name: Upload only the guest packages
         uses: actions/upload-artifact@v4
         with:
-          name: Un1box-guest-packages-42
+          name: Un1box-guest-packages-43
           path: |
             ${{ runner.temp }}/guest-package/armv6.itpack
             ${{ runner.temp }}/guest-package/armv7.itpack

@@ -1,6 +1,8 @@
+diff --git a/net/slirp-dns.c b/net/slirp-dns.c
+index 51b594c1ca..77addfd252 100644
 --- a/net/slirp-dns.c
 +++ b/net/slirp-dns.c
-@@ -128,6 +128,72 @@
+@@ -128,6 +128,72 @@ static void dns_add_answer(DNSJob *j, uint16_t type, const void *rdata, size_t r
  
  /* The Android answer: getaddrinfo in netd, which is what every app on the phone uses.
   * Runs on the job's own thread, so a slow lookup delays no other query. */
@@ -73,7 +75,7 @@
  static void dns_resolve_android(DNSJob *j, const char *name, uint16_t qtype)
  {
      /* getaddrinfo supplies addresses, not fabricated MX/TXT answers. */
-@@ -135,6 +201,11 @@
+@@ -135,6 +201,11 @@ static void dns_resolve_android(DNSJob *j, const char *name, uint16_t qtype)
          j->rcode = 0;
          return;
      }
@@ -85,7 +87,7 @@
      struct addrinfo hints = {
          .ai_family = qtype == 28 ? AF_INET6 : qtype == 1 ? AF_INET : AF_UNSPEC,
          .ai_socktype = SOCK_STREAM,
-@@ -156,17 +227,31 @@
+@@ -156,17 +227,31 @@ static void dns_resolve_android(DNSJob *j, const char *name, uint16_t qtype)
          missing = missing || rc == EAI_NODATA;
  #endif
          j->rcode = exists ? 0 : missing ? 3 : 2;
