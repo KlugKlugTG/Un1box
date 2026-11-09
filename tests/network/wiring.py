@@ -93,7 +93,7 @@ def the_state_lives_and_dies_with_the_machine():
                 "the watchdog claims a vmstate the model around it has not got")
     require(re.search(r"s->link_retries = 0;", body) is not None,
             "a join the driver asks for does not get a fresh retry budget")
-    return "created, reset, saved (version 2), and a driver-asked join starts over"
+    return "created, reset, not migrated (neither is the model), and a driver-asked join starts over"
 
 
 def the_resolver_caches_what_the_phone_answered():
