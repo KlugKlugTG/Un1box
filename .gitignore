@@ -24,3 +24,6 @@ docs/*
 !docs/TRANSLATION.md
 scripts/build.env
 *.profraw
+
+# The engine checkout the self-checks run against, cloned or linked in beside the app
+/qemu-ios/

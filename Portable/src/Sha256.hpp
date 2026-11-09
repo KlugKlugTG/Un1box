@@ -53,7 +53,10 @@ static inline void portable(uint32_t h[8], const uint8_t *p, size_t blocks) {
 // The CPU's own SHA-256 instructions (ARMv8 SHA2, x86 SHA-NI) are several times faster than the
 // portable rounds; a prepared base is gigabytes, so admission and import time is mostly this.
 #if defined(__aarch64__)
-__attribute__((target("sha2"))) static inline void accelerated(uint32_t h[8], const uint8_t *p, size_t blocks) {
+// The '+', which GCC insists on for an architectural extension and clang accepts as well: the
+// unprefixed name compiles only under clang, and the self-checks that slice Portable/src/*.cpp
+// build this header with the host's compiler.
+__attribute__((target("+sha2"))) static inline void accelerated(uint32_t h[8], const uint8_t *p, size_t blocks) {
     uint32x4_t abcd = vld1q_u32(h), efgh = vld1q_u32(h + 4);
     for (; blocks--; p += 64) {
         const uint32x4_t abcd_saved = abcd, efgh_saved = efgh;
