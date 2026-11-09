@@ -711,6 +711,35 @@ jobs:
       # resolution or Kotlin/Java/AIDL error fails here, in about a minute, instead of
       # after the engine's three minutes in "Build the APK". Compilation needs neither the
       # engine nor firmwarekit: only the packaging tasks read those.
+      # The wrapper asks services.gradle.org, which answers with a redirect to a GitHub release asset, and that
+      # asset answered 504 for every run on 2026-11-09 -- the distribution could not be fetched at all, before
+      # anything in this repository ran. The archive is pinned by SHA-256 in gradle-wrapper.properties, so a
+      # mirror is another transport for the same bytes: try the canonical URL, then two mirrors, verify the
+      # digest, and hand the wrapper the verified local file (file: URLs are what the wrapper supports for this).
+      - name: Fetch the Gradle distribution (mirrors included)
+        run: |
+          EXPECTED="$(sed -n 's/^distributionSha256Sum=//p' Android/gradle/wrapper/gradle-wrapper.properties)"
+          [ -n "$EXPECTED" ] || { echo '::error::gradle-wrapper.properties has no distributionSha256Sum to verify against'; exit 1; }
+          OUT="$RUNNER_TEMP/gradle-8.11.1-bin.zip"
+          URLS=(
+            "https://services.gradle.org/distributions/gradle-8.11.1-bin.zip"
+            "https://mirrors.cloud.tencent.com/gradle/gradle-8.11.1-bin.zip"
+            "https://mirrors.huaweicloud.com/gradle/gradle-8.11.1-bin.zip"
+          )
+          for URL in "${URLS[@]}"; do
+            echo "trying $URL"
+            if curl -fsSL --retry 2 --retry-delay 3 --connect-timeout 20 --max-time 600 -o "$OUT" "$URL" &&
+               echo "$EXPECTED  $OUT" | sha256sum -c -; then
+              echo "verified the pinned archive from $URL"
+              sed -i "s#^distributionUrl=.*#distributionUrl=file\\\\://$OUT#" Android/gradle/wrapper/gradle-wrapper.properties
+              cat Android/gradle/wrapper/gradle-wrapper.properties
+              exit 0
+            fi
+            echo "::warning::$URL did not deliver the pinned archive"
+          done
+          echo "::error::no Gradle distribution source answered with the pinned archive"
+          exit 1
+
       - name: Preflight the Gradle build
         working-directory: Android
         run: |
