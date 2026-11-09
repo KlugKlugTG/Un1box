@@ -1141,13 +1141,16 @@ static int action_push(struct session *s, const char *local, const char *remote,
 		goto out;
 	}
 
-	/* The folder is the guest's own (Cydia's startup job reads it); creating it is harmless. */
+	/* The folder is the guest's own (Cydia's startup script reads it); creating it is harmless, and
+	 * AFC's make-directory is one level, so every level that is missing is made in turn. */
 	parent = strdup(remote);
 	if (parent) {
-		char *slash = strrchr(parent, '/');
-		if (slash && slash != parent) {
-			*slash = '\0';
+		for (char *at = parent + 1; *at; at++) {
+			if (*at != '/')
+				continue;
+			*at = '\0';
 			afc_make_directory(afc, parent);
+			*at = '/';
 		}
 	}
 

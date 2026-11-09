@@ -16,7 +16,7 @@ import java.util.zip.GZIPInputStream
  * its repositories are mostly gone, and every request is emulated instruction by instruction. The
  * packages themselves are still there, so this does the browsing and the downloading on the phone --
  * a modern stack over the phone's own network -- and stages the .deb in the guest's
- * private/var/mobile/Media/AutoInstall, which Cydia's own startup job installs at the next boot.
+ * /var/root/Media/Cydia/AutoInstall, which Cydia's own startup job installs at the next boot.
  *
  * The index is a Debian control file (`Packages`, usually gzipped): stanzas of `Key: value`, folded
  * continuation lines, and `Filename` relative to the source. Sources are kept as the user typed
@@ -233,8 +233,12 @@ internal class JailbreakStore {
         return into
     }
 
-    /** Where the guest's own Cydia startup job installs from (SystemEdits/Cydia.swift's AutoInstall). */
-    val autoInstallDir get() = "/private/var/mobile/Media/AutoInstall"
+    /**
+     * Where the guest's own Cydia startup job installs from. Not a guess: the pinned bootstrap's
+     * /usr/libexec/cydia/startup does `debs=(/var/root/Media/Cydia/AutoInstall/*.deb)` and `dpkg -i`
+     * on them, so that folder -- root's Media, not mobile's -- is where a package has to land.
+     */
+    val autoInstallDir get() = "/private/var/root/Media/Cydia/AutoInstall"
 
     /** The staged name: the .deb's own, so dpkg sees a package name it recognises. */
     fun stagedPath(pkg: JailbreakPackage): String {

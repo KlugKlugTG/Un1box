@@ -197,8 +197,11 @@ def the_store_browses_on_the_phone():
             "the tab does not fetch an index itself: it would have to ask the guest's 2010 stack")
     require("dists/stable/main/binary-iphoneos-arm" in store and "dists/ios/main/binary-iphoneos-arm" in store,
             "the sources are not probed at Cydia's own layout, so a repository root would never resolve")
-    require("private/var/mobile/Media/AutoInstall" in store,
-            "the packages are not staged where the guest's own Cydia installs from at boot")
+    # The pinned bootstrap's /usr/libexec/cydia/startup is the authority:
+    #   debs=(/var/root/Media/Cydia/AutoInstall/*.deb) ... dpkg -i "${debs[@]}"
+    require("/private/var/root/Media/Cydia/AutoInstall" in store,
+            "the packages are not staged where the guest's own Cydia startup script installs from "
+            "(/var/root/Media/Cydia/AutoInstall), so dpkg would never see them")
     require("stagedPath" in store and "replace" not in store.split("fun stagedPath", 1)[1][:400].replace("it in", ""),
             "the staged name is not sanitised: a file name from an index could leave the folder")
     require("parseIndex" in store and "lastKey" in store,

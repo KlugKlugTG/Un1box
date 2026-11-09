@@ -78,11 +78,11 @@ class JailbreakStoreTest {
     }
 
     @Test
-    fun `a package is staged where the guest's cydia installs it, under its own file name`() {
+    fun `a package is staged where cydia's own startup script installs from, under its own name`() {
         val packages = store.parseIndex(index, "http://repo.example/")
-        assertEquals("/private/var/mobile/Media/AutoInstall/first_1.2.3_iphoneos-arm.deb",
+        assertEquals("/private/var/root/Media/Cydia/AutoInstall/first_1.2.3_iphoneos-arm.deb",
             store.stagedPath(packages[0]))
-        assertEquals("/private/var/mobile/Media/AutoInstall/second.deb", store.stagedPath(packages[1]))
+        assertEquals("/private/var/root/Media/Cydia/AutoInstall/second.deb", store.stagedPath(packages[1]))
     }
 
     @Test
@@ -108,7 +108,7 @@ class JailbreakStoreTest {
     fun `a file name that is not a name cannot leave the install folder`() {
         val pkg = JailbreakPackage("x", "1", "iphoneos-arm", 1, "debs/../../etc/passwd", "", "http://repo.example/")
         val staged = store.stagedPath(pkg)
-        assertTrue(staged.startsWith("/private/var/mobile/Media/AutoInstall/"))
+        assertTrue(staged.startsWith("/private/var/root/Media/Cydia/AutoInstall/"))
         assertFalse(staged.contains(".."))
     }
 }
