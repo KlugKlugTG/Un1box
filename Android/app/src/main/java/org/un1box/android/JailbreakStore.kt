@@ -72,6 +72,8 @@ internal data class JailbreakPackage(
     val section: String = "",
     val author: String = "",
     val description: String = "",
+    /** The package's icon, from its control file's `Icon:` (a URL, or a path under the archive root). */
+    val icon: String = "",
 ) {
     val title get() = name
     val detail get() = listOfNotNull(version.takeIf { it.isNotBlank() }, sizeText).joinToString(" · ")
@@ -180,6 +182,7 @@ internal class JailbreakStore {
                     section = fields["section"].orEmpty(),
                     author = (fields["author"] ?: fields["maintainer"]).orEmpty(),
                     description = fields["description"].orEmpty(),
+                    icon = fields["icon"].orEmpty(),
                 )
             }
             fields = HashMap()
@@ -395,6 +398,71 @@ internal class JailbreakCatalog {
             return 0
         }
     }
+}
+
+/**
+ * Package and repository icons, cached in memory: a list scrolls, and every row asking for the same
+ * file again would be a request per frame. Nothing here is required -- a package without an icon
+ * draws the box Cydia draws for one.
+ */
+internal object JailbreakIcons {
+    private val cache = android.util.LruCache<String, android.graphics.Bitmap>(160)
+
+    fun icon(url: String): android.graphics.Bitmap? {
+        if (url.isEmpty()) return null
+        cache.get(url)?.let { return it }
+        return runCatching {
+            val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            connection.connectTimeout = 8000
+            connection.readTimeout = 15000
+            connection.instanceFollowRedirects = true
+            try {
+                connection.inputStream.use { android.graphics.BitmapFactory.decodeStream(it) }
+            } finally {
+                connection.disconnect()
+            }
+        }.getOrNull()?.also { cache.put(url, it) }
+    }
+
+    /** A repository's own icon, where Cydia keeps it: CydiaIcon.png beside its index. */
+    fun repositoryIcon(source: String): String {
+        val root = if (source.endsWith("Packages") || source.endsWith("Packages.gz") || source.endsWith("Packages.bz2"))
+            source.substringBeforeLast('/', "") else source.trimEnd('/')
+        return "$root/CydiaIcon.png"
+    }
+
+    /** A package's icon as a URL: absolute as the control file gives it, else under the archive root. */
+    fun packageIcon(pkg: JailbreakPackage, indexUrl: String): String {
+        if (pkg.icon.isEmpty()) return ""
+        if (pkg.icon.startsWith("http://") || pkg.icon.startsWith("https://")) return pkg.icon
+        val root = JailbreakStore().archiveRoot(indexUrl)
+        return root.trimEnd('/') + "/" + pkg.icon.trimStart('/')
+    }
+}
+
+/**
+ * What a tab visit leaves behind, so coming back to Jailbreak does not scan every repository again:
+ * the lists themselves, the sources they were built from, and when that happened. A visit within
+ * the window reuses them; Reload and Refresh always ask again, and so does a changed source list.
+ */
+internal class JailbreakCache {
+    var catalog: JailbreakCatalog? = null
+    var sources: List<String> = emptyList()
+    val fetchedAt = HashMap<String, Long>()
+    var refreshedAt: Long = 0
+
+    fun fresh(sources: List<String>, now: Long): Boolean =
+        catalog != null && this.sources == sources && now - refreshedAt in 0 until FRESH_MS
+
+    companion object {
+        /** Six hours: these repositories are mostly static, and the phone's time is the user's. */
+        const val FRESH_MS = 6L * 60 * 60 * 1000
+    }
+}
+
+internal object JailbreakCaches {
+    /** One per process: the screen is rebuilt every time the tab is entered. */
+    val current = JailbreakCache()
 }
 
 /**

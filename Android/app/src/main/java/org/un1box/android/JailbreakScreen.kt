@@ -1,6 +1,8 @@
 package org.un1box.android
 
 import androidx.activity.compose.BackHandler
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -36,12 +38,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -91,10 +95,11 @@ internal fun JailbreakScreen(
 ) {
     val context = LocalContext.current
     val store = remember { JailbreakStore() }
-    val catalog = remember { JailbreakCatalog() }
+    val visit = remember { JailbreakCaches.current }
+    val catalog = remember { visit.catalog ?: JailbreakCatalog().also { visit.catalog = it } }
     val scope = rememberCoroutineScope()
     val sources = remember { mutableStateListOf<String>().apply { addAll(JailbreakSources.read(context)) } }
-    val fetchedAt = remember { mutableStateMapOf<String, Long>() }
+    val fetchedAt = remember { mutableStateMapOf<String, Long>().apply { putAll(visit.fetchedAt) } }
     var list by remember { mutableStateOf(JailbreakList.PACKAGES) }
     var page by remember { mutableStateOf<JailbreakPage>(JailbreakPage.Lists) }
     var installed by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
@@ -125,6 +130,10 @@ internal fun JailbreakScreen(
                 }.onFailure { catalog.failed(one, it.message ?: it.javaClass.simpleName) }
             }
             reading = ""
+            visit.sources = sources.toList()
+            visit.fetchedAt.clear()
+            visit.fetchedAt.putAll(fetchedAt)
+            visit.refreshedAt = System.currentTimeMillis()
             revision++
         }
     }
@@ -150,7 +159,10 @@ internal fun JailbreakScreen(
         }
     }
 
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(Unit) {
+        // Coming back to the tab is not a reason to ask apt.saurik.com for 364 packages again.
+        if (!visit.fresh(sources.toList(), System.currentTimeMillis()) || catalog.packages().isEmpty()) refresh()
+    }
     LaunchedEffect(running, socket) {
         installed = if (running && socket.isNotEmpty())
             withContext(Dispatchers.IO) { JailbreakInstaller(context) { socket }.installed() } else emptyMap()
@@ -227,11 +239,14 @@ internal fun JailbreakScreen(
                     { query = it }, { refresh() }, { page = JailbreakPage.Source(it) },
                     { page = JailbreakPage.Section(it) }, { page = JailbreakPage.Package(it) },
                     { one -> sources.remove(one); JailbreakSources.write(context, sources.toList()); fetchedAt.remove(one) })
-                is JailbreakPage.Source -> PackageList(catalog.packages().filter { it.source == shown.url }, installed) {
+                is JailbreakPage.Source -> PackageList(
+                    catalog.packages().filter { it.source == shown.url }, installed,
+                    { JailbreakIcons.packageIcon(it, catalog.indexOf(it.source)) }) {
                     page = JailbreakPage.Package(it)
                 }
                 is JailbreakPage.Section -> PackageList(
-                    catalog.packages().filter { it.section.ifBlank { "Other" } == shown.name }, installed) {
+                    catalog.packages().filter { it.section.ifBlank { "Other" } == shown.name }, installed,
+                    { JailbreakIcons.packageIcon(it, catalog.indexOf(it.source)) }) {
                     page = JailbreakPage.Package(it)
                 }
                 is JailbreakPage.Package -> PackagePage(shown.package_, installed, running && socket.isNotEmpty(),
@@ -354,7 +369,7 @@ private fun ListsPage(
             verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (updates.isEmpty()) item { Empty("Nothing here yet") }
             items(updates, key = { it.name + it.version }) { pkg ->
-                PackageRow(pkg, installed[pkg.name], onPackage)
+                PackageRow(pkg, installed[pkg.name], JailbreakIcons.packageIcon(pkg, catalog.indexOf(pkg.source)), onPackage)
             }
         }
 
@@ -387,24 +402,58 @@ private fun ListsPage(
                 val found = catalog.search(query)
                 if (query.isNotBlank() && found.isEmpty()) item { Empty("Nothing here yet") }
                 items(found, key = { it.name + it.version }) { pkg ->
-                    PackageRow(pkg, installed[pkg.name], onPackage)
+                    PackageRow(pkg, installed[pkg.name], JailbreakIcons.packageIcon(pkg, catalog.indexOf(pkg.source)), onPackage)
                 }
             }
         }
     }
 }
 
-/** The packages of one source or one section: Cydia's list of rows. */
+/** One row of a grouped list: a section's own label, or a package under it. */
+private sealed interface JailbreakRow {
+    data class Header(val text: String) : JailbreakRow
+    data class Entry(val package_: JailbreakPackage) : JailbreakRow
+}
+
+/**
+ * The packages of one source or one section, grouped the way Cydia groups them: a repository like
+ * BigBoss files everything under Games, Utilities, Tweaks and the rest, and a flat list hides that.
+ */
 @Composable
 private fun PackageList(
     packages: List<JailbreakPackage>,
     installed: Map<String, String>,
+    indexOf: (JailbreakPackage) -> String,
     onOpen: (JailbreakPackage) -> Unit,
 ) {
+    val rows = remember(packages) {
+        val sorted = packages.sortedWith(compareBy({ it.section.ifBlank { "Other" }.lowercase() },
+            { it.name.lowercase() }))
+        buildList {
+            var current = ""
+            for (pkg in sorted) {
+                val name = pkg.section.ifBlank { "Other" }
+                if (name != current) {
+                    current = name
+                    add(JailbreakRow.Header(name))
+                }
+                add(JailbreakRow.Entry(pkg))
+            }
+        }
+    }
     LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        if (packages.isEmpty()) item { Empty("Nothing here yet") }
-        items(packages, key = { it.name + it.version }) { pkg ->
-            PackageRow(pkg, installed[pkg.name], onOpen)
+        if (rows.isEmpty()) item { Empty("Nothing here yet") }
+        items(rows, key = {
+            when (it) {
+                is JailbreakRow.Header -> "section:" + it.text
+                is JailbreakRow.Entry -> it.package_.name + it.package_.version
+            }
+        }) { row ->
+            when (row) {
+                is JailbreakRow.Header -> GroupLabel(row.text, null, null)
+                is JailbreakRow.Entry -> PackageRow(row.package_, installed[row.package_.name],
+                    JailbreakIcons.packageIcon(row.package_, indexOf(row.package_)), onOpen)
+            }
         }
     }
 }
@@ -415,7 +464,7 @@ private fun SourceCard(url: String, packages: Int, at: Long?, onOpen: () -> Unit
     Card(onClick = onOpen) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(LtIcons.Sources, null, Modifier.size(26.dp), tint = MaterialTheme.colorScheme.primary)
+                SourceIcon(JailbreakIcons.repositoryIcon(url))
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(JailbreakSources.displayName(url), style = MaterialTheme.typography.bodyLarge)
@@ -438,10 +487,15 @@ private fun SourceCard(url: String, packages: Int, at: Long?, onOpen: () -> Unit
 
 /** A package's row: its icon, name, version and summary. */
 @Composable
-private fun PackageRow(pkg: JailbreakPackage, installedVersion: String?, onOpen: (JailbreakPackage) -> Unit) {
+private fun PackageRow(
+    pkg: JailbreakPackage,
+    installedVersion: String?,
+    iconUrl: String,
+    onOpen: (JailbreakPackage) -> Unit,
+) {
     Card(onClick = { onOpen(pkg) }) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            PackageIcon()
+            PackageIcon(url = iconUrl)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(pkg.name, style = MaterialTheme.typography.bodyLarge)
@@ -470,7 +524,7 @@ private fun PackagePage(
         item {
             Card {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    PackageIcon(large = true)
+                    PackageIcon(large = true, url = JailbreakIcons.packageIcon(pkg, indexUrl))
                     Spacer(Modifier.width(14.dp))
                     Column {
                         Text(pkg.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -570,14 +624,36 @@ private fun Card(onClick: (() -> Unit)? = null, content: @Composable () -> Unit)
     }
 }
 
-/** A package's icon: the box Cydia draws for every package without an icon of its own. */
+/** A package's icon: its own when the control file names one, else the box Cydia draws instead. */
 @Composable
-private fun PackageIcon(large: Boolean = false) {
+private fun PackageIcon(large: Boolean = false, url: String = "") {
     val size = if (large) 44.dp else 30.dp
+    val bitmap by produceState<Bitmap?>(null, url) {
+        value = if (url.isEmpty()) null else withContext(Dispatchers.IO) { JailbreakIcons.icon(url) }
+    }
     Box(Modifier.size(size).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh),
         contentAlignment = Alignment.Center) {
-        Icon(LtIcons.Package, null, Modifier.size(if (large) 26.dp else 18.dp),
-            tint = MaterialTheme.colorScheme.primary)
+        val picture = bitmap
+        if (picture != null) {
+            Image(picture.asImageBitmap(), contentDescription = null, Modifier.fillMaxSize())
+        } else {
+            Icon(LtIcons.Package, null, Modifier.size(if (large) 26.dp else 18.dp),
+                tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+/** A repository's icon, with the diamond standing in while it loads or when it has none. */
+@Composable
+private fun SourceIcon(url: String) {
+    val bitmap by produceState<Bitmap?>(null, url) {
+        value = withContext(Dispatchers.IO) { JailbreakIcons.icon(url) }
+    }
+    Box(Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center) {
+        val picture = bitmap
+        if (picture != null) Image(picture.asImageBitmap(), contentDescription = null, Modifier.fillMaxSize())
+        else Icon(LtIcons.Sources, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
     }
 }
 

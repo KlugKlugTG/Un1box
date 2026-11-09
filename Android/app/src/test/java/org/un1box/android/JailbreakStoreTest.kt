@@ -179,6 +179,46 @@ class JailbreakStoreTest {
     }
 
     @Test
+    fun `a package keeps the icon its control file names, and its URL is resolved like its file`() {
+        val withIcon = """
+            Package: com.example.tweak
+            Version: 1.0
+            Icon: http://icons.example/tweak.png
+            Filename: debs/tweak.deb
+
+        """.trimIndent()
+        val pkg = store.parseIndex(withIcon, "http://repo.example/")[0]
+        assertEquals("http://icons.example/tweak.png", pkg.icon)
+        assertEquals("http://icons.example/tweak.png",
+            JailbreakIcons.packageIcon(pkg, "http://repo.example/Packages"))
+
+        val relative = pkg.copy(icon = "icons/tweak.png")
+        assertEquals("http://repo.example/icons/tweak.png",
+            JailbreakIcons.packageIcon(relative, "http://repo.example/dists/ios/main/binary-iphoneos-arm/Packages"))
+        assertEquals("", JailbreakIcons.packageIcon(pkg.copy(icon = ""), "http://repo.example/Packages"))
+    }
+
+    @Test
+    fun `a repository's icon is the one cydia keeps beside its index`() {
+        assertEquals("http://repo.example/CydiaIcon.png", JailbreakIcons.repositoryIcon("http://repo.example/"))
+        assertEquals("http://repo.example/CydiaIcon.png",
+            JailbreakIcons.repositoryIcon("http://repo.example/dists/ios/main/binary-iphoneos-arm/Packages"))
+    }
+
+    @Test
+    fun `a visit's lists are reused while they are fresh, and a changed source list is not`() {
+        val cache = JailbreakCache()
+        val now = 1_000_000_000L
+        assertEquals(false, cache.fresh(listOf("http://repo.example/"), now))
+        cache.catalog = JailbreakCatalog()
+        cache.sources = listOf("http://repo.example/")
+        cache.refreshedAt = now
+        assertEquals(true, cache.fresh(listOf("http://repo.example/"), now + JailbreakCache.FRESH_MS - 1))
+        assertEquals(false, cache.fresh(listOf("http://repo.example/"), now + JailbreakCache.FRESH_MS))
+        assertEquals(false, cache.fresh(listOf("http://other.example/"), now + 1000))
+    }
+
+    @Test
     fun `a file name that is not a name cannot leave the install folder`() {
         val pkg = JailbreakPackage("x", "1", "iphoneos-arm", 1, "debs/../../etc/passwd", "", "http://repo.example/")
         val staged = store.stagedPath(pkg)
