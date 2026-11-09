@@ -1,6 +1,5 @@
 #include "lighttouch.h"
-#include "Network.hpp"
-#include <filesystem>
+#include "camera_planes.h"
 #include <jni.h>
 #if defined(__aarch64__)
 #include <arm_neon.h>
@@ -28,6 +27,7 @@
 #include <dlfcn.h>
 #include <dirent.h>
 #include "frame_pacer.h"
+#include "display_priority.h"
 #include <optional>
 #include "presentation_lifetime.h"
 #include "display_lease.h"
@@ -35,20 +35,23 @@
 #include "touch_mapping_result.h"
 #include "experimental_tcg_cache.h"
 #include "performance_hint.h"
+#include "cpu_affinity.h"
 #include "profile_writer.h"
 #include <memory>
 
 namespace {
 std::mutex guard;
+std::mutex frame_cache_guard;
 std::mutex library_guard;
 lt_library *library=nullptr;
 std::string library_root;
 lt_runtime *runtime = nullptr;
 lt_device *device = nullptr;
 ANativeWindow *window = nullptr;
-FrameCopyCache frame_cache;
+FrameCopyCache frame_cache;  // guarded by frame_cache_guard (present() is sole writer)
 auto &pixels = frame_cache.pixels;
 auto &frame = frame_cache.frame;
+lt_frame_info latest_frame_meta = LT_INIT(lt_frame_info);  // guarded by guard
 lt_pcm_info pcm = LT_INIT(lt_pcm_info);
 lt_board_info board = LT_INIT(lt_board_info);
 uint64_t sequence = 0;
@@ -60,7 +63,6 @@ std::unique_ptr<ProfileWriter> profile_presentation; // guard owns the producer 
 uint64_t profile_presentation_started=0;
 uint64_t max_present_work_ns=0,window_failures=0,frame_copy_failures=0,surface_generation=0,pcm_failures=0;
 uint64_t present_intervals[6]={};
-uint64_t frame_sample_pixels=0,frame_nonzero_rgb_samples=0,frame_rgb_sample_sum=0;
 int first_lock_error=0,last_lock_error=0,first_post_error=0,last_post_error=0,last_geometry_error=0;
 int last_buffer_format=0,last_buffer_width=0,last_buffer_height=0,last_buffer_stride=0;
 uint64_t geometry_failures=0,invalid_buffers=0,first_window_error_ns=0;
@@ -71,7 +73,12 @@ unsigned window_log_budget=8;
 std::mutex frame_wake_mutex;
 std::condition_variable frame_wake;
 uint64_t frame_wake_sequence=0;
+void wake_presenter() {
+    {std::lock_guard<std::mutex> lock(frame_wake_mutex);++frame_wake_sequence;}
+    frame_wake.notify_one();
+}
 VcpuPerformanceHint vcpu_hint;  // frame publisher thread only
+VcpuBigCoreAffinity vcpu_affinity;  // frame publisher thread only
 uint64_t monotonic_ns() { timespec value{};clock_gettime(CLOCK_MONOTONIC,&value);return uint64_t(value.tv_sec)*1000000000ull+value.tv_nsec; }
 // The guest is 60 Hz content. Saying so (API 30+) lets SurfaceFlinger run the panel at 60 Hz, or
 // at 120 with each frame held for exactly two refreshes, instead of treating it as free-running.
@@ -135,6 +142,7 @@ std::atomic<int> present_scale{[] {
 }()};
 void frame_published(void *,uint64_t published) {
     vcpu_hint.framePublished();
+    vcpu_affinity.framePublished();
     timeline_published(published,monotonic_ns());
     const uint64_t id=monotonic_ns()/fps_bucket_ns;auto &slot=fps_bucket_id[id%fps_buckets];
     if(slot.load(std::memory_order_relaxed)!=id){fps_bucket_frames[id%fps_buckets].store(0,std::memory_order_relaxed);slot.store(id,std::memory_order_release);}
@@ -208,7 +216,7 @@ void window_error(const char *operation,int code) {
     if(!first_window_error_ns)first_window_error_ns=monotonic_ns();
     if(window_log_budget) {
         --window_log_budget;
-        std::fprintf(stderr,"LightTouch Surface %s error=%d generation=%llu format=%d width=%d height=%d stride=%d\n",operation,code,
+        std::fprintf(stderr,"Un1box Surface %s error=%d generation=%llu format=%d width=%d height=%d stride=%d\n",operation,code,
             static_cast<unsigned long long>(surface_generation),last_buffer_format,last_buffer_width,last_buffer_height,last_buffer_stride);
     }
 }
@@ -256,17 +264,12 @@ std::string result(lt_status status, const lt_error &error) {
     return status == LT_OK ? "" : (error.message[0] ? error.message : "Native operation failed");
 }
 struct Viewport { double left, top, width, height; };
-// A scan wider than tall stands a quarter-turn from upright: the iPad's panel scans landscape with its portrait UI
-// turned a quarter clockwise into it (see present). The box fits the upright size it is shown at, not the scan's.
-bool scan_turned(const lt_frame_info &source) { return source.width > source.height; }
 Viewport viewport(int width, int height, const lt_frame_info &source) {
-    const bool turned = scan_turned(source);
-    const double source_width = turned ? source.height : source.width, source_height = turned ? source.width : source.height;
-    const double scale = std::min(double(width) / std::max(source_width, 1.0), double(height) / std::max(source_height, 1.0));
-    double w = source_width * scale, h = source_height * scale;
+    const double scale = std::min(double(width) / std::max(source.width, 1u), double(height) / std::max(source.height, 1u));
+    double w = source.width * scale, h = source.height * scale;
     return {(width-w)/2, (height-h)/2, w, h};
 }
-Viewport viewport(int width, int height) { return viewport(width, height, frame); }
+Viewport viewport(int width, int height) { return viewport(width, height, latest_frame_meta); }
 lt_status open_library(const char *root,lt_error *error) {
     if(!root)return LT_INVALID;
     if(library && library_root==root)return LT_OK;
@@ -292,46 +295,48 @@ lt_status open_library(const char *root,lt_error *error) {
 }
 using WindowSnapshot = PresentationWindow<ANativeWindow, ANativeWindow_acquire, ANativeWindow_release>;
 using WindowPost = PresentationPost<ANativeWindow, ANativeWindow_unlockAndPost>;
-// The guest's frame is BGRA in memory and the window wants RGBA with an opaque alpha. On arm64 four
-// pixels are one table lookup (vqtbl1q_u8); a 960x640 frame is 614K pixels on this thread.
-// After Un1box's 978bbefe (KlugKlugTG/Un1box).
+// The guest's frame bytes are BGRA (p[0] = B, p[1] = G, p[2] = R, p[3] = A) and the window wants
+// RGBA with an opaque alpha. AArch64 swaps R and B four pixels at a time with one table lookup per
+// 16 bytes: 614K pixels a frame at the iPod touch 4G's 960x640, the largest thing this thread does
+// between two presents.
 void convert_row_rgba(uint32_t *dst,const uint8_t *src,int width) {
-    int x=0;
 #if defined(__aarch64__)
-    static const uint8_t swap[16]={2,1,0,3,6,5,4,7,10,9,8,11,14,13,12,15};
-    const uint8x16_t table=vld1q_u8(swap);
+    static const uint8_t kSwap[16]={2,1,0,3,6,5,4,7,10,9,8,11,14,13,12,15};
+    const uint8x16_t table=vld1q_u8(kSwap);
     const uint8x16_t opaque=vreinterpretq_u8_u32(vdupq_n_u32(0xff000000u));
-    for(;x+4<=width;x+=4)
-        vst1q_u8(reinterpret_cast<uint8_t *>(dst+x),vorrq_u8(vqtbl1q_u8(vld1q_u8(src+size_t(x)*4),table),opaque));
-#endif
+    int x=0;
+    for(;x+4<=width;x+=4) {
+        const uint8x16_t v=vld1q_u8(src+size_t(x)*4);
+        vst1q_u8(reinterpret_cast<uint8_t *>(dst+x),vorrq_u8(vqtbl1q_u8(v,table),opaque));
+    }
     for(;x<width;++x) {
         const uint8_t *p=src+size_t(x)*4;
-        dst[x]=uint32_t(p[2])|(uint32_t(p[1])<<8)|(uint32_t(p[0])<<16)|0xff000000u;
+        dst[x]=uint32_t(p[2])|uint32_t(p[1])<<8|uint32_t(p[0])<<16|0xff000000u;
+    }
+#else
+    for(int x=0;x<width;++x) {
+        const uint8_t *p=src+size_t(x)*4;
+        dst[x]=uint32_t(p[2])|uint32_t(p[1])<<8|uint32_t(p[0])<<16|0xff000000u;
+    }
+#endif
+}
+void duplicate_row_2x(uint32_t *dst,const uint32_t *src,int src_width) {
+    int x=0;
+#if defined(__aarch64__)
+    for(;x+4<=src_width;x+=4) {
+        const uint32x4_t v=vld1q_u32(src+x);
+        vst1q_u32(dst+size_t(x)*2,vzip1q_u32(v,v));
+        vst1q_u32(dst+size_t(x)*2+4,vzip2q_u32(v,v));
+    }
+#endif
+    for(;x<src_width;++x) {
+        const uint32_t pixel=src[x];
+        dst[size_t(x)*2]=pixel;
+        dst[size_t(x)*2+1]=pixel;
     }
 }
 void present() {
-    // The iPad's panel scans landscape with its portrait UI turned a quarter clockwise into it, so the scan is
-    // turned upright before it is scaled: the screen's top edge is the scan's left edge, i.e. screen (u,v) reads
-    // scan (v, 1-u), and result[dy][dx] = scan[height-1-dx][dy]. Touches map back the same way (touch_command).
-    // Tiles keep both sides of the transposed read and write in cache; the buffer keeps its capacity between frames.
-    static thread_local std::vector<uint8_t> turned_pixels;
-    auto turn_scan = [](const uint8_t *scan, uint32_t width, uint32_t height, size_t stride, std::vector<uint8_t> &out) {
-        const size_t out_stride = size_t(height) * 4;
-        out.resize(out_stride * width);
-        constexpr uint32_t tile = 16;
-        for (uint32_t dy0 = 0; dy0 < width; dy0 += tile) {
-            const uint32_t dy1 = std::min(dy0 + tile, width);
-            for (uint32_t dx0 = 0; dx0 < height; dx0 += tile) {
-                const uint32_t dx1 = std::min(dx0 + tile, height);
-                for (uint32_t dy = dy0; dy < dy1; ++dy) {
-                    const uint8_t *column = scan + size_t(dy) * 4;
-                    auto *row = reinterpret_cast<uint32_t *>(out.data() + size_t(dy) * out_stride);
-                    for (uint32_t dx = dx0; dx < dx1; ++dx)
-                        row[dx] = *reinterpret_cast<const uint32_t *>(column + size_t(height - 1 - dx) * stride);
-                }
-            }
-        }
-    };
+    request_display_priority();
     uint64_t configured_generation = 0;
     int configured_scale=-1;
     uint32_t configured_width=0,configured_height=0;
@@ -339,14 +344,14 @@ void present() {
     uint64_t phase_generation=0,phase_epoch=0;
     uint64_t withdrawn_generation=0;
     for (;;) {
-        // The snapshot outlives both guarded scopes, so its release is outside
+        // The snapshot outlives all guarded scopes, so its release is outside
         // the control mutex even when a stale platform operation returns late.
-        std::optional<WindowSnapshot> snapshot,covered;
+        std::optional<WindowSnapshot> candidate,snapshot,covered;
         const bool visible=present_visible.load(std::memory_order_relaxed);
         lt_frame_info source = LT_INIT(lt_frame_info);
-        // The frame as shown: a turned scan swapped upright (present), and the pixels that go with it.
-        lt_frame_info shown = LT_INIT(lt_frame_info);
-        const uint8_t *shown_pixels = nullptr;
+        lt_runtime *local_runtime = nullptr;
+        uint64_t local_sequence = 0;
+        bool has_runtime = false, has_window = false, pending_input = false;
         uint64_t begin = 0;
         const uint64_t observe_begin=monotonic_ns();
         uint64_t guard_acquired=0,copy_begin=0;
@@ -355,7 +360,9 @@ void present() {
             std::lock_guard<std::mutex> lock(guard);
             guard_acquired=monotonic_ns();
             phase_generation=surface_generation;phase_epoch=presentation_epoch;
-            if (runtime) {
+            has_runtime=runtime!=nullptr;
+            has_window=window!=nullptr;
+            if (runtime && display_lease.inputPending()) {
                 present_stage(PresentPhase::InputStatus,phase_generation,phase_epoch);
                 lt_input_status delivered=LT_INIT(lt_input_status);lt_error error=LT_INIT(lt_error);
                 if(lt_runtime_input_status(runtime,&delivered,&error)==LT_OK) {
@@ -374,49 +381,67 @@ void present() {
                             }
                         } else {
                             ++ignored_input_rejections;last_ignored_input_request=delivered.request_id;
+                            display_lease.inputObserved(delivered.request_id);
                         }
                     }
                 }
             }
+            pending_input=runtime && display_lease.inputPending();
             if (window && !visible && withdrawn_generation!=surface_generation)
                 covered.emplace(window, surface_generation, presentation_epoch);
             if (runtime && window && visible) {
-                copy_begin=monotonic_ns();
-                present_stage(PresentPhase::FrameCopy,phase_generation,phase_epoch);
-                lt_error error = LT_INIT(lt_error);
-                const auto status = frame_cache.latest(sequence, error,
+                local_runtime=runtime;
+                local_sequence=sequence;
+                candidate.emplace(window, surface_generation, presentation_epoch);
+            } else {
+                present_stage(runtime&&window?PresentPhase::IdleNoNewFrame:PresentPhase::IdleNoTarget,
+                    phase_generation,phase_epoch);
+            }
+        }
+        // Copy guest pixels under frame_cache_guard rather than the control guard so
+        // touch, sensor, audio, and status calls never stall behind a 2.46 MB copy.
+        if (candidate && local_runtime) {
+            copy_begin=monotonic_ns();
+            present_stage(PresentPhase::FrameCopy,phase_generation,phase_epoch);
+            lt_error error = LT_INIT(lt_error);
+            lt_status copy_status = LT_AGAIN;
+            bool copied_valid = false;
+            bool invalidated_meta = false;
+            {
+                std::lock_guard<std::mutex> cache_lock(frame_cache_guard);
+                copy_status = frame_cache.latest(local_sequence, error,
                     [&](uint64_t since, lt_frame_info &out, lt_error &failure) {
-                        return lt_runtime_frame_metadata(runtime, since, &out, &failure);
+                        return lt_runtime_frame_metadata(local_runtime, since, &out, &failure);
                     },
                     [&](void *storage, uint64_t capacity, uint64_t &next, lt_frame_info &out, lt_error &failure) {
-                        return lt_runtime_copy_frame(runtime, storage, capacity, &next, &out, &failure);
+                        return lt_runtime_copy_frame(local_runtime, storage, capacity, &next, &out, &failure);
                     },
-                    [&] { frame_sample_pixels=frame_nonzero_rgb_samples=frame_rgb_sample_sum=0; });
-                if (status == LT_OK && frame.width && frame.height && frame.stride >= frame.width * 4 && frame.bytes <= pixels.size()) {
+                    [&] { invalidated_meta = true; });
+                if (copy_status == LT_OK && frame.width && frame.height && frame.stride >= frame.width * 4 && frame.bytes <= pixels.size()) {
                     begin=monotonic_ns();
                     source=frame;
-                    shown=source;shown_pixels=pixels.data();
-                    if(scan_turned(source)) {
-                        turn_scan(pixels.data(),source.width,source.height,source.stride,turned_pixels);
-                        shown.width=source.height;shown.height=source.width;shown.stride=shown.width*4;
-                        shown_pixels=turned_pixels.data();
-                    }
-                    snapshot.emplace(window, surface_generation, presentation_epoch);
-                    frame_sample_pixels=frame_nonzero_rgb_samples=frame_rgb_sample_sum=0;
-                    // A fixed 16x16 grid diagnoses the copied guest frame without
-                    // another full image pass or claiming every pixel is black.
-                    for(uint32_t gy=0;gy<16;++gy)for(uint32_t gx=0;gx<16;++gx) {
-                        const uint32_t x=std::min((gx*2+1)*source.width/32,source.width-1);
-                        const uint32_t y=std::min((gy*2+1)*source.height/32,source.height-1);
-                        const uint8_t *sample=pixels.data()+y*source.stride+x*4;
-                        const uint32_t rgb=uint32_t(sample[0])+sample[1]+sample[2];
-                        ++frame_sample_pixels;frame_nonzero_rgb_samples+=rgb!=0;frame_rgb_sample_sum+=rgb;
-                    }
-                    present_stage(PresentPhase::CopiedCache,phase_generation,phase_epoch);
-                } else if(status!=LT_AGAIN) ++frame_copy_failures;
+                    copied_valid=true;
+                }
             }
-            if(!snapshot)present_stage(runtime&&window?PresentPhase::IdleNoNewFrame:PresentPhase::IdleNoTarget,
-                phase_generation,phase_epoch);
+            {
+                std::lock_guard<std::mutex> lock(guard);
+                if (invalidated_meta) latest_frame_meta = LT_INIT(lt_frame_info);
+                if (copied_valid) {
+                    latest_frame_meta = source;
+                    if (candidate->current(window, surface_generation, presentation_epoch)) {
+                        sequence = local_sequence;
+                        snapshot.emplace(window, surface_generation, presentation_epoch);
+                        present_stage(PresentPhase::CopiedCache,phase_generation,phase_epoch);
+                    }
+                } else if (copy_status != LT_AGAIN) {
+                    ++frame_copy_failures;
+                }
+                if (!snapshot) {
+                    present_stage(runtime&&window?PresentPhase::IdleNoNewFrame:PresentPhase::IdleNoTarget,
+                        phase_generation,phase_epoch);
+                }
+            }
+            candidate.reset();
         }
         if (covered) {
             // Uncovered, the next frame reconfigures the window, which asks for 60 Hz again.
@@ -430,7 +455,7 @@ void present() {
             int geometry_code=0, geometry_width=0, geometry_height=0, geometry_format=0;
             const int scale=present_scale.load(std::memory_order_relaxed);
             const bool configure=configured_generation!=snapshot->generation() || scale!=configured_scale ||
-                shown.width!=configured_width || shown.height!=configured_height;
+                source.width!=configured_width || source.height!=configured_height;
             if(configure) {
                 present_stage(PresentPhase::Configure,phase_generation,phase_epoch);
                 // Only this presenter configures or draws the window. Binder
@@ -441,13 +466,13 @@ void present() {
                 geometry_width=ANativeWindow_getWidth(target_window);
                 geometry_height=ANativeWindow_getHeight(target_window);
                 geometry_format=ANativeWindow_getFormat(target_window);
-                if(!geometry_code && scale!=ScaleCpu && shown.width && shown.height) {
-                    const int factor=scale==ScaleSharp?std::max(1,std::min(geometry_width/int(shown.width),geometry_height/int(shown.height))):1;
-                    geometry_code=ANativeWindow_setBuffersGeometry(target_window,int(shown.width)*factor,int(shown.height)*factor,WINDOW_FORMAT_RGBA_8888);
+                if(!geometry_code && scale!=ScaleCpu && source.width && source.height) {
+                    const int factor=scale==ScaleSharp?std::max(1,std::min(geometry_width/int(source.width),geometry_height/int(source.height))):1;
+                    geometry_code=ANativeWindow_setBuffersGeometry(target_window,int(source.width)*factor,int(source.height)*factor,WINDOW_FORMAT_RGBA_8888);
                 }
                 request_guest_frame_rate(target_window);
                 configured_generation=snapshot->generation();configured_scale=scale;
-                configured_width=shown.width;configured_height=shown.height;
+                configured_width=source.width;configured_height=source.height;
             }
             ANativeWindow_Buffer target{};
             present_stage(PresentPhase::WindowLock,phase_generation,phase_epoch);
@@ -463,7 +488,7 @@ void present() {
                     (target.format==WINDOW_FORMAT_RGBA_8888 || target.format==WINDOW_FORMAT_RGBX_8888);
                 if(valid_buffer) {
                     present_stage(PresentPhase::Scale,phase_generation,phase_epoch);
-                    const auto view=viewport(target.width,target.height,shown);
+                    const auto view=viewport(target.width,target.height,source);
                     // This thread is the sole pixels/frame writer and only
                     // grows storage in its next guarded iteration. Capture reads under guard. Those concurrent
                     // reads are safe; the next write waits until this iteration
@@ -474,39 +499,49 @@ void present() {
                     // once, and repeated target rows are copies of it. A
                     // 320x480 guest on a 1080x2400 panel used to cost two
                     // integer divides per target pixel, ~2.6M per frame.
-                    static thread_local std::vector<uint32_t> columns;
-                    const int x0=std::max(int(view.left),0);
-                    int x1=x0;
-                    while(x1<view.left+view.width && x1<target.width)++x1;
-                    columns.resize(size_t(std::max(x1-x0,0)));
-                    for(int x=x0;x<x1;++x)
-                        columns[x-x0]=std::min(uint32_t((x-view.left)*shown.width/view.width),shown.width-1)*4;
-                    // Unscaled across (the default Smooth scaling's guest-sized buffer): consecutive
-                    // source pixels, so a row converts in one pass with no column table.
-                    bool across=x1>x0;
-                    for(int x=x0+1;across && x<x1;++x)across=columns[x-x0]==columns[0]+uint32_t(x-x0)*4;
-                    const uint32_t *previous=nullptr;
-                    uint32_t previous_sy=UINT32_MAX;
-                    for(int y=0;y<target.height;++y) {
-                        auto *row=static_cast<uint32_t *>(target.bits)+y*target.stride;
-                        if(y<view.top || y>=view.top+view.height) {
-                            std::fill(row,row+target.width,0xff000000u);
-                            continue;
+                    // The window buffer is the guest's own size here whenever the scale is the
+                    // default (guest-sized geometry): every row is converted straight across via
+                    // NEON, even when gralloc pads target.stride wider than target.width.
+                    if(int(source.width)==target.width && int(source.height)==target.height) {
+                        for(int y=0;y<target.height;++y)
+                            convert_row_rgba(static_cast<uint32_t *>(target.bits)+size_t(y)*target.stride,
+                                             pixels.data()+size_t(y)*source.stride,target.width);
+                    } else {
+                        static thread_local std::vector<uint32_t> columns;
+                        static thread_local std::vector<uint32_t> converted_row;
+                        const int x0=std::max(int(view.left),0);
+                        int x1=x0;
+                        while(x1<view.left+view.width && x1<target.width)++x1;
+                        const bool exact_2x=x0==0 && x1==target.width && target.width==int(source.width)*2;
+                        if(!exact_2x) {
+                            columns.resize(size_t(std::max(x1-x0,0)));
+                            for(int x=x0;x<x1;++x)
+                                columns[x-x0]=std::min(uint32_t((x-view.left)*source.width/view.width),source.width-1);
                         }
-                        uint32_t sy=std::min(uint32_t((y-view.top)*shown.height/view.height),shown.height-1);
-                        if(previous && sy==previous_sy) {
-                            memcpy(row,previous,size_t(target.width)*4);
-                            continue;
+                        converted_row.resize(source.width);
+                        const uint32_t *previous=nullptr;
+                        uint32_t previous_sy=UINT32_MAX;
+                        for(int y=0;y<target.height;++y) {
+                            auto *row=static_cast<uint32_t *>(target.bits)+size_t(y)*target.stride;
+                            if(y<view.top || y>=view.top+view.height) {
+                                std::fill(row,row+target.width,0xff000000u);
+                                continue;
+                            }
+                            uint32_t sy=std::min(uint32_t((y-view.top)*source.height/view.height),source.height-1);
+                            if(previous && sy==previous_sy) {
+                                memcpy(row,previous,size_t(target.width)*4);
+                                continue;
+                            }
+                            convert_row_rgba(converted_row.data(),pixels.data()+size_t(sy)*source.stride,int(source.width));
+                            if(exact_2x) {
+                                duplicate_row_2x(row,converted_row.data(),int(source.width));
+                            } else {
+                                std::fill(row,row+x0,0xff000000u);
+                                std::fill(row+x1,row+target.width,0xff000000u);
+                                for(int x=x0;x<x1;++x)row[x]=converted_row[columns[x-x0]];
+                            }
+                            previous=row;previous_sy=sy;
                         }
-                        std::fill(row,row+x0,0xff000000u);
-                        std::fill(row+x1,row+target.width,0xff000000u);
-                        const uint8_t *src=shown_pixels+sy*shown.stride;
-                        if(across)convert_row_rgba(row+x0,src+columns[0],x1-x0);
-                        else for(int x=x0;x<x1;++x) {
-                            const uint8_t *p=src+columns[x-x0];
-                            row[x]=uint32_t(p[2])|(uint32_t(p[1])<<8)|(uint32_t(p[0])<<16)|0xff000000u;
-                        }
-                        previous=row;previous_sy=sy;
                     }
                 }
                 scale_end=monotonic_ns();
@@ -575,10 +610,11 @@ void present() {
             present_stage(PresentPhase::Idle,phase_generation,phase_epoch);
         }
         // A frame published while this one was drawn is presented at once.
-        // The timeout keeps input-status and surface changes serviced while the
-        // guest screen is static.
+        // State changes (surface, visibility, scale, or queued touch) explicitly
+        // wake this condvar, so only in-flight touch status needs a short poll.
+        const auto wait_ms=pending_input?16:(has_runtime && has_window && visible)?100:250;
         std::unique_lock<std::mutex> wake(frame_wake_mutex);
-        frame_wake.wait_for(wake,std::chrono::milliseconds(16),[&] { return frame_wake_sequence!=woken_sequence; });
+        frame_wake.wait_for(wake,std::chrono::milliseconds(wait_ms),[&] { return frame_wake_sequence!=woken_sequence; });
         woken_sequence=frame_wake_sequence;
     }
 }
@@ -681,96 +717,6 @@ JNI(remove) jstring JNICALL Java_org_un1box_android_Native_remove(JNIEnv *env,jo
     auto status=open_library(path.value,&error);if(status==LT_OK)status=lt_library_remove(library,record.value,&error);
     return string(env,result(status,error));
 }
-// The listener and CA live for this worker; route/date/policy can change live. The engine forwards to the socket
-// path from boot whatever the mode, and the proxy is made the first time networking is on (at boot or live).
-static std::mutex network_guard;
-static std::unique_ptr<lt::network::Proxy> network_proxy;
-static uint32_t network_mode = 0;
-static uint32_t network_local = 0;
-static std::string network_socket;
-static std::string network_identity;
-static std::string network_roots;
-static void network_listen(const lt::network::Configuration &config) {
-    network_proxy=std::make_unique<lt::network::Proxy>(network_identity,config,network_roots);
-    std::filesystem::remove(network_socket);
-    try { network_proxy->listen(network_socket); } catch(...) { network_proxy.reset(); throw; }
-}
-JNI(networkPrepare) jstring JNICALL Java_org_un1box_android_Native_networkPrepare(JNIEnv *env,jobject,jstring root,jstring record,jint mode,jstring date,jboolean local,jstring roots) {
-    Utf directory(env,root),id(env,record),day(env,date),certificates(env,roots);
-    try {
-        if(mode<0 || mode>2 || !id.value || std::string(id.value).empty() ||
-           std::string(id.value).find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")!=std::string::npos)
-            return string(env,"Invalid network configuration");
-        std::lock_guard<std::mutex> lock(network_guard);
-        network_proxy.reset();network_mode=uint32_t(mode);network_local=local;
-        network_identity=std::string(directory.value)+"/network/"+id.value;network_roots=certificates.value;
-        network_socket=std::string(directory.value)+"/network-proxy.sock";
-        std::filesystem::remove(network_socket);
-        if(mode) {
-            lt::network::Configuration config;config.mode=mode==1?lt::network::Mode::direct:lt::network::Mode::archive;
-            config.archive_date=day.value;config.local_network=local;
-            network_listen(config);
-        }
-        return string(env,"");
-    } catch(const std::exception &e) { return string(env,e.what()); }
-}
-JNI(networkCertificate) jbyteArray JNICALL Java_org_un1box_android_Native_networkCertificate(JNIEnv *env,jobject) {
-    std::lock_guard<std::mutex> lock(network_guard);
-    auto der=network_proxy?network_proxy->certificate():std::string();
-    auto bytes=env->NewByteArray(jsize(der.size()));
-    if(!der.empty())env->SetByteArrayRegion(bytes,0,jsize(der.size()),reinterpret_cast<const jbyte *>(der.data()));
-    return bytes;
-}
-JNI(networkUpdate) jobjectArray JNICALL Java_org_un1box_android_Native_networkUpdate(JNIEnv *env,jobject,jint mode,jstring date,jboolean local) {
-    Utf day(env,date);
-    lt_error error=LT_INIT(lt_error);
-    lt_status status=LT_OK;
-    std::string message;
-    try {
-        const bool valid=mode>=0 && mode<=2 && day.value && lt::network::Configuration::valid_date(day.value);
-        lt::network::Configuration config;
-        if(valid) {
-            config.mode=mode==0?lt::network::Mode::off:mode==1?lt::network::Mode::direct:lt::network::Mode::archive;
-            config.archive_date=day.value;config.local_network=local;
-        }
-        // Turning networking on for the first time this session makes the proxy, outside the presenter's guard
-        // (a first identity takes a key generation).
-        if(valid && mode) {
-            std::lock_guard<std::mutex> lock(network_guard);
-            if(!network_proxy && !network_socket.empty())network_listen(config);
-        }
-        std::scoped_lock lock(guard,network_guard);
-        if(!valid) {
-            status=LT_INVALID;message="Invalid network configuration";
-        } else if(!network_proxy && mode) {
-            status=LT_UNSUPPORTED;message="Networking isn't available in this session; stop and start the device";
-        } else {
-            status=lt_runtime_network_policy(runtime,uint32_t(mode),local,&error);
-            if(status==LT_OK) {
-                if(network_proxy)network_proxy->configure(std::move(config));
-                network_mode=uint32_t(mode);network_local=local;
-            } else message=result(status,error);
-        }
-    } catch(const std::exception &e) { status=LT_IO;message=e.what(); }
-    auto output=env->NewObjectArray(2,env->FindClass("java/lang/String"),nullptr);
-    env->SetObjectArrayElement(output,0,string(env,std::to_string(status)));
-    env->SetObjectArrayElement(output,1,string(env,message));
-    return output;
-}
-JNI(networkStatus) jobjectArray JNICALL Java_org_un1box_android_Native_networkStatus(JNIEnv *env,jobject) {
-    std::lock_guard<std::mutex> lock(network_guard);
-    auto activity=network_proxy?network_proxy->activity():lt::network::Activity{};
-    auto output=env->NewObjectArray(8,env->FindClass("java/lang/String"),nullptr);
-    env->SetObjectArrayElement(output,0,string(env,network_proxy?activity.summary():"Off"));
-    env->SetObjectArrayElement(output,1,string(env,network_proxy?network_proxy->fingerprint():""));
-    env->SetObjectArrayElement(output,2,string(env,std::to_string(activity.connections)));
-    env->SetObjectArrayElement(output,3,string(env,std::to_string(activity.active)));
-    env->SetObjectArrayElement(output,4,string(env,std::to_string(activity.completed)));
-    env->SetObjectArrayElement(output,5,string(env,std::to_string(activity.failed)));
-    env->SetObjectArrayElement(output,6,string(env,activity.last_result));
-    env->SetObjectArrayElement(output,7,string(env,activity.last_result_error?"1":"0"));return output;
-}
-
 static jstring start_runtime(JNIEnv *env,jstring root,jstring id,bool allow_dirty,bool headphones) {
     bool qmp_requested=false;
     bool touch_trace_requested=false;
@@ -835,8 +781,6 @@ static jstring start_runtime(JNIEnv *env,jstring root,jstring id,bool allow_dirt
     engine.boot.machine=nullptr;engine.boot.bootrom_path=selected.bootrom_path[0]?selected.bootrom_path:nullptr;
     engine.boot.guest_package_path=selected.guest_package_path;engine.boot.serial_path=serial.c_str();engine.boot.audio_enabled=1;
     engine.boot.headphones=headphones && (prepared_board.capabilities&LT_BOARD_HEADPHONES);
-    engine.boot.network_mode=network_mode;engine.boot.network_local=network_local;
-    engine.boot.network_socket=network_socket.empty()?nullptr:network_socket.c_str();
     if(status==LT_OK)status=lt_runtime_create(&engine,&prepared_runtime,&error);
     if(status==LT_OK)status=lt_runtime_set_frame_listener(prepared_runtime,frame_published,nullptr,&error);
 #ifdef LT_ANDROID_DEBUG
@@ -875,6 +819,7 @@ static jstring start_runtime(JNIEnv *env,jstring root,jstring id,bool allow_dirt
         if(stopped!=LT_OK)diagnostic=result(stopped,stop_error);
     }
     if(!presenter_started){presenter_started=true;std::thread(present).detach();}
+    else wake_presenter();
     return string(env,diagnostic);
 }
 
@@ -955,6 +900,7 @@ JNI(claimDisplay) jlong JNICALL Java_org_un1box_android_Native_claimDisplay(JNIE
         ++surface_generation;++presentation_epoch;previous_present_ns=0;
     }
     if(retired)ANativeWindow_release(retired);
+    wake_presenter();
     return jlong(token);
 }
 JNI(ownsDisplay) jboolean JNICALL Java_org_un1box_android_Native_ownsDisplay(JNIEnv *,jobject,jlong lease) {
@@ -984,6 +930,7 @@ JNI(attachDisplay) jstring JNICALL Java_org_un1box_android_Native_attachDisplay(
         }
     }
     if(retired)ANativeWindow_release(retired);
+    if(committed)wake_presenter();
     // incoming's rejected conversion reference is released outside guard.
     return string(env,committed?"":converted?retired_display:"Guest Surface conversion failed");
 }
@@ -999,6 +946,7 @@ JNI(detachDisplay) void JNICALL Java_org_un1box_android_Native_detachDisplay(JNI
         ++surface_generation;++presentation_epoch;previous_present_ns=0;
     }
     if(retired)ANativeWindow_release(retired);
+    wake_presenter();
 }
 JNI(releaseDisplay) void JNICALL Java_org_un1box_android_Native_releaseDisplay(JNIEnv *,jobject,jlong lease) {
     ANativeWindow *retired=nullptr;
@@ -1016,6 +964,7 @@ JNI(releaseDisplay) void JNICALL Java_org_un1box_android_Native_releaseDisplay(J
         ++surface_generation;++presentation_epoch;previous_present_ns=0;
     }
     if(retired)ANativeWindow_release(retired);
+    wake_presenter();
 }
 JNI(cancelDisplayInput) jstring JNICALL Java_org_un1box_android_Native_cancelDisplayInput(JNIEnv *env,jobject,jlong lease,jlong generation) {
     std::lock_guard<std::mutex> lock(guard);
@@ -1037,26 +986,49 @@ JNI(backgroundDisplay) jstring JNICALL Java_org_un1box_android_Native_background
     }
     display_lease.contactsReleased();
     ++presentation_epoch;previous_present_ns=0;sequence=0;
-    if(starting){startup_pause_requested=true;return string(env,"");}
-    return string(env,runtime?result(lt_runtime_pause(runtime,1,&error),error):"No active session");
+    if(starting){startup_pause_requested=true;wake_presenter();return string(env,"");}
+    const auto out=runtime?result(lt_runtime_pause(runtime,1,&error),error):"No active session";
+    wake_presenter();
+    return string(env,out);
 }
 JNI(pause) jstring JNICALL Java_org_un1box_android_Native_pause(JNIEnv *env,jobject,jboolean paused) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
     // An old in-flight failure cannot rewind the new epoch's cursor. Replay
     // the cache here so Resume does not depend on a newer guest repaint.
     ++presentation_epoch;previous_present_ns=0;sequence=0;
-    if(starting){startup_pause_requested=paused;return string(env,"");}
-    return string(env,runtime?result(lt_runtime_pause(runtime,paused,&error),error):"No active session");
+    if(starting){startup_pause_requested=paused;wake_presenter();return string(env,"");}
+    const auto out=runtime?result(lt_runtime_pause(runtime,paused,&error),error):"No active session";
+    wake_presenter();
+    return string(env,out);
 }
 JNI(stop) jstring JNICALL Java_org_un1box_android_Native_stop(JNIEnv *env,jobject) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
     ++presentation_epoch;previous_present_ns=0;
     if(starting)startup_stop_requested=true;
-    return string(env,runtime?result(lt_runtime_request_shutdown(runtime,&error),error):"");
+    const auto out=runtime?result(lt_runtime_request_shutdown(runtime,&error),error):"";
+    wake_presenter();
+    return string(env,out);
 }
 JNI(button) jstring JNICALL Java_org_un1box_android_Native_button(JNIEnv *env,jobject,jint button,jboolean down) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
     return string(env,runtime?result(lt_runtime_button(runtime,button,down,&error),error):"No active session");
+}
+JNI(setBattery) jstring JNICALL Java_org_un1box_android_Native_setBattery(JNIEnv *env,jobject,jint level,jint charging) {
+    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
+    if(!runtime)return string(env,"No active session");
+    return string(env,result(lt_runtime_battery(runtime,unsigned(level<0?0:level),unsigned(charging<0?0:charging),&error),error));
+}
+JNI(modemCommand) jstring JNICALL Java_org_un1box_android_Native_modemCommand(JNIEnv *env,jobject,jstring property,jstring value) {
+    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
+    const char *name=property?env->GetStringUTFChars(property,nullptr):nullptr;
+    const char *text=value?env->GetStringUTFChars(value,nullptr):nullptr;
+    std::string out;
+    if(!runtime)out="No active session";
+    else if(!name||!text)out="Missing modem property";
+    else out=result(lt_runtime_modem(runtime,name,text,&error),error);
+    if(name)env->ReleaseStringUTFChars(property,name);
+    if(text)env->ReleaseStringUTFChars(value,text);
+    return string(env,out);
 }
 JNI(cancelInput) void JNICALL Java_org_un1box_android_Native_cancelInput(JNIEnv *,jobject) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
@@ -1074,7 +1046,7 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
         if(cancellation==LT_OK)display_lease.contactsReleased();
         return result(cancellation,cancelled);
     };
-    if(!frame.width || !frame.height) {
+    if(!latest_frame_meta.width || !latest_frame_meta.height) {
         const auto cancellation=release_input();
         std::string failure="No active guest frame; gesture cancelled";
         if(!cancellation.empty())failure += "; input release failed: "+cancellation;
@@ -1083,9 +1055,6 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
     jint id[LT_MAX_CONTACTS], phase[LT_MAX_CONTACTS];jfloat coords[LT_MAX_CONTACTS*2];
     env->GetIntArrayRegion(ids,0,count,id);env->GetIntArrayRegion(phases,0,count,phase);env->GetFloatArrayRegion(xy,0,count*2,coords);
     lt_touch_batch batch=LT_INIT(lt_touch_batch);batch.timestamp_ns=time;batch.count=count;
-    // A scan wider than tall is shown turned upright (present): the contact goes back into the scan's own axes,
-    // which is the space the engine takes touches in.
-    const bool turned=scan_turned(frame);
     const auto view=viewport(width,height);lt_error error=LT_INIT(lt_error);
     for(jsize i=0;i<count;++i) {
         batch.contacts[i]=lt_contact LT_INIT(lt_contact);batch.contacts[i].id=id[i];batch.contacts[i].phase=phase[i];
@@ -1095,7 +1064,7 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
         if(std::isfinite(px) && std::isfinite(py)) {
             px=std::clamp(px,view.left,view.left+view.width);py=std::clamp(py,view.top,view.top+view.height);
         }
-        auto status=lt_map_contact(px,py,view.left,view.top,view.width,view.height,turned?90:0,&batch.contacts[i].x,&batch.contacts[i].y);
+        auto status=lt_map_contact(px,py,view.left,view.top,view.width,view.height,0,&batch.contacts[i].x,&batch.contacts[i].y);
         if(status!=LT_OK) {
             const auto cancellation=release_input();
             return string(env,touch_mapping_rejection(status,cancellation));
@@ -1103,7 +1072,6 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
     }
     // Guest portrait is kept upright within Android's rotated view. Mapping receives
     // view-local pixels; applying display rotation again would rotate contacts twice.
-    // The quarter turn above is the scan's own (the iPad's), not the display's.
     (void)rotation;
     refresh_display_release();
     auto status=lt_runtime_touch(runtime,&batch,&error);
@@ -1121,6 +1089,7 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
         if(identity==LT_OK && submitted.request_id) {
             display_lease.submittedInput(submitted.request_id,lease);
             if(submitted.state==2)display_lease.inputCompleted(submitted.request_id);
+            else wake_presenter();
         } else {
             failure="Touch request identity unavailable; gesture cancelled";
             lt_error cancelled=LT_INIT(lt_error);
@@ -1167,7 +1136,8 @@ JNI(motion) jstring JNICALL Java_org_un1box_android_Native_motion(JNIEnv *env,jo
     return string(env,status==LT_UNSUPPORTED || status==LT_AGAIN?"":result(status,error));
 }
 JNI(capture) jobject JNICALL Java_org_un1box_android_Native_capture(JNIEnv *env,jobject) {
-    std::lock_guard<std::mutex> lock(guard);if(!frame.width||!frame.height)return nullptr;
+    std::lock_guard<std::mutex> cache_lock(frame_cache_guard);
+    if(!frame.width||!frame.height||frame.bytes>pixels.size())return nullptr;
     jclass bitmap=env->FindClass("android/graphics/Bitmap"),config=env->FindClass("android/graphics/Bitmap$Config");
     auto argb=env->GetStaticObjectField(config,env->GetStaticFieldID(config,"ARGB_8888","Landroid/graphics/Bitmap$Config;"));
     auto create=env->GetStaticMethodID(bitmap,"createBitmap","(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;");
@@ -1175,49 +1145,122 @@ JNI(capture) jobject JNICALL Java_org_un1box_android_Native_capture(JNIEnv *env,
     if(env->ExceptionCheck()||!result)return nullptr;
     AndroidBitmapInfo info;void *data=nullptr;
     if(AndroidBitmap_getInfo(env,result,&info)!=ANDROID_BITMAP_RESULT_SUCCESS||AndroidBitmap_lockPixels(env,result,&data)!=ANDROID_BITMAP_RESULT_SUCCESS)return nullptr;
-    for(uint32_t y=0;y<frame.height;++y)for(uint32_t x=0;x<frame.width;++x) {
-        const uint8_t *src=pixels.data()+y*frame.stride+x*4;auto *dst=static_cast<uint8_t *>(data)+y*info.stride+x*4;
-        dst[0]=src[2];dst[1]=src[1];dst[2]=src[0];dst[3]=255;
+    for(uint32_t y=0;y<frame.height;++y) {
+        convert_row_rgba(reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(data)+size_t(y)*info.stride),
+                         pixels.data()+size_t(y)*frame.stride,int(frame.width));
     }
     AndroidBitmap_unlockPixels(env,result);return result;
 }
 JNI(audio) jint JNICALL Java_org_un1box_android_Native_audio(JNIEnv *env,jobject,jshortArray buffer) {
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return 0;
-    std::vector<int16_t> data(env->GetArrayLength(buffer));lt_error error=LT_INIT(lt_error);
-    const auto status=lt_runtime_pcm(runtime,data.data(),uint32_t(data.size()/2),&pcm,&error);
-    if(status==LT_AGAIN)return 0;
-    if(status!=LT_OK){++pcm_failures;return -jint(status);}
-    if(pcm.channels>2||pcm.channels<1||pcm.frames*pcm.channels>data.size()){++pcm_failures;return -jint(LT_INVALID);}
-    const jint count=pcm.frames*pcm.channels;env->SetShortArrayRegion(buffer,0,count,data.data());return count;
-}
-// The phone's microphone into the guest's capture port: 0 taken, 1 dropped (not recording), else -lt_status.
-JNI(micWrite) jint JNICALL Java_org_un1box_android_Native_micWrite(JNIEnv *env,jobject,jshortArray frames,jint count) {
-    if(count<=0||count*2>env->GetArrayLength(frames))return -jint(LT_INVALID);
-    std::vector<int16_t> data(size_t(count)*2);env->GetShortArrayRegion(frames,0,count*2,data.data());
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return 1;
-    lt_error error=LT_INIT(lt_error);const auto status=lt_runtime_mic_write(runtime,data.data(),uint32_t(count),&error);
-    return status==LT_OK?0:status==LT_AGAIN?1:-jint(status);
-}
-JNI(micCapturing) jboolean JNICALL Java_org_un1box_android_Native_micCapturing(JNIEnv *,jobject) {
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return JNI_FALSE;
-    lt_mic_info info=LT_INIT(lt_mic_info);lt_error error=LT_INIT(lt_error);
-    return lt_runtime_mic_info(runtime,&info,&error)==LT_OK&&info.capturing?JNI_TRUE:JNI_FALSE;
-}
-// capturing, port rate, queued, pushed, dropped; empty when the engine has no microphone input.
-JNI(micInfo) jlongArray JNICALL Java_org_un1box_android_Native_micInfo(JNIEnv *env,jobject) {
-    std::lock_guard<std::mutex> lock(guard);
-    lt_mic_info info=LT_INIT(lt_mic_info);lt_error error=LT_INIT(lt_error);
-    if(!runtime||lt_runtime_mic_info(runtime,&info,&error)!=LT_OK)return env->NewLongArray(0);
-    jlong data[5]={jlong(info.capturing),jlong(info.sample_rate),jlong(info.queued_frames),jlong(info.pushed_frames),jlong(info.dropped_frames)};
-    jlongArray arr=env->NewLongArray(5);env->SetLongArrayRegion(arr,0,5,data);return arr;
-}
-JNI(micFlush) void JNICALL Java_org_un1box_android_Native_micFlush(JNIEnv *,jobject) {
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return;
-    lt_error error=LT_INIT(lt_error);lt_runtime_mic_flush(runtime,&error);
+    const jsize len=env->GetArrayLength(buffer);
+    if(len<=0)return 0;
+    static thread_local std::vector<int16_t> data;
+    if(data.size()<size_t(len))data.resize(size_t(len));
+    jint count=0;
+    {
+        std::lock_guard<std::mutex> lock(guard);if(!runtime)return 0;
+        lt_error error=LT_INIT(lt_error);
+        const auto status=lt_runtime_pcm(runtime,data.data(),uint32_t(size_t(len)/2),&pcm,&error);
+        if(status==LT_AGAIN)return 0;
+        if(status!=LT_OK){++pcm_failures;return -jint(status);}
+        if(pcm.channels>2||pcm.channels<1||pcm.frames*pcm.channels>size_t(len)){++pcm_failures;return -jint(LT_INVALID);}
+        count=jint(pcm.frames*pcm.channels);
+    }
+    env->SetShortArrayRegion(buffer,0,count,data.data());return count;
 }
 JNI(audioInfo) jintArray JNICALL Java_org_un1box_android_Native_audioInfo(JNIEnv *env,jobject) {
     std::lock_guard<std::mutex> lock(guard);jint data[2]={jint(pcm.sample_rate),jint(pcm.channels)};
     jintArray arr=env->NewIntArray(2);env->SetIntArrayRegion(arr,0,2,data);return arr;
+}
+
+// The capture port reads interleaved stereo; the phone's recorder hands us mono, because a mono
+// AudioRecord is what every device supports and what the guest's own HAL feeds on. Duplicating here
+// keeps the engine's interface a single stereo ring. The JNI buffer holds either side of the copy,
+// so the caller's array is read once.
+// The phone's camera as the emulated device's sensor. Android hands over one
+// YUV_420_888 image as three direct buffers with the camera's own strides; the
+// engine wants one NV12 frame. The conversion is camera_planes.h, which is a
+// plain function over memory and is checked on its own (tests/camera).
+//
+// Returns 0 when the frame was dropped -- the guest is not running, or it is not
+// capturing, which is not an error and must not be retried -- and a negative
+// status when the engine refused it.
+JNI(cameraFrame) jint JNICALL Java_org_un1box_android_Native_cameraFrame(JNIEnv *env,jobject,
+    jobject luma,jint lumaRow,jint lumaPixel,jobject cb,jint cbRow,jint cbPixel,
+    jobject cr,jint crRow,jint crPixel,jint width,jint height,jint sensor) {
+    auto *lumaBytes=static_cast<const uint8_t *>(env->GetDirectBufferAddress(luma));
+    auto *cbBytes=static_cast<const uint8_t *>(env->GetDirectBufferAddress(cb));
+    auto *crBytes=static_cast<const uint8_t *>(env->GetDirectBufferAddress(cr));
+    if(!lumaBytes||!cbBytes||!crBytes)return -jint(LT_INVALID);
+    const camera_planes::Plane y{lumaBytes,lumaRow,lumaPixel};
+    const camera_planes::Plane u{cbBytes,cbRow,cbPixel};
+    const camera_planes::Plane v{crBytes,crRow,crPixel};
+    static thread_local std::vector<uint8_t> nv12;
+    nv12.resize(size_t(width)*size_t(height)*3/2);
+    if(!camera_planes::to_nv12(y,u,v,width,height,nv12.data()))return -jint(LT_INVALID);
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return 0;
+    lt_error error=LT_INIT(lt_error);
+    const auto status=lt_runtime_camera_write(runtime,sensor,nv12.data(),uint32_t(width),
+                                              uint32_t(height),&error);
+    if(status==LT_OK)return 1;
+    if(status==LT_AGAIN)return 0;          // guest inactive: a dropped frame, not a failure
+    return -jint(status);
+}
+JNI(cameraSensor) jint JNICALL Java_org_un1box_android_Native_cameraSensor(JNIEnv *,jobject) {
+    std::lock_guard<std::mutex> lock(guard);
+    if(!runtime)return jint(LT_CAMERA_BACK);
+    lt_error error=LT_INIT(lt_error);
+    lt_camera_info info=LT_INIT(lt_camera_info);
+    if(lt_runtime_camera_info(runtime,LT_CAMERA_BACK,&info,&error)!=LT_OK)return jint(LT_CAMERA_BACK);
+    return jint(info.sensor);
+}
+JNI(cameraFlush) void JNICALL Java_org_un1box_android_Native_cameraFlush(JNIEnv *,jobject) {
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return;
+    lt_error error=LT_INIT(lt_error);lt_runtime_camera_flush(runtime,&error);
+}
+JNI(cameraInfo) jlongArray JNICALL Java_org_un1box_android_Native_cameraInfo(JNIEnv *env,jobject,jint sensor) {
+    std::lock_guard<std::mutex> lock(guard);
+    lt_camera_info info=LT_INIT(lt_camera_info);lt_error error=LT_INIT(lt_error);
+    const auto status=runtime?lt_runtime_camera_info(runtime,sensor,&info,&error):LT_AGAIN;
+    jlong data[7]={jlong(status),jlong(info.width),jlong(info.height),jlong(info.sensor),
+                   jlong(info.pushed),jlong(info.taken),jlong(info.replaced)};
+    jlongArray arr=env->NewLongArray(7);env->SetLongArrayRegion(arr,0,7,data);return arr;
+}
+
+JNI(microphone) jint JNICALL Java_org_un1box_android_Native_microphone(JNIEnv *env,jobject,jshortArray buffer,jint count) {
+    const jint mono=std::min(count,jint(env->GetArrayLength(buffer)));
+    if(mono<=0)return 0;
+    static thread_local std::vector<int16_t> input,stereo;
+    if(input.size()<size_t(mono))input.resize(size_t(mono));
+    env->GetShortArrayRegion(buffer,0,mono,input.data());
+    if(stereo.size()<size_t(mono)*2)stereo.resize(size_t(mono)*2);
+    jint i=0;
+#if defined(__aarch64__)
+    for(;i+8<=mono;i+=8) {
+        const int16x8_t v=vld1q_s16(input.data()+i);
+        vst1q_s16(stereo.data()+size_t(i)*2,vzip1q_s16(v,v));
+        vst1q_s16(stereo.data()+size_t(i)*2+8,vzip2q_s16(v,v));
+    }
+#endif
+    for(;i<mono;++i){stereo[size_t(i)*2]=input[size_t(i)];stereo[size_t(i)*2+1]=input[size_t(i)];}
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return -jint(LT_AGAIN);
+    lt_error error=LT_INIT(lt_error);
+    const auto status=lt_runtime_mic_write(runtime,stereo.data(),uint32_t(mono),&error);
+    if(status==LT_OK)return mono;
+    if(status==LT_AGAIN)return 0;              // ring full, or the guest is not running: a dropped block
+    return -jint(status);
+}
+JNI(microphoneFlush) void JNICALL Java_org_un1box_android_Native_microphoneFlush(JNIEnv *env,jobject) {
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return;
+    lt_error error=LT_INIT(lt_error);lt_runtime_mic_flush(runtime,&error);
+}
+JNI(microphoneInfo) jlongArray JNICALL Java_org_un1box_android_Native_microphoneInfo(JNIEnv *env,jobject) {
+    std::lock_guard<std::mutex> lock(guard);
+    lt_mic_info info=LT_INIT(lt_mic_info);lt_error error=LT_INIT(lt_error);
+    const auto status=runtime?lt_runtime_mic_info(runtime,&info,&error):LT_AGAIN;
+    jlong data[6]={jlong(status),jlong(info.sample_rate),jlong(info.queued_frames),jlong(info.capturing),
+                   jlong(info.pushed_frames),jlong(info.dropped_frames)};
+    jlongArray arr=env->NewLongArray(6);env->SetLongArrayRegion(arr,0,6,data);return arr;
 }
 
 JNI(profile) jstring JNICALL Java_org_un1box_android_Native_profile(JNIEnv *env,jobject,jstring path) {
@@ -1263,9 +1306,8 @@ JNI(guestRequest) jobjectArray JNICALL Java_org_un1box_android_Native_guestReque
     std::lock_guard<std::mutex> lock(guard);Utf text(env,argument);lt_error error=LT_INIT(lt_error);uint64_t id=0;
     lt_guest_request request=LT_INIT(lt_guest_request);request.operation=operation;request.timeout_ms=timeout;request.argument=text.value;
     auto status=runtime?lt_runtime_guest_request(runtime,&request,&id,&error):LT_AGAIN;
-    auto output=env->NewObjectArray(3,env->FindClass("java/lang/String"),nullptr);
-    env->SetObjectArrayElement(output,0,string(env,std::to_string(id)));env->SetObjectArrayElement(output,1,string(env,result(status,error)));
-    env->SetObjectArrayElement(output,2,string(env,std::to_string(status)));return output;
+    auto output=env->NewObjectArray(2,env->FindClass("java/lang/String"),nullptr);
+    env->SetObjectArrayElement(output,0,string(env,std::to_string(id)));env->SetObjectArrayElement(output,1,string(env,result(status,error)));return output;
 }
 JNI(guestPoll) jobjectArray JNICALL Java_org_un1box_android_Native_guestPoll(JNIEnv *env,jobject,jlong id) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);lt_guest_result completed=LT_INIT(lt_guest_result);
@@ -1279,6 +1321,24 @@ JNI(guestCancel) void JNICALL Java_org_un1box_android_Native_guestCancel(JNIEnv 
 }
 
 JNI(observations) jlongArray JNICALL Java_org_un1box_android_Native_observations(JNIEnv *env,jobject) {
+    lt_frame_info observed_frame=LT_INIT(lt_frame_info);
+    uint64_t sample_pixels=0,nonzero_rgb_samples=0,rgb_sample_sum=0;
+    {
+        // Sample the 16x16 diagnostic grid on demand rather than on every 60 Hz frame,
+        // releasing frame_cache_guard before acquiring guard so the two locks never nest.
+        std::lock_guard<std::mutex> cache_lock(frame_cache_guard);
+        observed_frame=frame;
+        if(observed_frame.width && observed_frame.height &&
+           observed_frame.stride>=observed_frame.width*4 && observed_frame.bytes<=pixels.size()) {
+            for(uint32_t gy=0;gy<16;++gy)for(uint32_t gx=0;gx<16;++gx) {
+                const uint32_t x=std::min((gx*2+1)*observed_frame.width/32,observed_frame.width-1);
+                const uint32_t y=std::min((gy*2+1)*observed_frame.height/32,observed_frame.height-1);
+                const uint8_t *sample=pixels.data()+size_t(y)*observed_frame.stride+size_t(x)*4;
+                const uint32_t rgb=uint32_t(sample[0])+sample[1]+sample[2];
+                ++sample_pixels;nonzero_rgb_samples+=rgb!=0;rgb_sample_sum+=rgb;
+            }
+        }
+    }
     std::lock_guard<std::mutex> lock(guard);
     lt_runtime_io_stats shared=LT_INIT(lt_runtime_io_stats);lt_error error=LT_INIT(lt_error);
     if(runtime)lt_runtime_io_statistics(runtime,&shared,&error);
@@ -1299,15 +1359,15 @@ JNI(observations) jlongArray JNICALL Java_org_un1box_android_Native_observations
     const bool phase_stable=phase_revision_before==phase_revision_after && !(phase_revision_after&1u);
     jlong values[]={jlong(monotonic_ns()),jlong(presented_frames),jlong(first_present_ns),jlong(last_present_ns),
         jlong(max_present_gap_ns),jlong(max_present_work_ns),jlong(window_failures),jlong(frame_copy_failures),
-        jlong(surface_generation),jlong(frame.sequence),jlong(frame.timestamp_ns),jlong(pcm_failures),jlong(pcm.dropped_frames),
+        jlong(surface_generation),jlong(observed_frame.sequence),jlong(observed_frame.timestamp_ns),jlong(pcm_failures),jlong(pcm.dropped_frames),
         jlong(present_intervals[0]),jlong(present_intervals[1]),jlong(present_intervals[2]),jlong(present_intervals[3]),jlong(present_intervals[4]),jlong(present_intervals[5]),jlong(shared.frame_count),jlong(shared.frame_sequence),jlong(shared.frame_timestamp_ns),
         jlong(shared.frame_published_monotonic_ns),jlong(shared.pcm_captured_frames),jlong(shared.pcm_pulled_frames),jlong(shared.pcm_dropped_frames),
         jlong(shared.input_requests),jlong(shared.pcm_queued_packets),first_lock_error,last_lock_error,first_post_error,last_post_error,last_geometry_error,
         jlong(geometry_failures),last_buffer_format,last_buffer_width,last_buffer_height,last_buffer_stride,jlong(invalid_buffers),jlong(first_window_error_ns),jlong(observer_status),jlong(observer.engine_ready),
         jlong(observer.display_sleeping),jlong(observer.backlight_level),jlong(agent_status),jlong(live_agent),
         jlong(observer.shutdown_phase),jlong(observer.shutdown_route),jlong(observer.shutdown_reply_status),
-        jlong(observer.shutdown_reply_received),jlong(frame.width),jlong(frame.height),
-        jlong(frame_sample_pixels),jlong(frame_nonzero_rgb_samples),jlong(frame_rgb_sample_sum),
+        jlong(observer.shutdown_reply_received),jlong(observed_frame.width),jlong(observed_frame.height),
+        jlong(sample_pixels),jlong(nonzero_rgb_samples),jlong(rgb_sample_sum),
         jlong(window_attached.load()),jlong(presentation_epoch),jlong(phase),jlong(phase_entry),
         jlong(phase_generation),jlong(phase_epoch),jlong(phase_revision_after),jlong(phase_stable),
         jlong(ignored_input_rejections),jlong(last_ignored_input_request)};
@@ -1321,7 +1381,7 @@ JNI(shutdownGraceMillis) jint JNICALL Java_org_un1box_android_Native_shutdownGra
 
 
 JNI(debugSelectGraphicsProvider) jstring JNICALL Java_org_un1box_android_Native_debugSelectGraphicsProvider(JNIEnv *env,jobject,jint choice) {
-#ifndef LT_ANDROID_DEBUG
+#if !defined(LT_ANDROID_DEBUG) && !defined(LT_ANDROID_ANGLE_PROVIDER)
     return string(env,"Graphics provider diagnosis is unavailable in this build");
 #else
     std::lock_guard<std::mutex> lock(guard);
@@ -1362,16 +1422,6 @@ JNI(debugEnableTouchTrace) jstring JNICALL Java_org_un1box_android_Native_debugE
     return string(env,"Debug diagnosis is unavailable in this build");
 #endif
 }
-// The guest's NAND traffic so far: read ops, bytes, ns, write ops, bytes, ns, erase ops, ns; empty
-// when no device runs or its engine lacks the counters.
-JNI(storageStats) jlongArray JNICALL Java_org_un1box_android_Native_storageStats(JNIEnv *env,jobject) {
-    std::lock_guard<std::mutex> lock(guard);
-    lt_runtime_storage_stats s=LT_INIT(lt_runtime_storage_stats);lt_error error=LT_INIT(lt_error);
-    if(!runtime || lt_runtime_storage_statistics(runtime,&s,&error)!=LT_OK)return env->NewLongArray(0);
-    const jlong values[]={jlong(s.read_ops),jlong(s.read_bytes),jlong(s.read_ns),jlong(s.write_ops),jlong(s.write_bytes),
-                          jlong(s.write_ns),jlong(s.erase_ops),jlong(s.erase_ns)};
-    auto array=env->NewLongArray(8);env->SetLongArrayRegion(array,0,8,values);return array;
-}
 // Frames in each of the last 240 complete 250 ms buckets, oldest first (0 = none published).
 JNI(guestFrameBuckets) jintArray JNICALL Java_org_un1box_android_Native_guestFrameBuckets(JNIEnv *env,jobject) {
     constexpr int n=240;jint values[n];const uint64_t now=monotonic_ns()/fps_bucket_ns;
@@ -1403,12 +1453,22 @@ JNI(frameTimeline) jlongArray JNICALL Java_org_un1box_android_Native_frameTimeli
     return array;
 }
 JNI(setPresentVisible) void JNICALL Java_org_un1box_android_Native_setPresentVisible(JNIEnv *,jobject,jboolean visible) {
-    present_visible.store(visible,std::memory_order_relaxed);
-    {std::lock_guard<std::mutex> lock(frame_wake_mutex);++frame_wake_sequence;}
-    frame_wake.notify_one();
+    const bool now_visible=visible!=JNI_FALSE;
+    const bool was_visible=present_visible.exchange(now_visible,std::memory_order_relaxed);
+    if(now_visible && !was_visible) {
+        std::lock_guard<std::mutex> lock(guard);
+        sequence=0;
+    }
+    wake_presenter();
 }
 JNI(setPresentScale) void JNICALL Java_org_un1box_android_Native_setPresentScale(JNIEnv *,jobject,jint mode) {
-    if(mode>=ScaleSmooth && mode<=ScaleCpu)present_scale.store(mode,std::memory_order_relaxed);
+    if(mode>=ScaleSmooth && mode<=ScaleCpu) {
+        if(present_scale.exchange(mode,std::memory_order_relaxed)!=mode) {
+            std::lock_guard<std::mutex> lock(guard);
+            sequence=0;
+        }
+        wake_presenter();
+    }
 }
 JNI(debugArmVcpuAccounting) jstring JNICALL Java_org_un1box_android_Native_debugArmVcpuAccounting(JNIEnv *env,jobject) {
 #ifdef LT_ANDROID_DEBUG
@@ -1475,124 +1535,4 @@ JNI(debugQmpSnapshot) jobjectArray JNICALL Java_org_un1box_android_Native_debugQ
 #endif
     auto result=env->NewObjectArray(2,env->FindClass("java/lang/String"),nullptr);
     env->SetObjectArrayElement(result,0,string(env,failure));env->SetObjectArrayElement(result,1,string(env,path));return result;
-}
-
-
-// Kept from this fork: the cameraFlush entry point
-JNI(cameraFlush) void JNICALL Java_org_un1box_android_Native_cameraFlush(JNIEnv *,jobject) {
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return;
-    lt_error error=LT_INIT(lt_error);lt_runtime_camera_flush(runtime,&error);
-}
-
-
-// Kept from this fork: the cameraFrame entry point
-JNI(cameraFrame) jint JNICALL Java_org_un1box_android_Native_cameraFrame(JNIEnv *env,jobject,
-    jobject luma,jint lumaRow,jint lumaPixel,jobject cb,jint cbRow,jint cbPixel,
-    jobject cr,jint crRow,jint crPixel,jint width,jint height,jint sensor) {
-    auto *lumaBytes=static_cast<const uint8_t *>(env->GetDirectBufferAddress(luma));
-    auto *cbBytes=static_cast<const uint8_t *>(env->GetDirectBufferAddress(cb));
-    auto *crBytes=static_cast<const uint8_t *>(env->GetDirectBufferAddress(cr));
-    if(!lumaBytes||!cbBytes||!crBytes)return -jint(LT_INVALID);
-    const camera_planes::Plane y{lumaBytes,lumaRow,lumaPixel};
-    const camera_planes::Plane u{cbBytes,cbRow,cbPixel};
-    const camera_planes::Plane v{crBytes,crRow,crPixel};
-    static thread_local std::vector<uint8_t> nv12;
-    nv12.resize(size_t(width)*size_t(height)*3/2);
-    if(!camera_planes::to_nv12(y,u,v,width,height,nv12.data()))return -jint(LT_INVALID);
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return 0;
-    lt_error error=LT_INIT(lt_error);
-    const auto status=lt_runtime_camera_write(runtime,sensor,nv12.data(),uint32_t(width),
-                                              uint32_t(height),&error);
-    if(status==LT_OK)return 1;
-    if(status==LT_AGAIN)return 0;          // guest inactive: a dropped frame, not a failure
-    return -jint(status);
-}
-
-
-// Kept from this fork: the cameraInfo entry point
-JNI(cameraInfo) jlongArray JNICALL Java_org_un1box_android_Native_cameraInfo(JNIEnv *env,jobject,jint sensor) {
-    std::lock_guard<std::mutex> lock(guard);
-    lt_camera_info info=LT_INIT(lt_camera_info);lt_error error=LT_INIT(lt_error);
-    const auto status=runtime?lt_runtime_camera_info(runtime,sensor,&info,&error):LT_AGAIN;
-    jlong data[7]={jlong(status),jlong(info.width),jlong(info.height),jlong(info.sensor),
-                   jlong(info.pushed),jlong(info.taken),jlong(info.replaced)};
-    jlongArray arr=env->NewLongArray(7);env->SetLongArrayRegion(arr,0,7,data);return arr;
-}
-
-
-// Kept from this fork: the cameraSensor entry point
-JNI(cameraSensor) jint JNICALL Java_org_un1box_android_Native_cameraSensor(JNIEnv *,jobject) {
-    std::lock_guard<std::mutex> lock(guard);
-    if(!runtime)return jint(LT_CAMERA_BACK);
-    lt_error error=LT_INIT(lt_error);
-    lt_camera_info info=LT_INIT(lt_camera_info);
-    if(lt_runtime_camera_info(runtime,LT_CAMERA_BACK,&info,&error)!=LT_OK)return jint(LT_CAMERA_BACK);
-    return jint(info.sensor);
-}
-
-
-// Kept from this fork: the microphone entry point
-JNI(microphone) jint JNICALL Java_org_un1box_android_Native_microphone(JNIEnv *env,jobject,jshortArray buffer,jint count) {
-    const jint mono=std::min(count,jint(env->GetArrayLength(buffer)));
-    if(mono<=0)return 0;
-    static thread_local std::vector<int16_t> input,stereo;
-    if(input.size()<size_t(mono))input.resize(size_t(mono));
-    env->GetShortArrayRegion(buffer,0,mono,input.data());
-    if(stereo.size()<size_t(mono)*2)stereo.resize(size_t(mono)*2);
-    jint i=0;
-#if defined(__aarch64__)
-    for(;i+8<=mono;i+=8) {
-        const int16x8_t v=vld1q_s16(input.data()+i);
-        vst1q_s16(stereo.data()+size_t(i)*2,vzip1q_s16(v,v));
-        vst1q_s16(stereo.data()+size_t(i)*2+8,vzip2q_s16(v,v));
-    }
-#endif
-    for(;i<mono;++i){stereo[size_t(i)*2]=input[size_t(i)];stereo[size_t(i)*2+1]=input[size_t(i)];}
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return -jint(LT_AGAIN);
-    lt_error error=LT_INIT(lt_error);
-    const auto status=lt_runtime_mic_write(runtime,stereo.data(),uint32_t(mono),&error);
-    if(status==LT_OK)return mono;
-    if(status==LT_AGAIN)return 0;              // ring full, or the guest is not running: a dropped block
-    return -jint(status);
-}
-
-
-// Kept from this fork: the microphoneFlush entry point
-JNI(microphoneFlush) void JNICALL Java_org_un1box_android_Native_microphoneFlush(JNIEnv *env,jobject) {
-    std::lock_guard<std::mutex> lock(guard);if(!runtime)return;
-    lt_error error=LT_INIT(lt_error);lt_runtime_mic_flush(runtime,&error);
-}
-
-
-// Kept from this fork: the microphoneInfo entry point
-JNI(microphoneInfo) jlongArray JNICALL Java_org_un1box_android_Native_microphoneInfo(JNIEnv *env,jobject) {
-    std::lock_guard<std::mutex> lock(guard);
-    lt_mic_info info=LT_INIT(lt_mic_info);lt_error error=LT_INIT(lt_error);
-    const auto status=runtime?lt_runtime_mic_info(runtime,&info,&error):LT_AGAIN;
-    jlong data[6]={jlong(status),jlong(info.sample_rate),jlong(info.queued_frames),jlong(info.capturing),
-                   jlong(info.pushed_frames),jlong(info.dropped_frames)};
-    jlongArray arr=env->NewLongArray(6);env->SetLongArrayRegion(arr,0,6,data);return arr;
-}
-
-
-// Kept from this fork: the modemCommand entry point
-JNI(modemCommand) jstring JNICALL Java_org_un1box_android_Native_modemCommand(JNIEnv *env,jobject,jstring property,jstring value) {
-    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
-    const char *name=property?env->GetStringUTFChars(property,nullptr):nullptr;
-    const char *text=value?env->GetStringUTFChars(value,nullptr):nullptr;
-    std::string out;
-    if(!runtime)out="No active session";
-    else if(!name||!text)out="Missing modem property";
-    else out=result(lt_runtime_modem(runtime,name,text,&error),error);
-    if(name)env->ReleaseStringUTFChars(property,name);
-    if(text)env->ReleaseStringUTFChars(value,text);
-    return string(env,out);
-}
-
-
-// Kept from this fork: the setBattery entry point
-JNI(setBattery) jstring JNICALL Java_org_un1box_android_Native_setBattery(JNIEnv *env,jobject,jint level,jint charging) {
-    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
-    if(!runtime)return string(env,"No active session");
-    return string(env,result(lt_runtime_battery(runtime,unsigned(level<0?0:level),unsigned(charging<0?0:charging),&error),error));
 }
