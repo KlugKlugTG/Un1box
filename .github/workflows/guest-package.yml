@@ -149,6 +149,12 @@ jobs:
             ${{ runner.temp }}/guest-package/armv6.itpack
             ${{ runner.temp }}/guest-package/armv7.itpack
             ${{ runner.temp }}/guest-package/SHA256SUMS
+            # The A6 restore tools (contrib/it-restore): the app hands these to firmwarekit when it
+            # prepares an N42 device, and the install boot runs them inside the guest. They are not
+            # itpack payloads (nothing installs them into a running guest) but preparation helpers.
+            ${{ runner.temp }}/guest-package/src/build/it-restore/it_restore
+            ${{ runner.temp }}/guest-package/src/build/it-restore/it_initialize
+            ${{ runner.temp }}/guest-package/src/build/it-restore/it_mobilegestalt
           if-no-files-found: error
           retention-days: 90
 
