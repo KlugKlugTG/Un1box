@@ -35,7 +35,11 @@ import wiring  # noqa: E402
 PATCHES = ROOT / "ci" / "engine-patches"
 BRIDGE = "hw/arm/gles-host.c"
 NAME_TABLE = "include/hw/arm/guest-services/gles-names.h"
-MARKER = "gles_vao_bind"                      # in the bridge once the stack is applied
+# The bridge is the engine branch's own now (no patch touches it), so the marker that says
+# "the stack is already here" has to come from a file the series does edit: the microphone
+# consult in the capture port, which patch 0001 adds.
+MARKER_FILE = "hw/arm/s5l8930_i2s.c"
+MARKER = "host_mic_read_frame"
 
 ENGINE = None
 SANITIZE = False
@@ -88,10 +92,11 @@ def engine_tree(path, scratch):
     bridge = target / BRIDGE
     if not bridge.is_file():
         raise Failure(f"{path} has no {BRIDGE}: not an engine checkout")
+    marker = target / MARKER_FILE
     # CI commits the patches into the engine before these checks run, so a tree
     # either has all of them or none: one marker for the whole stack, not a
     # patch-by-patch question, because a later patch edits lines an earlier added.
-    if MARKER in bridge.read_text(errors="ignore"):
+    if MARKER in marker.read_text(errors="ignore"):
         STACK_NOTE = f"{path} already carries the stack"
         return target
     patches = sorted(PATCHES.glob("*.patch"))
@@ -100,8 +105,8 @@ def engine_tree(path, scratch):
         if applied.returncode:
             raise Failure(f"{patch.name} does not apply to {path} at HEAD: "
                           f"{applied.stderr.strip()[:400]}")
-    if MARKER not in bridge.read_text(errors="ignore"):
-        raise Failure(f"{BRIDGE} has no {MARKER}: not this fork's engine, or its GL was lost")
+    if MARKER not in marker.read_text(errors="ignore"):
+        raise Failure(f"{MARKER_FILE} has no {MARKER}: the series did not land")
     STACK_NOTE = f"{len(patches)} patches applied clean to {path} at HEAD"
     return target
 
@@ -111,7 +116,7 @@ def resolve_engine(explicit, scratch):
     candidate = explicit or os.environ.get("LT_ENGINE_SOURCE")
     path = Path(candidate).expanduser().resolve() if candidate else ROOT.parent / "qemu-ios"
     if path.is_dir() and (path / BRIDGE).is_file():
-        if MARKER in (path / BRIDGE).read_text(errors="ignore"):
+        if (path / MARKER_FILE).is_file() and MARKER in (path / MARKER_FILE).read_text(errors="ignore"):
             STACK_NOTE = f"{path} already carries the stack"
             return path, f"engine tree {path} (already patched)"
         if sh(["git", "-C", str(path), "rev-parse", "--git-dir"]).returncode == 0:
