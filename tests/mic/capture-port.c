@@ -11,7 +11,7 @@
  * port consults that ring before the frontend, the guest records silence no
  * matter what the microphone captured.
  *
- * SLICE engine hw/arm/s5l8930_i2s.c fn i2s_next_frame i2s_rx_read
+ * SLICE engine hw/arm/s5l8930_i2s.c fn i2s_next_frame i2s_rx_read i2s_channels i2s_sample_bytes
  * SLICE engine hw/arm/s5l8930_i2s.c define I2S_RING
  * SLICE engine hw/arm/s5l8930_i2s.c define TONE_AMPLITUDE
  * CFLAGS -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter
@@ -37,6 +37,8 @@ extern int64_t mic_test_now_us;
  * ring of host input, the frame being read out, and the tone property. */
 typedef struct S5L8930I2SState {
     bool host_mic;
+    bool mca;                    /* A6 MCA layout: the helpers read it */
+    uint32_t regs[16];          /* the packing helpers' two registers */
     int tone_hz;
     uint64_t tone_frame;
     unsigned in_rate;
@@ -48,6 +50,8 @@ typedef struct S5L8930I2SState {
 
 static void i2s_next_frame(S5L8930I2SState *s);
 static uint64_t i2s_rx_read(S5L8930I2SState *s, unsigned size);
+static unsigned i2s_channels(S5L8930I2SState *s, bool input);
+static unsigned i2s_sample_bytes(S5L8930I2SState *s, bool input);
 
 /* What the guest sees: one stereo S16 frame per four bytes read. */
 static void read_frames(S5L8930I2SState *s, int16_t (*out)[2], int frames)
