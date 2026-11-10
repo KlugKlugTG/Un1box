@@ -19,14 +19,18 @@
  *   - a scan in flight defers the retry instead of joining into it
  *   - the retries are bounded, and stop
  *
- * Mutation (named, must fail this test): drop the guest-traffic test in sdio_link_check, i.e. delete
+ * The Wi-Fi model moved (hw/arm/ipod_touch_sdio.c became hw/arm/bcm_fullmac.c, the full-MAC
+ * device, with its state in include/hw/net/bcm_fullmac.h), and the watchdog moved with it: the
+ * check is bcm_fullmac_link_check() now, over the same state it always had.
+ *
+ * Mutation (named, must fail this test): drop the guest-traffic test in bcm_fullmac_link_check,
+ * i.e. delete
  *        if (!s->associated || s->guest_frames != s->link_frames) { return; }
  * and every case that expects silence to be respected fails.
  *
- * SLICE engine include/hw/arm/ipod_touch_sdio.h define WLC_E
- * SLICE engine include/hw/arm/ipod_touch_sdio.h define WLC_SSID_MAX
- * SLICE engine hw/arm/ipod_touch_sdio.c define SDIO_LINK_
- * SLICE engine hw/arm/ipod_touch_sdio.c fn sdio_send_assoc_events sdio_link_check sdio_handle_set_ssid
+ * SLICE engine include/hw/net/bcm_fullmac.h define WLC_
+ * SLICE engine hw/arm/bcm_fullmac.c define BCM_LINK_
+ * SLICE engine hw/arm/bcm_fullmac.c fn sdio_send_assoc_events bcm_fullmac_link_check sdio_handle_set_ssid
  * CFLAGS -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter
  */
 #include <assert.h>
@@ -52,11 +56,11 @@ static int64_t qemu_clock_get_ns(int clock) { (void) clock; return now; }
 static void timer_mod(QEMUTimer *timer, int64_t when) { timer->expire = when; timer->armed = 1; }
 
 /* The fields the watchdog reads and writes, and no others. */
-typedef struct IPodTouchSDIOState {
+typedef struct BCMFullmacState {
     bool associated, iscan_reported;
     QEMUTimer *link_timer;
     unsigned link_retries, guest_frames, link_frames;
-} IPodTouchSDIOState;
+} BCMFullmacState;
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 static uint32_t ldl_le_p(const void *p) {
@@ -65,12 +69,12 @@ static uint32_t ldl_le_p(const void *p) {
 }
 
 /* The slicer appends the real definitions below; the driver here comes first. */
-static void sdio_send_assoc_events(IPodTouchSDIOState *s);
-static void sdio_link_check(void *opaque);
-static void sdio_handle_set_ssid(IPodTouchSDIOState *s, const uint8_t *payload, uint32_t len);
+static void sdio_send_assoc_events(BCMFullmacState *s);
+static void bcm_fullmac_link_check(void *opaque);
+static void sdio_handle_set_ssid(BCMFullmacState *s, const uint8_t *payload, uint32_t len);
 
 static int events[128], nevents;
-static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t type, uint32_t status, uint16_t flags) {
+static void sdpcm_send_event(BCMFullmacState *s, uint32_t type, uint32_t status, uint16_t flags) {
     (void) s; (void) status; (void) flags;
     assert(nevents < (int) (sizeof events / sizeof events[0]));
     events[nevents++] = (int) type;
@@ -78,17 +82,17 @@ static void sdpcm_send_event(IPodTouchSDIOState *s, uint32_t type, uint32_t stat
 
 static const int ASSOCIATION[4] = { WLC_E_AUTH, WLC_E_ASSOC, WLC_E_SET_SSID, WLC_E_LINK };
 
-static void fresh(IPodTouchSDIOState *s) {
+static void fresh(BCMFullmacState *s) {
     QEMUTimer *timer = calloc(1, sizeof *timer);
     assert(timer != NULL);
-    timer->cb = sdio_link_check;
+    timer->cb = bcm_fullmac_link_check;
     timer->opaque = s;
-    *s = (IPodTouchSDIOState) { .iscan_reported = true, .link_timer = timer };
+    *s = (BCMFullmacState) { .iscan_reported = true, .link_timer = timer };
     nevents = 0;
 }
 
 /** The check the join armed, run when it is due: false when nothing was armed. */
-static bool fire_check(IPodTouchSDIOState *s) {
+static bool fire_check(BCMFullmacState *s) {
     if (!s->link_timer->armed) return false;
     int64_t when = s->link_timer->expire;
     assert(when >= now);
@@ -105,7 +109,7 @@ static void expect_association(int from, const char *what) {
 }
 
 /** One association, in order, as the model reports it. */
-static int association_events(IPodTouchSDIOState *s) {
+static int association_events(BCMFullmacState *s) {
     int from = nevents;
     sdio_send_assoc_events(s);
     expect_association(from, "the four association events, in the driver's order");
@@ -113,7 +117,7 @@ static int association_events(IPodTouchSDIOState *s) {
 }
 
 static void a_silent_guest_gets_the_join_again(void) {
-    IPodTouchSDIOState s;
+    BCMFullmacState s;
     fresh(&s);
     association_events(&s);
     assert(s.link_timer->armed);
@@ -124,7 +128,7 @@ static void a_silent_guest_gets_the_join_again(void) {
 }
 
 static void a_talking_guest_is_left_alone(void) {
-    IPodTouchSDIOState s;
+    BCMFullmacState s;
     fresh(&s);
     association_events(&s);
     s.guest_frames = 3;   /* DHCP went out: the driver took the link */
@@ -135,7 +139,7 @@ static void a_talking_guest_is_left_alone(void) {
 }
 
 static void a_scan_in_flight_defers_the_retry(void) {
-    IPodTouchSDIOState s;
+    BCMFullmacState s;
     fresh(&s);
     s.iscan_reported = false;    /* the driver armed a scan: a join now is the one it drops */
     association_events(&s);
@@ -150,7 +154,7 @@ static void a_scan_in_flight_defers_the_retry(void) {
 }
 
 static void the_retries_stop(void) {
-    IPodTouchSDIOState s;
+    BCMFullmacState s;
     fresh(&s);
     association_events(&s);
     int attempts = 0;
@@ -158,18 +162,18 @@ static void the_retries_stop(void) {
         if (nevents > 4 + 4 * attempts) attempts++;
         if (attempts > 16) break;   /* a runaway retry loop, not a bound */
     }
-    assert(attempts == SDIO_LINK_RETRIES_MAX);
-    assert(nevents == 4 * (1 + SDIO_LINK_RETRIES_MAX));
+    assert(attempts == BCM_LINK_RETRIES_MAX);
+    assert(nevents == 4 * (1 + BCM_LINK_RETRIES_MAX));
     assert(!s.link_timer->armed);
     puts("  ok   the retries are bounded and then stop");
 }
 
 static void a_driver_asked_join_gets_a_fresh_budget(void) {
-    IPodTouchSDIOState s;
+    BCMFullmacState s;
     fresh(&s);
     association_events(&s);
     while (fire_check(&s)) { }             /* the auto-join's budget runs out */
-    assert(s.link_retries == SDIO_LINK_RETRIES_MAX);
+    assert(s.link_retries == BCM_LINK_RETRIES_MAX);
     int from = nevents;
 
     /* WLC_SET_SSID: the driver itself asking to join this SSID (wlc_ssid_t: length then bytes). */
