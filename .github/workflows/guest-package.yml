@@ -87,6 +87,21 @@ jobs:
           echo '2098e67e2a026abf238fb2ff4bb990871b0286b717590854b4c4ad566e6d5be3  '"$SDK32" | shasum -a 256 -c -
           tar -xjf "$SDK31" -C "$RUNNER_TEMP/guest-sdks"
           tar -xjf "$SDK32" -C "$RUNNER_TEMP/guest-sdks"
+          # The A6 restore tools (contrib/it-restore) build against an iOS 6 SDK: three zip parts in
+          # the same archive repo, assembled here. Its own parts carry no checksum to pin, so the
+          # assembled SDK is checked by what it must contain.
+          SDK61_DIR="$RUNNER_TEMP/guest-sdk-archives/iPhoneOS6.1"
+          mkdir -p "$SDK61_DIR"
+          i=0
+          for blob in ae8062da9288e943399362ed8db711cbd169a156 15e03162cacdafc2cc087bf654a522cbb42150d3 631860f7b8b0d02558a977eb4944ae1de36a6336; do
+            i=$((i + 1))
+            part=$(printf '%s/iPhoneOS6.1.sdk.zip.%03d' "$SDK61_DIR" "$i")
+            [ -s "$part" ] || gh api -H 'Accept: application/vnd.github.raw' "/repos/qianjigui/iOS-sdks/git/blobs/$blob" > "$part"
+          done
+          cat "$SDK61_DIR"/iPhoneOS6.1.sdk.zip.* > "$SDK61_DIR/sdk.zip"
+          unzip -q -o "$SDK61_DIR/sdk.zip" -d "$RUNNER_TEMP/guest-sdks"
+          test -f "$RUNNER_TEMP/guest-sdks/iPhoneOS6.1.sdk/SDKSettings.plist"
+          grep -q '<string>6.1<' "$RUNNER_TEMP/guest-sdks/iPhoneOS6.1.sdk/SDKSettings.plist"
 
       - name: Apply the engine patch series
         run: |
@@ -103,7 +118,8 @@ jobs:
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/guest-package"
-          if ! ARMV6_SDK="$RUNNER_TEMP/guest-sdks/iPhoneOS3.1.3.sdk" \
+          if ! IPHONE6_SDK="$RUNNER_TEMP/guest-sdks/iPhoneOS6.1.sdk" \
+               ARMV6_SDK="$RUNNER_TEMP/guest-sdks/iPhoneOS3.1.3.sdk" \
                IPAD_SDK="$RUNNER_TEMP/guest-sdks/iPhoneOS3.2.sdk" \
                bash qemu-ios/contrib/guest-package/build.sh "$OUT" > "$RUNNER_TEMP/guest-package.log" 2>&1; then
             tail -200 "$RUNNER_TEMP/guest-package.log"
