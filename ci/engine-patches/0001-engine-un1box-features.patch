@@ -1039,6 +1039,27 @@ index 2b2e28f02d..0b7363903d 100644
  }
  
  static const VMStateDescription isp_vmstate = {
+diff --git a/include/hw/arm/guest-services/gles.h b/include/hw/arm/guest-services/gles.h
+index 7e2e8785f4..625bc0a658 100644
+--- a/include/hw/arm/guest-services/gles.h
++++ b/include/hw/arm/guest-services/gles.h
+@@ -426,6 +426,16 @@ extern __thread int (*gles_guest_rw_hook)(vaddr va, void *buf, size_t len, bool
+ /* Guest memory through the host pointers in the vCPU's TLB, as its own loads and stores reach it. False, having
+  * possibly copied part, when a page needs the full path (not plain RAM in the TLB, unmapped, not permitted). */
+ bool guest_rw_ram(CPUState *cpu, uint64_t va, uint8_t *buf, size_t len, bool write);
++/* A guest range written row by row, as a present writes a frame: its pages resolved once, then each
++ * row copied through them. False, having stored nothing, when a page needs the full path. */
++typedef struct GlesGuestPages {
++    uint64_t first;             /* guest address of the first page */
++    size_t npages;
++    uint8_t **page;             /* host address of each page */
++} GlesGuestPages;
++bool gles_guest_pages_map(GlesGuestPages *pages, CPUState *cpu, uint64_t va, uint64_t end);
++void gles_guest_pages_write(const GlesGuestPages *pages, uint64_t va,
++                            const void *buf, size_t len);
+ bool gles_guest_fault_pending(void);
+ /* Host-only native draw sections: no guest memory accesses, GL reentry, or
+  * migration/reset callbacks. The guest executor remains serialized while the
 diff --git a/include/hw/arm/host-camera.h b/include/hw/arm/host-camera.h
 new file mode 100644
 index 0000000000..e21aa204ac
