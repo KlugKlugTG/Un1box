@@ -32,24 +32,6 @@ TEST = ROOT / "tests" / "gles" / "vao.c"
 
 BRIDGE = "hw/arm/gles-host.c"
 
-# The four entry points in both spellings: the id the guest calls, the function
-# that runs it, and how many arguments the name table says arrive with it.
-ENTRY_POINTS = (
-    (550, "gles_vao_bind", "glBindVertexArrayEXT", 1),
-    (551, "gles_vao_delete", "glDeleteVertexArraysEXT", 2),
-    (552, "gles_vao_gen", "glGenVertexArraysEXT", 2),
-    (553, "gles_vao_is", "glIsVertexArrayEXT", 1),
-    (837, "gles_vao_bind", "glBindVertexArrayOES", 1),
-    (838, "gles_vao_delete", "glDeleteVertexArraysOES", 2),
-    (839, "gles_vao_gen", "glGenVertexArraysOES", 2),
-    (840, "gles_vao_is", "glIsVertexArrayOES", 1),
-)
-
-# The host's own VAO entry points. The engine must not call one: an ES 1.1 host
-# context does not have them, and both draw paths re-apply the arrays anyway.
-HOST_VAO_CALL = re.compile(r"\bgl(?:Gen|Delete|Bind|Is)VertexArrays?\w*\s*\(")
-
-
 def read(relative):
     path = ROOT / relative
     if not path.is_file():

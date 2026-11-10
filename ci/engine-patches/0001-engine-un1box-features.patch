@@ -847,7 +847,7 @@ index 5192470d97..90cb723e2c 100644
  arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('s5l8950.c', 'cs42l65.c', 'cs35l19.c'))
  # Synopsys DWC OTG device core, PHY register file and host TCP bridge: shared by the S5L8720 and S5L8930 machines.
 diff --git a/hw/arm/s5l8930_i2s.c b/hw/arm/s5l8930_i2s.c
-index 468eb58a5d..d5dc37c4fe 100644
+index 468eb58a5d..726c08a46f 100644
 --- a/hw/arm/s5l8930_i2s.c
 +++ b/hw/arm/s5l8930_i2s.c
 @@ -25,6 +25,13 @@
@@ -896,10 +896,10 @@ index 468eb58a5d..d5dc37c4fe 100644
  
          stw_le_p(stereo, v);
          stw_le_p(stereo + 2, v);
-+    /* The frontend's microphone comes first, not as a fallback: a phone's engine runs the audio
-+     * backend as driver=none, whose input voice still opens and hands out silence paced at the
-+     * port's rate, so a capture that reads the voice's ring below would only ever hear that. */
-+    if (s->host_mic && host_mic_read_frame(stereo)) {
++    } else if (s->host_mic && host_mic_read_frame(stereo)) {
++        /* The frontend's microphone is the input, not a fallback: a phone's engine runs the audio
++         * backend as driver=none, whose input voice still opens and hands out silence paced at the
++         * port's rate, so a capture that reads the voice's ring below would only ever hear that. */
 +        /* the frontend recorded this frame */
      } else if (s->in_level >= 4) {
          for (int i = 0; i < 4; i++) {

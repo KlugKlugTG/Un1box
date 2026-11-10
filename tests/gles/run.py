@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """Check the guest's GL bridge where it can be checked without a device.
 
-  vertex arrays  the engine's own vertex array object state -- the record a bind
-                 swaps, and the entry points that move it -- sliced out of
-                 hw/arm/gles-host.c and driven: names, the array state that
-                 travels, the buffer references that travel with it, and the host
-                 mirror, the fetch scratch and GL_ARRAY_BUFFER, which must not
-  name table     the ids the guest calls are the ones the bridge dispatches, with
-                 the argument counts and the batching the table promises
+  engine stack   the patches in ci/engine-patches apply to a clean checkout
+                 and leave the bridge itself alone -- the guest itpacks are
+                 built from the same engine ref the APK is, so a patch that
+                 touched the bridge would put the two apart
   wiring         the contract around the patch, checked as text
   engine stack   the patches in ci/engine-patches apply to a clean checkout
 
-The engine side needs a checkout: --engine, $LT_ENGINE_SOURCE, or a qemu-ios/
-directory beside this repository. An unpatched checkout is copied out of git into
+The stack check needs a checkout: --engine, $LT_ENGINE_SOURCE, or a qemu-ios/ directory
+beside this repository. The bridge's own records and its platform are the engine's
+now, and its tests/slice and its build cover them; what stays here is ours. An unpatched checkout is copied out of git into
 a temporary directory and the patches are applied there, so nothing in either
 tree is modified. Without one, the engine checks are skipped and the wiring
 checks still run against the patch.
@@ -21,7 +19,6 @@ checks still run against the patch.
 """
 import argparse
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -33,7 +30,6 @@ HERE = ROOT / "tests" / "gles"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "tests"))       # the slicer, shared with tests/mic
 
-import slice as slicer  # noqa: E402
 import wiring  # noqa: E402
 
 PATCHES = ROOT / "ci" / "engine-patches"
@@ -105,8 +101,7 @@ def engine_tree(path, scratch):
             raise Failure(f"{patch.name} does not apply to {path} at HEAD: "
                           f"{applied.stderr.strip()[:400]}")
     if MARKER not in bridge.read_text(errors="ignore"):
-        raise Failure(f"the {len(patches)} patches applied but {BRIDGE} has no {MARKER}: "
-                      f"{wiring.VAO_PATCH.name} does not carry the vertex array objects")
+        raise Failure(f"{BRIDGE} has no {MARKER}: not this fork's engine, or its GL was lost")
     STACK_NOTE = f"{len(patches)} patches applied clean to {path} at HEAD"
     return target
 
@@ -125,52 +120,6 @@ def resolve_engine(explicit, scratch):
     if candidate:
         raise Failure(f"{path} is not an engine checkout (no {BRIDGE})")
     return None, "no engine checkout: the engine checks are skipped"
-
-
-def compile_and_run(test_file, flags, scratch):
-    """Slice the test against the engine, build it and run it."""
-    generated = scratch / (test_file.stem + ".gen" + test_file.suffix)
-    binary = scratch / test_file.stem
-    _, own_flags, own_libs = slicer.generate(test_file, ROOT, ENGINE, generated)
-    command = [shutil.which("cc") or "cc", "-std=gnu11", "-O1", "-g", *own_flags, *flags]
-    if SANITIZE:
-        command += ["-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-    command += [str(generated), "-o", str(binary), *own_libs]
-    built = sh(command)
-    if built.returncode:
-        raise Failure("compile failed:\n" + built.stderr.strip()[-4000:])
-    ran = sh([str(binary)])
-    if ran.returncode:
-        raise Failure("failed:\n" + (ran.stdout + ran.stderr).strip()[-4000:])
-    return ran.stdout.strip()
-
-
-def name_table(engine):
-    """The ids the guest calls, as the engine's own table promises them."""
-    text = (engine / NAME_TABLE).read_text(errors="ignore")
-    rows = {}
-    for match in re.finditer(r"GLES_FN\(\s*(\w+)\s*,\s*\w+\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([^)]*)\)", text):
-        rows[int(match.group(2))] = (match.group(1), int(match.group(3)), match.group(4).strip())
-    problems = []
-    for slot, _, name, argc in wiring.ENTRY_POINTS:
-        row = rows.get(slot)
-        if row is None:
-            problems.append(f"{name} ({slot}) is not in the name table")
-            continue
-        if row[0] != name:
-            problems.append(f"id {slot} is {row[0]}, but the bridge dispatches it as {name}")
-        if row[1] != argc:
-            problems.append(f"{name} sends {row[1]} argument(s), the bridge reads {argc}")
-        # A bind only sets state, so the front end may queue it. Generate writes a
-        # list the guest reads at once, delete reads one, and is returns the answer:
-        # none of those may be queued behind the frame.
-        batched = "GLES_F_BATCH" in row[2]
-        if batched != name.startswith("glBindVertexArray"):
-            problems.append(f"{name} is {'batched' if batched else 'not batched'}, and "
-                            + ("only a bind may be queued" if not batched else "the guest reads it at once"))
-    if problems:
-        raise AssertionError("; ".join(problems))
-    return f"{len(wiring.ENTRY_POINTS)} ids: the names, the argument counts and the batching the bridge expects"
 
 
 def main():
@@ -194,18 +143,10 @@ def main():
             report.add("engine checkout", False, str(failure))
         print(f"engine: {note}")
 
-        print("the engine's vertex array state")
+        print("the stack against the engine")
         if ENGINE is None:
-            report.add("vertex arrays", True, "skipped: no engine checkout")
-            report.add("name table", True, "skipped: no engine checkout")
             report.add("engine stack", True, "skipped: no engine checkout")
         else:
-            report.run("vertex arrays: names, binds, deletes, and what stays with the context",
-                       lambda: compile_and_run(HERE / "vao.c",
-                                               ["-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter"],
-                                               scratch))
-            report.run("name table: the ids, their argument counts and their batching",
-                       lambda: name_table(ENGINE))
             report.run("engine stack: the patches apply to a clean checkout", lambda: STACK_NOTE)
 
         print("the contract around the patch")

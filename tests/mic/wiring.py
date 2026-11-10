@@ -171,14 +171,15 @@ def portable_pushes_from_the_capture_port():
         if "host_mic_read_frame(" not in line:
             continue
         text = line.strip()
-        if text.startswith(("*", "//", MIC_CALL, GATED_MIC_CALL)):
+        if text.startswith(("*", "//", MIC_CALL, GATED_MIC_CALL)) or "} else if (s->host_mic &&" in text:
             continue
         if text.startswith(("bool host_mic_read_frame", "void host_mic_read_frame")):
             continue  # its own definition or declaration
         calls.append(text)
     require(not calls, f"host_mic_read_frame() has unexpected call sites: {calls}")
     site = [text for text in body.splitlines()
-            if text.strip().startswith((MIC_CALL, GATED_MIC_CALL))]
+            if text.strip().startswith((MIC_CALL, GATED_MIC_CALL))
+            or "} else if (s->host_mic && host_mic_read_frame(" in text]
     require(len(site) == 1,
             f"the capture port is the ring's one reader, and the patch has {len(site)}: "
             f"{[text.strip() for text in site]}")
