@@ -362,12 +362,14 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   check each of those, so the worker keeps the capture off and the row is gone rather than shipping
   a broken switch. The engine models the ISP on the A4 boards only (iPhone 4, iPod touch 4G, iPad 1);
   the S5L8920 boards have no ISP model at all, so an iPhone 3GS still cannot use the camera.
-- [ ] The guest's resolver no longer hands iOS 6 AAAA records when the phone has no IPv6 address
-  it could send from (`ci/engine-patches/0016-engine-dns-ipv4-only.patch`): page loads otherwise
-  wait on a connect that cannot leave the phone before falling back to the A record, which is most
-  of what "the Internet is dumb" feels like on a v4-only carrier or behind a v6-less VPN. The same
-  patch raises the resolver cache from 60 s to 300 s. It is a host-side check (`getifaddrs`, cached
-  for 30 s), so a phone that does have IPv6 keeps its AAAA answers. Not measured on a device yet.
+- [ ] The guest's network is IPv4-only (`0016`, `0017`): every board's default `wifi0` user net is
+  created with `ipv6=off`, and the Android resolver answers AAAA questions with an empty NOERROR
+  instead of the phone's IPv6 addresses. netd answers whether or not the phone can route the
+  address, and slirp's NAT66 is both slower than its IPv4 path and dead on a carrier or VPN that
+  black-holes IPv6: iOS 6 then waits out a connect that never leaves the phone before trying the A
+  record, on every site and every Cydia source. The resolver cache also lives 300 s now instead of
+  60. This is a deliberate loss of IPv6 in the guest; if the phone's IPv6 path is later measured to
+  be reliable, the filter should become a runtime check again. Not measured on a device yet.
 - [ ] Stop was seen disabled once after Store use; not reproduced.
 - [ ] The Store's install queue keeps the guest running with Un1box off screen (then pauses it when the
   queue is empty); not yet tried on a phone. Guest audio is not muted meanwhile, and Android 14+ ends a

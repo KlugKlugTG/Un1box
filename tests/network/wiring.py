@@ -105,20 +105,23 @@ def the_resolver_caches_what_the_phone_answered():
     return "cached with a TTL, locked, and consulted first"
 
 
-def the_resolver_does_not_hand_out_unreachable_ipv6():
-    """An AAAA record on a phone without IPv6 makes iOS 6 stall on every page before falling back."""
+def the_resolver_does_not_hand_out_ipv6_the_user_net_cannot_carry():
+    """AAAA answers on an IPv4 user net stall every page for a connect that never leaves the phone."""
     patch = ROOT / "ci" / "engine-patches" / "0016-engine-dns-ipv4-only.patch"
     body = read(patch)
-    require("android_has_ipv6" in body,
-            "the resolver asks the phone's nameserver for AAAA records whatever the phone's own routes are")
-    require("IN6_IS_ADDR_LINKLOCAL" in body and "IN6_IS_ADDR_LOOPBACK" in body,
-            "a loopback or link-local address is counted as IPv6 a guest could reach")
     require("if (qtype == 28)" in body and "j->rcode = 0;" in body,
-            "an AAAA question on an IPv4-only phone is not answered empty")
-    require("? AF_UNSPEC : AF_INET" in body,
-            "an ANY question can still return an IPv6 address the phone cannot reach")
+            "an AAAA question is still resolved, and iOS 6 will try an address the user net cannot route")
+    require("if (a->ai_family == AF_INET)" in body and "\n+        if (a->ai_family == AF_INET6)" not in body,
+            "the ANY path can still return an IPv6 address")
+    require(".ai_family = qtype == 1 ? AF_INET : AF_UNSPEC" in body,
+            "the IPv4 question does not ask for AF_INET explicitly")
     require("DNS_CACHE_TTL_S 300" in body,
             "the resolver cache still expires in a minute, so Cydia re-asks all its names that often")
+    net = read(ROOT / "ci" / "engine-patches" / "0017-engine-user-net-ipv4.patch")
+    require(net.count("id=wifi0,lan=off,ipv6=off") >= 3,
+            "the boards' user net still offers IPv6, so the guest can pick an address slirp's NAT66 carries badly")
+    require("s5l8920.c" in net and "ipad1.c" in net and "ipod_touch_1g.c" in net,
+            "not every board's default netdev is IPv4-only")
 
 
 CHECKS = [
@@ -126,5 +129,5 @@ CHECKS = [
     ("the patch: the guest's own traffic is the signal", the_guest_s_own_traffic_is_the_signal),
     ("the patch: the state is created, reset and saved", the_state_lives_and_dies_with_the_machine),
     ("the engine: the Android resolver caches its answers", the_resolver_caches_what_the_phone_answered),
-    ("the engine: the resolver does not hand out IPv6 the phone cannot reach", the_resolver_does_not_hand_out_unreachable_ipv6),
+    ("the engine: the user net is IPv4 and AAAA is answered empty", the_resolver_does_not_hand_out_ipv6_the_user_net_cannot_carry),
 ]
