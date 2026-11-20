@@ -182,7 +182,12 @@ def the_tab_is_a_destination_of_its_own():
     require("JAILBREAK" in read(SHELL_KT),
             "Shell.kt has no JAILBREAK destination: the tab has nowhere to go")
     nav = read(UIKIT_KT)
-    require('Triple(Screen.JAILBREAK' in nav and '"Jailbreak"' in nav,
+    body = nav.split("internal fun LtNavBar", 1)
+    require(len(body) > 1, "UiKit.kt has no LtNavBar: there is no bar to put a tab in")
+    # The list's element type is the bar's business (a Triple before the iOS 6 pass, a pair with a
+    # tab item now); what has to stay is the destination and the label the user reads.
+    body = body[1].split("\n}", 1)[0]
+    require("Screen.JAILBREAK" in body and '"Jailbreak"' in body,
             "the navigation bar does not offer the Jailbreak tab")
     require('Screen.JAILBREAK to "open_jailbreak"' in nav,
             "the tab has no test tag, so nothing can open it in a check")

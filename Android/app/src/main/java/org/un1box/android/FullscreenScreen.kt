@@ -18,6 +18,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import kotlin.math.roundToInt
@@ -59,8 +61,8 @@ internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifi
             GuestScreen(host, guestSurface, Modifier.size(screenWidth, screenHeight).align(Alignment.Center), overlayScale = 1f, inDeviceView = false)
             Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height((maxHeight - screenHeight) / 2), contentAlignment = Alignment.Center) {
                 // The hardware keys sit on their own pane, so the black border does not look like a gap.
-                Box(Modifier.padding(horizontal = 14.dp).clip(RoundedCornerShape(28.dp))
-                    .background(Color.White.copy(alpha = 0.05f)).border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(28.dp))) {
+                Box(Modifier.padding(horizontal = 14.dp).clip(RoundedCornerShape(16.dp))
+                    .ios6Lacquer(RoundedCornerShape(16.dp), Color(0xFF4E4E52), Color(0xFF141416), Color(0xFF050506), gloss = 0.5f)) {
                     ButtonBar(host, Modifier.fillMaxWidth().height(64.dp)) { confirmStop = true }
                 }
             }
@@ -70,7 +72,8 @@ internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifi
             LaunchedEffect(visible, touched) { if (visible) { delay(4_000); visible = false } }
             GuestScreen(host, guestSurface, Modifier.size(screenWidth, screenHeight).align(Alignment.Center), overlayScale = 1f, inDeviceView = false)
             AnimatedVisibility(visible, Modifier.align(Alignment.BottomCenter), enter = fadeIn(), exit = fadeOut()) {
-                ButtonBar(host, Modifier.padding(16.dp).background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(28.dp))
+                ButtonBar(host, Modifier.padding(16.dp).ios6Lacquer(RoundedCornerShape(16.dp), Color(0xFF3E3E42), Color(0xEE08080A),
+                    Color(0xFF050506), gloss = 0.45f)
                     .height(88.dp).widthIn(max = 420.dp).fillMaxWidth(), onInteract = { touched++ }) { confirmStop = true }
             }
             if (!visible) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp).size(72.dp, 28.dp).clip(RoundedCornerShape(14.dp))
@@ -151,7 +154,12 @@ private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Uni
 @Composable
 private fun HardwareKey(icon: ImageVector, label: String, id: Int, host: GuestHost, enabled: Boolean, onInteract: () -> Unit, tag: String) {
     val haptic = LocalHapticFeedback.current
-    Box(Modifier.size(48.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.08f))
+    Box(Modifier.size(48.dp).clip(CircleShape)
+        .drawBehind {
+            drawCircle(Brush.verticalGradient(listOf(Color(0xFF6E6E72), Color(0xFF2A2A2E), Color(0xFF101012))))
+            drawCircle(Color.White.copy(alpha = 0.45f), radius = size.minDimension * 0.47f, style = androidx.compose.ui.graphics.drawscope.Stroke(1f))
+            drawCircle(Color.White.copy(alpha = 0.12f), radius = size.minDimension * 0.30f, style = androidx.compose.ui.graphics.drawscope.Stroke(1f))
+        }
         .semantics { contentDescription = label; role = Role.Button }.testTag(tag)
         .held(enabled, id, { button, down -> if (down) onInteract(); host.button(button, down) }) { if (host.settings.haptics) haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
         contentAlignment = Alignment.Center) {
@@ -162,6 +170,10 @@ private fun HardwareKey(icon: ImageVector, label: String, id: Int, host: GuestHo
 @Composable
 private fun SmallKey(icon: ImageVector, label: String, onClick: () -> Unit, enabled: Boolean, tag: String) {
     Box(Modifier.size(44.dp).clip(CircleShape).clickable(enabled = enabled, onClick = onClick)
+        .drawBehind {
+            drawCircle(Color.White.copy(alpha = 0.06f))
+            drawCircle(Color.White.copy(alpha = 0.18f), radius = size.minDimension * 0.47f, style = androidx.compose.ui.graphics.drawscope.Stroke(1f))
+        }
         .semantics { contentDescription = label }.testTag(tag), contentAlignment = Alignment.Center) {
         Icon(icon, null, Modifier.size(22.dp), tint = Color.White.copy(alpha = if (enabled) 0.75f else 0.3f))
     }
@@ -169,13 +181,17 @@ private fun SmallKey(icon: ImageVector, label: String, onClick: () -> Unit, enab
 
 /** The Home button, drawn like the device's: a ring with a rounded square. */
 @Composable
-private fun HomeKey(host: GuestHost, enabled: Boolean, onInteract: () -> Unit, size: Dp = 64.dp) {
+private fun HomeKey(host: GuestHost, enabled: Boolean, onInteract: () -> Unit, diameter: Dp = 64.dp) {
     val haptic = LocalHapticFeedback.current
-    Box(Modifier.size(size).clip(CircleShape).background(Color.White.copy(alpha = 0.06f)).border(1.5.dp, Color.White.copy(alpha = if (enabled) 0.35f else 0.15f), CircleShape)
+    Box(Modifier.size(diameter).clip(CircleShape)
+        .drawBehind {
+            drawCircle(Brush.radialGradient(listOf(Color(0xFF2C2C30), Color(0xFF0A0A0C))))
+            drawCircle(Color.White.copy(alpha = 0.30f), radius = size.minDimension * 0.475f, style = androidx.compose.ui.graphics.drawscope.Stroke(1.2f))
+        }
         .semantics { contentDescription = "Home"; role = Role.Button }.testTag("home_button")
         .held(enabled, GuestButton.HOME, { button, down -> if (down) onInteract(); host.button(button, down) }) { if (host.settings.haptics) haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
         contentAlignment = Alignment.Center) {
-        Box(Modifier.size(size * 0.3f).border(1.5.dp, Color.White.copy(alpha = if (enabled) 0.6f else 0.2f), RoundedCornerShape(size * 0.07f)))
+        Box(Modifier.size(diameter * 0.3f).border(1.5.dp, Color.White.copy(alpha = if (enabled) 0.6f else 0.2f), RoundedCornerShape(diameter * 0.07f)))
     }
 }
 
@@ -198,10 +214,8 @@ private fun FakeCallDialog(host: GuestHost, onDismiss: () -> Unit) {
         } },
         confirmButton = { Button(onClick = { host.fakeCall(number); onDismiss() },
             enabled = number.any { it.isDigit() }, modifier = Modifier.testTag("fake_call_ring")) { Text("Ring") } },
-        dismissButton = { Row {
-            TextButton(onClick = { host.endFakeCall(); onDismiss() }, modifier = Modifier.testTag("fake_call_hangup")) { Text("Hang up") }
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        } })
+        neutralButton = { TextButton(onClick = { host.endFakeCall(); onDismiss() }, modifier = Modifier.testTag("fake_call_hangup")) { Text("Hang up") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
 
 /** A fake SMS: it arrives as a real one would, on the lock screen and in Messages. */
@@ -236,11 +250,7 @@ private fun FakeBatteryDialog(host: GuestHost, onDismiss: () -> Unit) {
         text = { Column {
             Text("$level%", style = MaterialTheme.typography.titleLarge)
             Slider(level.toFloat(), { level = it.roundToInt() }, valueRange = 0f..100f, modifier = Modifier.testTag("fake_battery_level"))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                modes.forEachIndexed { index, mode ->
-                    FilterChip(selected = charging == index, onClick = { charging = index }, label = { Text(mode) })
-                }
-            }
+            Ios6Segmented(modes, charging, { charging = it })
             Spacer(Modifier.height(8.dp))
             Text("The guest shows the new level at its next battery poll, a few seconds from now.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

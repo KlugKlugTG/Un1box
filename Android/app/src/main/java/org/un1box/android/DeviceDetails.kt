@@ -6,11 +6,9 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -114,15 +112,11 @@ internal fun DeviceDetails(device: DeviceSummary, onClose: () -> Unit) {
     LaunchedEffect(device.id) { facts = withContext(Dispatchers.IO) { runCatching { DeviceFacts.read(context, device.id) }.getOrNull() } }
     LaunchedEffect(device.id) { space = withContext(Dispatchers.IO) { runCatching { DeviceFacts.space(context, device.id) }.getOrNull() } }
     BackHandler(onBack = onClose)
-    Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.testTag("device_details"), color = MaterialTheme.colorScheme.background) {
+    Ios6Page(Modifier.semantics { testTagsAsResourceId = true }.testTag("device_details")) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().height(68.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                GlassIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClose, tag = "details_back")
-                Spacer(Modifier.width(8.dp))
-                Text(device.name, style = MaterialTheme.typography.headlineSmall, maxLines = 1)
-            }
+            Ios6NavBar(device.name, start = { Ios6BackButton("Back", onClose, tag = "details_back") })
             SelectionContainer {
-                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 10.dp)) {
                     val f = facts
                     val identity = f?.identity
                     Section("Device") {
@@ -183,8 +177,11 @@ private fun Section(title: String, note: String? = null, content: @Composable Co
 
 @Composable
 private fun Fact(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.Top) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(132.dp))
-        Text(value, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+    Column {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.Top) {
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(120.dp))
+            Text(value, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        }
+        Ios6Separator(inset = 12.dp)
     }
 }

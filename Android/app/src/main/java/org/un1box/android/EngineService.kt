@@ -193,12 +193,9 @@ class EngineService : Service() {
             // device tree's isp node and the guest has no camera at all. IT_CAMERA is the engine's switch for a
             // session the app starts, and it has to be set before the machine is created, which is what the
             // start below does.
-            // Settings no longer offers the camera: the guest's ISP reports frame metadata that did not
-            // toggle from the previous frame (AppleH3CamIn::ispInterruptHandler) and no picture reaches the
-            // Camera app, so the path stays dark until that is understood. The capture, the frames and the
-            // summary below are all intact and this is the one place that decides -- which is also why the
-            // preference stored while the switch existed is not read: with no switch, nothing could turn it
-            // off again, and a camera that cannot deliver a picture is not something to leave running.
+            // No camera: the Settings row is out while the picture is still wrong (rotated, the colours
+            // invert after a sensor switch, and the guest can sit at 99% CPU). A preference stored while
+            // the row existed must not leave a capture running, so the worker decides here, not Settings.
             cameraWanted = false
             cameraError = ""
             android.system.Os.setenv("IT_CAMERA", if (cameraWanted) "1" else "0", true)
@@ -737,7 +734,7 @@ class EngineService : Service() {
         camera = capture
         cameraOn = true
         cameraError = ""
-        capture.start()
+        capture.start(Native.cameraSensor())
     }
     private fun stopCamera() {
         cameraOn = false
@@ -754,7 +751,10 @@ class EngineService : Service() {
     private fun cameraSummary(): String {
         if (!cameraWanted) return "Camera off"
         if (camera == null) return cameraError.ifEmpty { "Camera not started yet" }
-        val where = when (Native.cameraSensor()) {
+        val sensor = Native.cameraSensor()
+        // The guest names a lens when its camera app opens or flips; the capture follows it.
+        camera?.follow(sensor)
+        val where = when (sensor) {
             Native.CAMERA_FRONT -> "the guest is on the front camera"
             Native.CAMERA_BACK -> "the guest is on the back camera"
             else -> "the guest has named no camera"

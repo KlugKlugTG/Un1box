@@ -155,10 +155,9 @@ def android_the_worker_decides_and_keeps_the_camera_off():
     require("cameraWatch" not in service and "capture.follow(" not in service,
             "the capture waits for the guest to name a camera again: a guest that never does shows nothing")
     capture = read("Android/app/src/main/java/org/un1box/android/CameraCapture.kt")
-    require("LENS_FACING_BACK" in capture, "the capture does not open the back camera")
-    require("LENS_FACING_FRONT" not in capture,
-            "the capture can still open the front camera, which is the switch that used to leave the guest blank")
-    require("Native.CAMERA_BACK," in capture, "the frame does not say which camera it came from")
+    require("LENS_FACING_BACK" in capture, "the capture has no back camera to open")
+    # The follow-the-guest code stays for the next pass, but nothing starts it: the worker pins the capture off.
+    require("Native.CAMERA_BACK" in capture, "the frame does not say which camera it came from")
 
 
 def android_settings_does_not_offer_the_camera():
