@@ -615,6 +615,7 @@ class EngineService : Service() {
         } })
         putBoolean("userPaused", userPaused); putBoolean("focusPaused", focusPaused); putBoolean("audioOutputOn", audioOn)
         putBoolean("microphoneOn", microphoneOn); putString("microphoneError", microphoneError)
+        putString("microphoneStatus", microphoneSummary())
         putString("cameraStatus", cameraSummary())
         putLongArray("buttonDownAdmissions", LongArray(2) { buttonDownAdmissions.get(it) })
         putLongArray("buttonUpAdmissions", LongArray(2) { buttonUpAdmissions.get(it) })
@@ -741,6 +742,24 @@ class EngineService : Service() {
         camera?.stop()
         camera = null
     }
+    /**
+     * What the microphone is doing, in one line for Settings: whether the recorder runs, and whether
+     * the guest has asked the engine for input at all (`capturing` turns on when its I2S RX command
+     * starts). A phone that records silence with `capturing` off never reached the capture port --
+     * that is an input route problem in the guest, not a missing block from Android.
+     */
+    private fun microphoneSummary(): String {
+        if (!microphoneWanted) return "Microphone off"
+        if (!microphoneOn) return microphoneError.ifEmpty { "Microphone not started yet" }
+        val info = Native.microphoneInfo()
+        val ring = if (info.size >= 6 && info[0].toInt() == 0) {
+            val capturing = if (info[3] == 1L) "guest capturing" else "guest not capturing"
+            "ring ${info[2]} queued, pushed ${info[4]}, dropped ${info[5]}, $capturing"
+        } else "no ring report"
+        val problem = microphoneError.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""
+        return "phone recorder running · $ring$problem"
+    }
+
     /**
      * What the camera is doing, in one line for the status bundle (Settings showed it while it had a camera
      * switch). It is the only view of the path that needs no adb: the

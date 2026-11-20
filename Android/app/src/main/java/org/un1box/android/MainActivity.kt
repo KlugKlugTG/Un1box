@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     /** The phone's cameras into the guest, read by the worker at the next guest start. */
     override val camera: Boolean get() = settings.camera
     override var cameraStatus by mutableStateOf("")
+    override var microphoneStatus by mutableStateOf("")
         private set
     /** The phone's microphone into the guest, read by the worker at the next guest start. */
     override val microphone: Boolean get() = settings.microphone
@@ -264,6 +265,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                             if (socket != muxSocket) { muxSocket = socket; store.guestChanged(); if (socket.isNotEmpty() && overlay == Screen.STORE) store.refreshGuest() }
                             appServicesError = b.getString("appServicesError") ?: ""
                             cameraStatus = b.getString("cameraStatus") ?: ""
+                            microphoneStatus = b.getString("microphoneStatus") ?: ""
                             displayView?.keepScreenOn = status in listOf("starting", "running", "stopping")
                             if (status == "running") startSensors() else stopSensors()
                         }

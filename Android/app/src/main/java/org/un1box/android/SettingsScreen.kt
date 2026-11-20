@@ -70,6 +70,9 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
                         s.headphones, "headphones_toggle", info = { headphonesInfo = true }) { s.headphones = it }
                     SwitchRow(LtIcons.Mic, "Microphone", "This phone's microphone becomes the device's input, for Voice Memos, Shazam and anything else that records; iOS asks inside the device the first time an app records. Android asks for the microphone permission when you turn this on. Applies the next time the device starts",
                         host.microphone, "microphone_toggle") { host.useMicrophone(it) }
+                    if (host.microphone && host.microphoneStatus.isNotEmpty()) Text(host.microphoneStatus,
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp).testTag("microphone_status"))
                 }
                 // No camera row: the viewfinder and the stills are not good enough to offer yet
                 // (the picture is upside down on the 4G, its colours invert after a switch and the
