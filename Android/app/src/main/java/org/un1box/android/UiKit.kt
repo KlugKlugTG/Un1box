@@ -61,20 +61,20 @@ internal fun GlassSurface(modifier: Modifier = Modifier, shape: Shape = Material
                           content: @Composable BoxScope.() -> Unit) {
     val dark = Ios6.isDark()
     val top = when {
-        dark && strong -> Color(0xFF2E4463)
-        dark -> Color(0xFF2A2A2E)
-        strong -> Color(0xFFEAF2FC)
+        dark && strong -> Color(0xFF2A3F5C)
+        dark -> Color(0xFF1D1D20)
+        strong -> Color(0xFFDCE8F6)
         else -> Color(0xFFFFFFFF)
     }
     val bottom = when {
-        dark && strong -> Color(0xFF20304A)
-        dark -> Color(0xFF1B1B1E)
-        strong -> Color(0xFFD7E5F7)
-        else -> Color(0xFFF2F2F5)
+        dark && strong -> Color(0xFF21334B)
+        dark -> Color(0xFF19191C)
+        strong -> Color(0xFFCFDFF2)
+        else -> Color(0xFFFBFBFC)
     }
     Box(modifier
-        .then(if (raised) Modifier.shadow(3.dp, shape) else Modifier)
-        .ios6Lacquer(shape, top, bottom, if (dark) Color(0xFF0B0B0C) else Color(0xFF8E8E93), gloss = if (dark) 0.25f else 0.55f),
+        .then(if (raised) Modifier.shadow(2.dp, shape) else Modifier)
+        .ios6Lacquer(shape, top, bottom, if (dark) Color(0xFF39393D) else Color(0xFFAEAEB2), gloss = if (dark) 0.12f else 0.20f),
         content = content)
 }
 
@@ -92,7 +92,7 @@ internal fun StatusPill(status: String, modifier: Modifier = Modifier) {
     val dark = Ios6.isDark()
     Row(modifier.heightIn(min = 24.dp)
         .ios6Lacquer(CircleShape, if (dark) Color(0xFF3A3A3E) else Color(0xFFF7F7F9), if (dark) Color(0xFF232326) else Color(0xFFD5D5DA),
-            if (dark) Color(0xFF0B0B0C) else Color(0xFF9A9AA0), gloss = 0.6f)
+            if (dark) Color(0xFF39393D) else Color(0xFFAEAEB2), gloss = 0.35f)
         .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(7.dp).background(color, CircleShape))
@@ -116,7 +116,7 @@ internal fun statusColor(status: String) = when (status) {
 internal fun StatChip(caption: String, value: String, tint: Color, modifier: Modifier = Modifier) {
     val dark = Ios6.isDark()
     Row(modifier.ios6Lacquer(CircleShape, if (dark) Color(0xCC2A2A2E) else Color(0xE6FFFFFF),
-        if (dark) Color(0xCC1B1B1E) else Color(0xE6E9E9EE), if (dark) Color(0xFF0B0B0C) else Color(0xFF9A9AA0), gloss = 0.5f)
+        if (dark) Color(0xCC1B1B1E) else Color(0xE6E9E9EE), if (dark) Color(0xFF39393D) else Color(0xFFAEAEB2), gloss = 0.3f)
         .padding(horizontal = 9.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(6.dp).background(tint, CircleShape))
         Spacer(Modifier.width(6.dp))
@@ -145,7 +145,7 @@ internal fun GradientButton(text: String, onClick: () -> Unit, modifier: Modifie
                             icon: ImageVector? = null, enabled: Boolean = true, tag: String? = null) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(8.dp)
     Row(modifier.then(if (enabled) Modifier.shadow(2.dp, shape) else Modifier)
         .ios6Lacquer(shape, if (enabled) Ios6.ButtonTop else Color(0xFFCFCFD4), if (enabled) Ios6.ButtonBottom else Color(0xFF9A9AA0),
             if (enabled) Ios6.ButtonEdge else Color(0xFF8E8E93), gloss = if (pressed) 0.3f else 1f)

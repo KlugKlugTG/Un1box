@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -380,7 +379,7 @@ private fun ColumnScope.DeviceTab(model: StoreModel) {
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
     val rows = if (model.showIncompatible) model.results else model.results.filter { LegacyStore.incompatibility(it) == null }
     if (rows.isEmpty() && !model.searching) EmptyResults(model.results.isNotEmpty())
-    else LazyColumn(Modifier.weight(1f).testTag("store_results"), state = model.resultsList, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+    else LazyColumn(Modifier.weight(1f).testTag("store_results"), state = model.resultsList, contentPadding = PaddingValues(vertical = 4.dp)) {
         items(rows, key = { it.optInt("ipa_id") }) { app -> ResultRow(app, model) }
     }
 }
@@ -391,7 +390,7 @@ private fun StoreTopBar(model: StoreModel, running: Boolean, onPickLocal: () -> 
     Ios6NavBar(
         title = "Legacy Store",
         subtitle = model.target?.let { "${shortProductName(it.productType)} · iOS ${it.ios}" } ?: "No device selected",
-        start = { Ios6BarButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tag = "store_close") },
+        start = { Ios6BackButton("Back", onBack, tag = "store_close") },
         end = {
             if (canSearch) IconButton(onClick = { model.searchOpen = true }, modifier = Modifier.testTag("store_search")) {
                 Icon(Icons.Filled.Search, "Search", tint = Color.White)
@@ -441,7 +440,7 @@ private fun ColumnScope.EmptyResults(filtered: Boolean) {
 @Composable
 internal fun ResultRow(app: JSONObject, model: StoreModel, rank: Int? = null) {
     if (app.optBoolean("ghost")) {
-        Row(Modifier.fillMaxWidth().alpha(0.5f).padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().ios6TableRow().alpha(0.5f).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Column {
                 Text(app.optString("name"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                 Text("Not in the archive", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -451,9 +450,9 @@ internal fun ResultRow(app: JSONObject, model: StoreModel, rank: Int? = null) {
     }
     val problem = LegacyStore.incompatibility(app)
     val installedVersion = model.installed[app.optString("bundle_id")]
-    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-        .ios6CellLacquer(RoundedCornerShape(9.dp))
-        .clickable { model.open(app) }.padding(horizontal = 8.dp, vertical = 8.dp),
+    Row(Modifier.fillMaxWidth()
+        .ios6TableRow()
+        .clickable { model.open(app) }.padding(start = 10.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically) {
         rank?.let { Text(it.toString(), Modifier.width(28.dp), style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center); Spacer(Modifier.width(6.dp)) }
         Box(Modifier.alpha(if (problem == null) 1f else 0.5f)) { AppIcon(app.optString("icon_url").ifEmpty { null }, 48) }
@@ -507,7 +506,7 @@ private fun ColumnScope.StoreDetails(model: StoreModel, app: JSONObject, running
             LazyColumn(Modifier.testTag("store_versions"), state = versionList, contentPadding = PaddingValues(vertical = 6.dp)) {
                 items(rows ?: emptyList(), key = { it.ipaId }) { copy ->
                     val twin = (rows ?: emptyList()).count { it.version == copy.version } > 1
-                    Row(Modifier.fillMaxWidth().clickable { model.choose(copy.ipaId) }.padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().ios6TableRow(inset = 8.dp).clickable { model.choose(copy.ipaId) }.padding(horizontal = 10.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(model.selected == copy.ipaId, { model.choose(copy.ipaId) })
                         Column {
                             Text(copy.version + if (twin) " · copy ${copy.ipaId}" else "", style = MaterialTheme.typography.bodyLarge)
@@ -533,7 +532,7 @@ private fun ColumnScope.StoreDetails(model: StoreModel, app: JSONObject, running
         else if (!model.servicesAvailable) note("App installation is not included in this build.", true)
         Spacer(Modifier.height(8.dp))
         val inQueue = model.queued(app)?.takeIf { it.active }
-        Button(onClick = { model.candidate?.let { model.install(it); model.close() } }, Modifier.align(Alignment.CenterHorizontally).height(52.dp).testTag("store_install"),
+        Button(onClick = { model.candidate?.let { model.install(it); model.close() } }, Modifier.align(Alignment.CenterHorizontally).height(44.dp).testTag("store_install"),
             contentPadding = PaddingValues(horizontal = 40.dp), enabled = running && model.servicesAvailable && model.candidate != null && inQueue == null) {
             Text(if (inQueue != null) "In the queue" else if (installedVersion != null) "Reinstall" else "Install", style = MaterialTheme.typography.titleMedium)
         }

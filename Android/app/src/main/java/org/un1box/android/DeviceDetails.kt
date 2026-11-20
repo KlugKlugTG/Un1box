@@ -6,11 +6,9 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -116,7 +114,7 @@ internal fun DeviceDetails(device: DeviceSummary, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
     Ios6Page(Modifier.semantics { testTagsAsResourceId = true }.testTag("device_details")) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Ios6NavBar(device.name, start = { Ios6BarButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClose, tag = "details_back") })
+            Ios6NavBar(device.name, start = { Ios6BackButton("Back", onClose, tag = "details_back") })
             SelectionContainer {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 10.dp)) {
                     val f = facts

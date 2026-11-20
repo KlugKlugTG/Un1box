@@ -122,9 +122,15 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
 private fun DeviceRow(device: DeviceSummary, switchable: Boolean, editable: Boolean, needsRecovery: Boolean,
                       onSelect: () -> Unit, onDetails: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
+    val dark = Ios6.isDark()
+    val fill = when {
+        device.selected && dark -> Color(0xFF2A3F5C)
+        device.selected -> Color(0xFFDCE8F6)
+        else -> Ios6.cell(dark)
+    }
     Column {
         Row(Modifier.fillMaxWidth()
-            .ios6CellLacquer(selected = device.selected)
+            .ios6TableRow(dark = dark, background = fill)
             .clickable(enabled = switchable && !device.selected, onClick = onSelect)
             .padding(start = 12.dp, end = 6.dp, top = 10.dp, bottom = 10.dp).testTag("device_row"),
             verticalAlignment = Alignment.CenterVertically) {
@@ -145,10 +151,8 @@ private fun DeviceRow(device: DeviceSummary, switchable: Boolean, editable: Bool
                 Text(device.subtitle, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (device.selected) Box(Modifier.size(22.dp).ios6Lacquer(CircleShape, Ios6.ButtonTop, Ios6.ButtonBottom, Ios6.ButtonEdge),
-                contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Check, "Selected", Modifier.size(14.dp), tint = Color.White)
-            }
+            // iOS 6 marks the chosen row with a blue tick, not with a badge.
+            if (device.selected) Icon(Icons.Filled.Check, "Selected", Modifier.size(20.dp), tint = Ios6.Blue)
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "Options for ${device.name}") }
                 DropdownMenu(menu, { menu = false }) {
@@ -160,7 +164,6 @@ private fun DeviceRow(device: DeviceSummary, switchable: Boolean, editable: Bool
                 }
             }
         }
-        Spacer(Modifier.height(6.dp))
     }
 }
 

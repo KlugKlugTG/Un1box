@@ -55,48 +55,48 @@ internal object LtColors {
  */
 internal object Ios6 {
     // The one tint.
-    val Blue = Color(0xFF3478D4)
-    val BlueDeep = Color(0xFF0D4C96)
-    val BlueLight = Color(0xFF7FB2EA)
-    val BlueSelection = Color(0xFF1D62B5)
+    val Blue = Color(0xFF2F6FCF)
+    val BlueDeep = Color(0xFF0F4A90)
+    val BlueLight = Color(0xFF6FA3DF)
+    val BlueSelection = Color(0xFF1E5EAE)
 
     // Chrome: navigation bars, tab bars, toolbars.
-    val NavTop = Color(0xFF93B4D6)
-    val NavMid = Color(0xFF4C7FBD)
-    val NavBottom = Color(0xFF2A5A97)
+    val NavTop = Color(0xFF7397C2)
+    val NavMid = Color(0xFF4C79B0)
+    val NavBottom = Color(0xFF39629B)
     val NavTopDark = Color(0xFF6E6E72)
     val NavMidDark = Color(0xFF3A3A3D)
     val NavBottomDark = Color(0xFF151517)
-    val BarButtonTop = Color(0xFF7FA8DB)
-    val BarButtonBottom = Color(0xFF2A5E9F)
+    val BarButtonTop = Color(0xFF6E96C7)
+    val BarButtonBottom = Color(0xFF2E5C96)
 
     // Tab bars.
-    val TabTop = Color(0xFF5A5A5C)
-    val TabBottom = Color(0xFF121214)
-    val TabSelectedTop = Color(0xFF7C7C80)
-    val TabSelectedBottom = Color(0xFF2C2C30)
+    val TabTop = Color(0xFF47474A)
+    val TabBottom = Color(0xFF101012)
+    val TabSelectedTop = Color(0xFF5E5E62)
+    val TabSelectedBottom = Color(0xFF242427)
 
     // Buttons.
-    val ButtonTop = Color(0xFF8FBCEF)
-    val ButtonMid = Color(0xFF3C7CD2)
-    val ButtonBottom = Color(0xFF1C57A5)
-    val ButtonEdge = Color(0xFF103F7C)
-    val GrayButtonTop = Color(0xFFFBFBFB)
-    val GrayButtonMid = Color(0xFFDEDEE2)
-    val GrayButtonBottom = Color(0xFFB9B9BF)
-    val GrayButtonEdge = Color(0xFF8E8E93)
+    val ButtonTop = Color(0xFF77A9E2)
+    val ButtonMid = Color(0xFF3B78C8)
+    val ButtonBottom = Color(0xFF215FAE)
+    val ButtonEdge = Color(0xFF16457F)
+    val GrayButtonTop = Color(0xFFFCFCFC)
+    val GrayButtonMid = Color(0xFFE3E3E6)
+    val GrayButtonBottom = Color(0xFFC6C6CB)
+    val GrayButtonEdge = Color(0xFF9A9AA0)
     val DestructiveTop = Color(0xFFEC9089)
     val DestructiveMid = Color(0xFFD04237)
     val DestructiveBottom = Color(0xFFA72A21)
 
     // Paper.
-    val PageTop = Color(0xFFD7DCE1)
-    val PageBottom = Color(0xFFC2C9D1)
-    val PageDarkTop = Color(0xFF232326)
-    val PageDarkBottom = Color(0xFF141416)
+    val PageTop = Color(0xFFC9D0D8)
+    val PageBottom = Color(0xFFBCC4CD)
+    val PageDarkTop = Color(0xFF1D1D20)
+    val PageDarkBottom = Color(0xFF111113)
     val Cell = Color(0xFFFFFFFF)
     val CellDark = Color(0xFF1F1F22)
-    val Separator = Color(0xFFC7C7CC)
+    val Separator = Color(0xFFC6C6C8)
     val SeparatorDark = Color(0xFF34343A)
     val HeaderTop = Color(0xFFA9B5C4)
     val HeaderBottom = Color(0xFF8795A8)
@@ -111,13 +111,13 @@ internal object Ios6 {
     val Link = Color(0xFF1F5FAF)
 
     // Alert sheets (UIAlertView) are a blue-grey lacquer in both schemes.
-    val AlertTop = Color(0xFF6C809B)
-    val AlertBottom = Color(0xFF26344A)
-    val AlertButtonTop = Color(0xFF7C9CC9)
-    val AlertButtonBottom = Color(0xFF2F4E7B)
+    val AlertTop = Color(0xFF5B7290)
+    val AlertBottom = Color(0xFF2A3850)
+    val AlertButtonTop = Color(0xFF6F8FBE)
+    val AlertButtonBottom = Color(0xFF2C4C79)
 
     // Controls.
-    val SwitchTrackOn = Color(0xFF2A6FC4)
+    val SwitchTrackOn = Color(0xFF2B6FC3)
     val SwitchTrackOff = Color(0xFFD5D5DA)
     val SwitchKnobTop = Color(0xFFFFFFFF)
     val SwitchKnobBottom = Color(0xFFD4D4D9)
@@ -187,12 +187,12 @@ private fun iosStyle(size: Int, weight: FontWeight = FontWeight.Normal, line: In
     TextStyle(fontFamily = IosFont, fontSize = size.sp, lineHeight = line.sp, fontWeight = weight, letterSpacing = 0.sp)
 
 private val Type = Typography(
-    displayLarge = iosStyle(34, FontWeight.Bold, 40),
-    displayMedium = iosStyle(30, FontWeight.Bold, 36),
+    displayLarge = iosStyle(30, FontWeight.Bold, 36),
+    displayMedium = iosStyle(28, FontWeight.Bold, 34),
     displaySmall = iosStyle(26, FontWeight.Bold, 32),
-    headlineLarge = iosStyle(26, FontWeight.Bold, 32),
-    headlineMedium = iosStyle(23, FontWeight.Bold, 29),
-    headlineSmall = iosStyle(20, FontWeight.Bold, 25),
+    headlineLarge = iosStyle(22, FontWeight.Bold, 28),
+    headlineMedium = iosStyle(20, FontWeight.Bold, 26),
+    headlineSmall = iosStyle(18, FontWeight.Bold, 23),
     titleLarge = iosStyle(20, FontWeight.Bold, 25),
     titleMedium = iosStyle(17, FontWeight.SemiBold, 22),
     titleSmall = iosStyle(16, FontWeight.SemiBold, 20),

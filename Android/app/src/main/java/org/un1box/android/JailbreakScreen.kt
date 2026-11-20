@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
@@ -281,7 +280,7 @@ private fun JailbreakHeader(
     onClose: () -> Unit,
 ) {
     Ios6NavBar(title,
-        start = { if (back) Ios6BarButton(Icons.Filled.ArrowBack, "Back", onBack) },
+        start = { if (back) Ios6BackButton("Back", onBack) },
         end = {
             if (action != null) Ios6BarButton(label = action, onClick = onAction)
             Ios6BarButton(label = "Close", onClick = onClose)

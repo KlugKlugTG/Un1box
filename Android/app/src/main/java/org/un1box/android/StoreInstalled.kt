@@ -8,7 +8,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -124,7 +123,7 @@ internal fun ColumnScope.InstalledTab(model: StoreModel, running: Boolean) {
                     TextButton(onClick = { installed.lookUp() }) { Text("Retry") }
                 }
             }
-            LazyColumn(Modifier.weight(1f).testTag("store_installed"), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+            LazyColumn(Modifier.weight(1f).testTag("store_installed"), contentPadding = PaddingValues(vertical = 4.dp)) {
                 items(list, key = { it.bundleId }) { app -> InstalledRow(app, model) }
             }
         }
@@ -148,9 +147,9 @@ private fun InstalledRow(app: InstalledApp, model: StoreModel) {
     val found = (installed.lookups[app.bundleId] as? Lookup.Found)?.known
     val update = installed.update(app)
     val queued = model.queuedBundle(app.bundleId)?.takeIf { it.active }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-        .ios6CellLacquer(RoundedCornerShape(9.dp))
-        .clickable { model.openInstalled(app) }.padding(horizontal = 8.dp, vertical = 8.dp).testTag("store_installed_row"),
+    Row(Modifier.fillMaxWidth()
+        .ios6TableRow()
+        .clickable { model.openInstalled(app) }.padding(start = 10.dp, end = 12.dp, top = 8.dp, bottom = 8.dp).testTag("store_installed_row"),
         verticalAlignment = Alignment.CenterVertically) {
         AppIcon(found?.app?.text("icon_url"), 52, app.title)
         Spacer(Modifier.width(14.dp))

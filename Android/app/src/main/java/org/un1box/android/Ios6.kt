@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -46,6 +47,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -91,76 +93,59 @@ internal val LocalIosBottomInset = compositionLocalOf { 0.dp }
 // ---------------------------------------------------------------- textures and lacquer
 
 /**
- * The pinstriped page a grouped table sits on: a pale blue-grey wash, fine vertical lines,
- * a little light at the top and a little shade at the bottom. Dark is the same paper at night.
+ * The pinstriped page a grouped table sits on. iOS 6 printed it on a very quiet blue-grey paper:
+ * fine vertical lines, almost no sheen. The texture is only here to keep a large empty page from
+ * looking like flat plastic, so it stays a hair above the base wash.
  */
 internal fun Modifier.ios6Pinstripe(dark: Boolean): Modifier = drawBehind {
     val top = if (dark) Ios6.PageDarkTop else Ios6.PageTop
     val bottom = if (dark) Ios6.PageDarkBottom else Ios6.PageBottom
     drawRect(Brush.verticalGradient(listOf(top, bottom)))
-    val step = 3.dp.toPx()
+    val step = 4.dp.toPx()
     var x = 0f
     while (x < size.width) {
-        drawLine(Color.White.copy(alpha = if (dark) 0.012f else 0.16f), Offset(x, 0f), Offset(x, size.height), 1f)
-        drawLine(Color.Black.copy(alpha = if (dark) 0.06f else 0.022f), Offset(x + step / 2f, 0f), Offset(x + step / 2f, size.height), 1f)
+        drawLine(Color.White.copy(alpha = if (dark) 0.010f else 0.085f), Offset(x, 0f), Offset(x, size.height), 1f)
+        drawLine(Color.Black.copy(alpha = if (dark) 0.035f else 0.014f), Offset(x + step / 2f, 0f), Offset(x + step / 2f, size.height), 1f)
         x += step
     }
-    // The page catches the room light at the top and falls away at the bottom. Both are drawn
-    // over the whole page: a Brush's shader is laid out over the draw scope, not over the rect
-    // it fills, so a short rect would cut its gradient off mid-colour and leave a hard line.
+    // One full-height stop: the page is lit a little from above, and nothing else.
     drawRect(Brush.verticalGradient(
-        0f to Color.White.copy(alpha = if (dark) 0.02f else 0.10f),
-        0.30f to Color.Transparent))
-    drawRect(Brush.verticalGradient(
-        0f to Color.Transparent,
-        0.62f to Color.Transparent,
-        1f to Color.Black.copy(alpha = if (dark) 0.18f else 0.05f)))
+        0f to Color.White.copy(alpha = if (dark) 0.012f else 0.035f),
+        0.35f to Color.Transparent))
 }
 
 /**
- * The home wallpaper: the blue water iOS 6 shipped with, drawn as a deep blue wash, two soft
- * lights and the slow rings a drop leaves in water.
+ * The home wallpaper. iOS 6's lock screen was a photograph of water: deep, blue, a soft light
+ * above and no drawn ornament at all. Two washes are enough; rings and coloured glows read as
+ * an illustration of water rather than the thing itself.
  */
 internal fun Modifier.ios6Wallpaper(): Modifier = drawBehind {
-    drawRect(Brush.verticalGradient(listOf(Color(0xFF1B3F63), Color(0xFF0B1D31), Color(0xFF050D18))))
-    drawRect(Brush.radialGradient(listOf(Color(0xFF3E7FB8).copy(alpha = 0.55f), Color.Transparent),
-        center = Offset(size.width * 0.22f, size.height * 0.16f), radius = size.maxDimension * 0.75f))
-    drawRect(Brush.radialGradient(listOf(Color(0xFF6C4FA0).copy(alpha = 0.30f), Color.Transparent),
-        center = Offset(size.width * 0.88f, size.height * 0.78f), radius = size.maxDimension * 0.6f))
-    // The rings, each fainter than the one before it.
-    val centre = Offset(size.width * 0.5f, size.height * 0.52f)
-    for (i in 0 until 7) {
-        val radius = size.minDimension * (0.18f + i * 0.11f)
-        drawCircle(Color.White.copy(alpha = 0.055f - i * 0.006f), radius = radius, center = centre, style = Stroke(width = 1.4f))
-    }
-    // Full-height stops, for the same reason as the pinstripe: a rect shorter than the scope
-    // would end the gradient in mid-colour and leave a seam across the wallpaper.
-    drawRect(Brush.verticalGradient(
-        0f to Color.White.copy(alpha = 0.05f),
-        0.28f to Color.Transparent))
+    drawRect(Brush.verticalGradient(listOf(Color(0xFF23486B), Color(0xFF102942), Color(0xFF071522))))
+    drawRect(Brush.radialGradient(listOf(Color(0xFF5C8FB6).copy(alpha = 0.16f), Color.Transparent),
+        center = Offset(size.width * 0.38f, size.height * 0.20f), radius = size.maxDimension * 0.9f))
     drawRect(Brush.verticalGradient(
         0f to Color.Transparent,
-        0.60f to Color.Transparent,
-        1f to Color.Black.copy(alpha = 0.28f)))
+        0.58f to Color.Transparent,
+        1f to Color.Black.copy(alpha = 0.26f)))
 }
 
 /**
- * Lacquer: a vertical gradient with a white gloss band across the top half and a hairline
- * highlight on the very top edge. This is what makes a flat rectangle look pressable in iOS 6.
+ * Lacquer: the vertical gradient of a UINavigationBar or UIButton with its narrow highlight
+ * band. Real iOS 6 gloss is a thin line of light across the top fifth and a soft fall below
+ * it; painting it across half the control is what makes a hand-drawn theme look like a mock-up.
  */
 internal fun Modifier.ios6Lacquer(shape: Shape, top: Color, bottom: Color, edge: Color, gloss: Float = 1f): Modifier =
     this.clip(shape).drawBehind {
         drawRect(Brush.verticalGradient(listOf(top, bottom)))
         if (gloss > 0f) {
             drawRect(Brush.verticalGradient(
-                0f to Color.White.copy(alpha = 0.55f * gloss),
-                0.48f to Color.White.copy(alpha = 0.16f * gloss),
-                0.5f to Color.White.copy(alpha = 0.02f * gloss),
-                0.52f to Color.Transparent,
-                1f to Color.Black.copy(alpha = 0.10f * gloss)))
+                0f to Color.White.copy(alpha = 0.26f * gloss),
+                0.22f to Color.White.copy(alpha = 0.10f * gloss),
+                0.24f to Color.Transparent,
+                1f to Color.Black.copy(alpha = 0.06f * gloss)))
         }
-        drawLine(Color.White.copy(alpha = 0.55f * gloss), Offset(0f, 1f), Offset(size.width, 1f), 1.2f)
-        drawLine(Color.Black.copy(alpha = 0.18f * gloss), Offset(0f, size.height - 1f), Offset(size.width, size.height - 1f), 1f)
+        drawLine(Color.White.copy(alpha = 0.34f * gloss), Offset(0f, 1f), Offset(size.width, 1f), 1f)
+        drawLine(Color.Black.copy(alpha = 0.22f * gloss), Offset(0f, size.height - 1f), Offset(size.width, size.height - 1f), 1f)
     }.border(1.dp, edge, shape)
 
 /**
@@ -169,21 +154,21 @@ internal fun Modifier.ios6Lacquer(shape: Shape, top: Color, bottom: Color, edge:
  */
 @Composable
 internal fun Modifier.ios6CellLacquer(shape: Shape = RoundedCornerShape(10.dp), selected: Boolean = false,
-                                     gloss: Float = 0.55f): Modifier {
+                                     gloss: Float = 0.18f): Modifier {
     val dark = Ios6.isDark()
     val top = when {
-        selected && dark -> Color(0xFF2E4463)
-        selected -> Color(0xFFE7F1FD)
+        selected && dark -> Color(0xFF2A3F5C)
+        selected -> Color(0xFFDCE8F6)
         dark -> Ios6.CellDark
         else -> Ios6.Cell
     }
     val bottom = when {
-        selected && dark -> Color(0xFF20304A)
-        selected -> Color(0xFFD2E4F8)
-        dark -> Color(0xFF1B1B1E)
-        else -> Color(0xFFF4F4F7)
+        selected && dark -> Color(0xFF21334B)
+        selected -> Color(0xFFCFDFF2)
+        dark -> Color(0xFF1A1A1D)
+        else -> Color(0xFFFCFCFD)
     }
-    return ios6Lacquer(shape, top, bottom, if (dark) Color(0xFF3A3A3E) else Color(0xFF8E8E93), gloss = gloss)
+    return ios6Lacquer(shape, top, bottom, if (dark) Color(0xFF39393D) else Color(0xFFAEAEB2), gloss = gloss)
 }
 
 // ---------------------------------------------------------------- pages and chrome
@@ -236,16 +221,16 @@ internal fun Ios6NavBar(
     // Everything on the bar is white: glyphs, labels and whatever the caller puts in its slots.
     CompositionLocalProvider(LocalContentColor provides Color.White) {
         Row(
-            modifier.fillMaxWidth().height(if (subtitle != null) 62.dp else 44.dp)
+            modifier.fillMaxWidth().height(if (subtitle != null) 58.dp else 44.dp)
                 .drawBehind {
                     drawRect(Brush.verticalGradient(listOf(top, mid, bottom)))
                     drawRect(Brush.verticalGradient(
-                        0f to Color.White.copy(alpha = 0.42f),
-                        0.46f to Color.White.copy(alpha = 0.10f),
-                        0.5f to Color.Transparent,
-                        1f to Color.Black.copy(alpha = 0.16f)))
-                    drawLine(Color.White.copy(alpha = 0.45f), Offset(0f, 1f), Offset(size.width, 1f), 1.2f)
-                    drawLine(Color.Black.copy(alpha = 0.55f), Offset(0f, size.height - 1f), Offset(size.width, size.height - 1f), 1f)
+                        0f to Color.White.copy(alpha = 0.22f),
+                        0.20f to Color.White.copy(alpha = 0.07f),
+                        0.22f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.08f)))
+                    drawLine(Color.White.copy(alpha = 0.30f), Offset(0f, 1f), Offset(size.width, 1f), 1f)
+                    drawLine(Color.Black.copy(alpha = 0.45f), Offset(0f, size.height - 1f), Offset(size.width, size.height - 1f), 1f)
                 }
                 .padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -253,7 +238,9 @@ internal fun Ios6NavBar(
             // The slots size themselves; the title takes what is left, so nothing ever overlaps it.
             start?.invoke(this)
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(title, style = MaterialTheme.typography.titleLarge.copy(color = Color.White, fontWeight = FontWeight.Bold),
+                Text(title, style = MaterialTheme.typography.titleLarge.copy(
+                    color = Color.White, fontWeight = FontWeight.Bold,
+                    shadow = Shadow(Color.Black.copy(alpha = 0.35f), Offset(0f, 1f), 0f)),
                     maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
                 subtitle?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.82f)),
@@ -278,11 +265,11 @@ internal fun Ios6BarButton(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val shape = RoundedCornerShape(6.dp)
+    val shape = RoundedCornerShape(5.dp)
     val top = when { !enabled -> Color(0xFF8B8B90); destructive -> Ios6.DestructiveTop; else -> Ios6.BarButtonTop }
     val bottom = when { !enabled -> Color(0xFF5F5F64); destructive -> Ios6.DestructiveBottom; else -> Ios6.BarButtonBottom }
     Row(
-        modifier.heightIn(min = 30.dp).ios6Lacquer(shape, top, bottom, Color(0xFF163E6E), gloss = if (pressed) 0.3f else 1f)
+        modifier.heightIn(min = 29.dp).ios6Lacquer(shape, top, bottom, Color(0xFF123A68), gloss = if (pressed) 0.25f else 0.8f)
             .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
             .then(if (tag != null) Modifier.testTag(tag) else Modifier)
             .semantics { contentDescription = label ?: "Button"; role = Role.Button }
@@ -300,17 +287,58 @@ internal fun Ios6BarButton(
     }
 }
 
-/** The silver section bar above a group of rows, with white bold text and a soft shadow. */
+/** The pointed left edge of an iOS 6 back button: the shape itself is the chevron. */
+private val BackButtonShape = GenericShape { size, _ ->
+    val h = size.height
+    val w = size.width
+    val tip = h * 0.42f
+    val r = h * 0.18f
+    moveTo(tip, 0f)
+    lineTo(w - r, 0f)
+    quadraticBezierTo(w, 0f, w, r)
+    lineTo(w, h - r)
+    quadraticBezierTo(w, h, w - r, h)
+    lineTo(tip, h)
+    lineTo(0f, h / 2f)
+    close()
+}
+
+/**
+ * The button on the left of every iOS 6 bar: its left side comes to a point, the label sits in
+ * the flat part, and there is no separate arrow glyph. A square chip with an arrow icon in it is
+ * the Android navigation pattern.
+ */
+@Composable
+internal fun Ios6BackButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier,
+                            enabled: Boolean = true, tag: String? = null) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    Row(modifier.heightIn(min = 29.dp)
+        .ios6Lacquer(BackButtonShape, Ios6.BarButtonTop, Ios6.BarButtonBottom, Color(0xFF123A68),
+            gloss = if (pressed) 0.25f else 0.8f)
+        .clickable(interactionSource = interaction, indication = null, enabled = enabled, onClick = onClick)
+        .then(if (tag != null) Modifier.testTag(tag) else Modifier)
+        .semantics { contentDescription = label; role = Role.Button }
+        .padding(start = 13.dp, end = 9.dp, top = 5.dp, bottom = 5.dp)
+        .alpha(if (enabled) 1f else 0.65f),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.labelMedium.copy(color = Color.White, fontWeight = FontWeight.Bold),
+            maxLines = 1)
+    }
+}
+
+/**
+ * The heading above a group of rows. iOS 6 grouped tables do not draw a chrome bar here: the
+ * heading is ordinary 13 pt grey text printed on the page, and the white group below it is the
+ * only boundary. A lacquered bar on every section turns a settings list into a stack of widgets.
+ */
 @Composable
 internal fun Ios6GroupHeader(text: String, modifier: Modifier = Modifier) {
-    val dark = Ios6.isDark()
-    Box(modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp).height(24.dp)
-        .ios6Lacquer(RoundedCornerShape(6.dp), if (dark) Ios6.HeaderTopDark else Ios6.HeaderTop,
-            if (dark) Ios6.HeaderBottomDark else Ios6.HeaderBottom, Color(0xFF5E6A7A), gloss = if (dark) 0.35f else 1f)
-        .padding(horizontal = 10.dp), contentAlignment = Alignment.CenterStart) {
-        Text(text, style = MaterialTheme.typography.labelMedium.copy(color = Color.White, fontWeight = FontWeight.Bold),
-            maxLines = 2, overflow = TextOverflow.Ellipsis)
-    }
+    Text(text, modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 2.dp, bottom = 5.dp),
+        style = MaterialTheme.typography.labelMedium.copy(
+            color = if (Ios6.isDark()) Color(0xFF9A9AA1) else Color(0xFF4C566A),
+            fontWeight = FontWeight.SemiBold),
+        maxLines = 2, overflow = TextOverflow.Ellipsis)
 }
 
 /** A hairline separator, inset where iOS starts it (under the text, not under the icon). */
@@ -319,38 +347,57 @@ internal fun Ios6Separator(modifier: Modifier = Modifier, inset: Dp = 0.dp, dark
     Box(modifier.fillMaxWidth().padding(start = inset).height(1.dp).background(Ios6.separator(dark)))
 }
 
+/**
+ * One row of a grouped table: white paper, a single hairline at the bottom, and no card, border
+ * or gloss of its own. Lists in iOS 6 are tables; a column of separately rounded tiles is a web
+ * dashboard wearing a theme.
+ */
+@Composable
+internal fun Modifier.ios6TableRow(dark: Boolean = Ios6.isDark(), separator: Boolean = true,
+                                   inset: Dp = 12.dp,
+                                   background: Color = Ios6.cell(dark)): Modifier =
+    this.background(background).drawBehind {
+        if (separator) drawLine(Ios6.separator(dark), Offset(inset.toPx(), size.height - 0.5f),
+            Offset(size.width, size.height - 0.5f), 1f)
+    }
+
 // ---------------------------------------------------------------- bars and tables
 
 /** One item of an iOS 5/6 tab bar. */
 internal data class Ios6TabItem(val label: String, val icon: ImageVector)
 
-/** The black lacquered tab bar: an icon and a caption per tab, the selected one lit. */
+/** The black tab bar: an icon and a caption per tab, the selected one white. */
 @Composable
 internal fun Ios6TabBar(items: List<Ios6TabItem>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier,
                         tags: Map<Int, String> = emptyMap()) {
-    Row(modifier.fillMaxWidth().height(50.dp)
+    Row(modifier.fillMaxWidth().height(49.dp)
         .drawBehind {
             drawRect(Brush.verticalGradient(listOf(Ios6.TabTop, Ios6.TabBottom)))
-            drawRect(Brush.verticalGradient(0f to Color.White.copy(alpha = 0.28f), 0.35f to Color.White.copy(alpha = 0.06f),
-                0.36f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.25f)))
-            drawLine(Color.White.copy(alpha = 0.25f), Offset(0f, 1f), Offset(size.width, 1f), 1f)
+            drawLine(Color.White.copy(alpha = 0.18f), Offset(0f, 1f), Offset(size.width, 1f), 1f)
             drawLine(Color.Black, Offset(0f, size.height - 1f), Offset(size.width, size.height - 1f), 1f)
         },
         verticalAlignment = Alignment.CenterVertically) {
         items.forEachIndexed { index, item ->
             val isSelected = index == selected
-            val shape = RoundedCornerShape(7.dp)
             Column(
-                Modifier.weight(1f).fillMaxHeight().padding(horizontal = 3.dp, vertical = 4.dp)
-                    .then(if (isSelected) Modifier.ios6Lacquer(shape, Ios6.TabSelectedTop, Ios6.TabSelectedBottom,
-                        Color(0xFF0A0A0B), gloss = 0.6f) else Modifier)
+                Modifier.weight(1f).fillMaxHeight()
+                    // iOS 6 lights the chosen tab itself; it does not slide a pill under it.
+                    .then(if (isSelected) Modifier.drawBehind {
+                        drawRect(Brush.verticalGradient(
+                            0f to Color.White.copy(alpha = 0.12f),
+                            0.30f to Color.White.copy(alpha = 0.03f),
+                            1f to Color.Black.copy(alpha = 0.14f)))
+                        drawLine(Color.White.copy(alpha = 0.12f), Offset(0f, 0f), Offset(size.width, 0f), 1f)
+                    } else Modifier)
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { if (!isSelected) onSelect(index) }
                     .then(tags[index]?.let { Modifier.testTag(it) } ?: Modifier)
                     .semantics { contentDescription = item.label; role = Role.Tab },
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Icon(item.icon, null, Modifier.size(21.dp), tint = if (isSelected) Color.White else Color(0xFFB4B4B8))
-                Spacer(Modifier.height(2.dp))
-                Text(item.label, style = MaterialTheme.typography.labelSmall.copy(color = if (isSelected) Color.White else Color(0xFFB4B4B8)),
+                Icon(item.icon, null, Modifier.size(24.dp), tint = if (isSelected) Color.White else Color(0xFF8E8E93))
+                Spacer(Modifier.height(1.dp))
+                Text(item.label, style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.sp, lineHeight = 12.sp,
+                    color = if (isSelected) Color.White else Color(0xFF8E8E93)),
                     maxLines = 1, textAlign = TextAlign.Center)
             }
         }
@@ -364,14 +411,14 @@ internal fun Ios6TabBar(items: List<Ios6TabItem>, selected: Int, onSelect: (Int)
 internal fun Ios6Segmented(labels: List<String>, selectedIndex: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier,
                            compact: Boolean = false, tags: Map<Int, String> = emptyMap()) {
     val dark = Ios6.isDark()
-    Row(modifier.fillMaxWidth().height(31.dp).ios6Lacquer(RoundedCornerShape(7.dp),
-        if (dark) Color(0xFF3A3A3E) else Color(0xFFB9BCC2),
-        if (dark) Color(0xFF232326) else Color(0xFF8E9299), Color(0xFF5F646C), gloss = 0.5f).padding(2.dp)) {
+    Row(modifier.fillMaxWidth().height(30.dp).ios6Lacquer(RoundedCornerShape(5.dp),
+        if (dark) Color(0xFF3A3A3E) else Color(0xFFB4B8BF),
+        if (dark) Color(0xFF232326) else Color(0xFF90959D), Color(0xFF636870), gloss = 0.4f).padding(2.dp)) {
         labels.forEachIndexed { index, label ->
             val isSelected = index == selectedIndex
             Box(Modifier.weight(1f).fillMaxHeight()
-                .then(if (isSelected) Modifier.ios6Lacquer(RoundedCornerShape(5.dp), Ios6.ButtonTop,
-                    Ios6.ButtonBottom, Ios6.ButtonEdge, gloss = 1f) else Modifier)
+                .then(if (isSelected) Modifier.ios6Lacquer(RoundedCornerShape(4.dp), Ios6.ButtonTop,
+                    Ios6.ButtonBottom, Ios6.ButtonEdge, gloss = 0.7f) else Modifier)
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onSelect(index) }
                 .then(tags[index]?.let { Modifier.testTag(it) } ?: Modifier)
                 .padding(horizontal = 2.dp), contentAlignment = Alignment.Center) {
@@ -403,8 +450,8 @@ internal fun Ios6Switch(checked: Boolean, onCheckedChange: ((Boolean) -> Unit)?,
         .then(if (tag != null) Modifier.testTag(tag) else Modifier)
         .alpha(if (enabled) 1f else 0.5f)) {
         Box(Modifier.fillMaxSize().drawBehind {
-            drawRect(Brush.verticalGradient(0f to Color.White.copy(alpha = 0.35f), 0.45f to Color.White.copy(alpha = 0.05f), 0.46f to Color.Transparent))
-            drawLine(Color.White.copy(alpha = 0.45f), Offset(0f, 1.5f), Offset(size.width, 1.5f), 1f)
+            drawRect(Brush.verticalGradient(0f to Color.White.copy(alpha = 0.20f), 0.42f to Color.White.copy(alpha = 0.04f), 0.43f to Color.Transparent))
+            drawLine(Color.White.copy(alpha = 0.30f), Offset(0f, 1.5f), Offset(size.width, 1.5f), 1f)
         })
         Text(if (checked) "ON" else "OFF", Modifier.align(if (checked) Alignment.CenterStart else Alignment.CenterEnd)
             .padding(start = if (checked) 7.dp else 0.dp, end = if (checked) 0.dp else 7.dp),
@@ -414,26 +461,31 @@ internal fun Ios6Switch(checked: Boolean, onCheckedChange: ((Boolean) -> Unit)?,
             .background(Brush.verticalGradient(listOf(Ios6.SwitchKnobTop, Ios6.SwitchKnobBottom)))
             .border(1.dp, Color(0xFF7C7C82), CircleShape)
             .drawBehind {
-                drawCircle(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.9f), Color.Transparent), 0f, size.height * 0.6f))
-                drawLine(Color.White.copy(alpha = 0.8f), Offset(size.width * 0.18f, 1f), Offset(size.width * 0.82f, 1f), 1f)
+                drawCircle(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.Transparent), 0f, size.height * 0.6f))
+                drawLine(Color.White.copy(alpha = 0.55f), Offset(size.width * 0.18f, 1f), Offset(size.width * 0.82f, 1f), 1f)
             })
     }
 }
 
-/** The round blue radio mark iOS 6 uses for a picked option in a list. */
+/**
+ * The blue tick iOS 6 puts beside the picked row. It is a mark, not a little control: no bezel,
+ * no gloss, no circle. A glossy radio button is the Android vocabulary, and on this interface
+ * it is the first thing that reads as a theme rather than as the system.
+ */
 @Composable
 internal fun Ios6Radio(selected: Boolean, onClick: (() -> Unit)?, modifier: Modifier = Modifier, enabled: Boolean = true, tag: String? = null) {
-    val dark = Ios6.isDark()
+    val tint = if (enabled) Ios6.Blue else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
     Box(modifier.size(28.dp).selectable(selected = selected, interactionSource = remember { MutableInteractionSource() }, indication = null,
         enabled = enabled && onClick != null, role = Role.RadioButton) { onClick?.invoke() }.then(if (tag != null) Modifier.testTag(tag) else Modifier),
         contentAlignment = Alignment.Center) {
-        Box(Modifier.size(22.dp).clip(CircleShape)
-            .background(Brush.verticalGradient(listOf(if (dark) Color(0xFF3A3A3E) else Color(0xFFFDFDFE), if (dark) Color(0xFF1D1D20) else Color(0xFFD8D8DD))))
-            .border(1.dp, if (dark) Color(0xFF0B0B0C) else Color(0xFF9A9AA0), CircleShape)) {
-            if (selected) Box(Modifier.fillMaxSize().padding(3.dp).clip(CircleShape)
-                .background(Brush.verticalGradient(listOf(Ios6.ButtonTop, Ios6.ButtonBottom)))
-                .border(1.dp, Ios6.ButtonEdge, CircleShape)
-                .drawBehind { drawCircle(Color.White.copy(alpha = 0.55f), radius = size.minDimension * 0.30f, center = Offset(size.width * 0.35f, size.height * 0.28f)) })
+        if (selected) {
+            Canvas(Modifier.size(17.dp)) {
+                val stroke = 2.4.dp.toPx()
+                drawLine(tint, Offset(size.width * 0.08f, size.height * 0.52f),
+                    Offset(size.width * 0.38f, size.height * 0.82f), stroke, cap = StrokeCap.Round)
+                drawLine(tint, Offset(size.width * 0.38f, size.height * 0.82f),
+                    Offset(size.width * 0.94f, size.height * 0.18f), stroke, cap = StrokeCap.Round)
+            }
         }
     }
 }
@@ -576,11 +628,11 @@ internal fun Ios6TextFieldCore(
     textStyle: TextStyle = LocalTextStyle.current,
 ) {
     val dark = Ios6.isDark()
-    val shape = RoundedCornerShape(9.dp)
+    val shape = RoundedCornerShape(6.dp)
     Row(modifier.fillMaxWidth().ios6Lacquer(shape,
         if (dark) Color(0xFF121214) else Color(0xFFFFFFFF),
         if (dark) Color(0xFF0B0B0C) else Color(0xFFF4F4F7),
-        if (dark) Color(0xFF3A3A3E) else Color(0xFF8E9299), gloss = 0f)
+        if (dark) Color(0xFF3A3A3E) else Color(0xFFA6A6AB), gloss = 0f)
         .padding(horizontal = 10.dp, vertical = 8.dp).alpha(if (enabled) 1f else 0.55f),
         verticalAlignment = Alignment.Top) {
         leadingIcon?.let { Box(Modifier.padding(end = 8.dp, top = 2.dp), contentAlignment = Alignment.Center) { it() } }
@@ -623,11 +675,11 @@ internal fun Ios6TextFieldCore(
     textStyle: TextStyle = LocalTextStyle.current,
 ) {
     val dark = Ios6.isDark()
-    val shape = RoundedCornerShape(9.dp)
+    val shape = RoundedCornerShape(6.dp)
     Row(modifier.fillMaxWidth().ios6Lacquer(shape,
         if (dark) Color(0xFF121214) else Color(0xFFFFFFFF),
         if (dark) Color(0xFF0B0B0C) else Color(0xFFF4F4F7),
-        if (dark) Color(0xFF3A3A3E) else Color(0xFF8E9299), gloss = 0f)
+        if (dark) Color(0xFF3A3A3E) else Color(0xFFA6A6AB), gloss = 0f)
         .padding(horizontal = 10.dp, vertical = 8.dp).alpha(if (enabled) 1f else 0.55f),
         verticalAlignment = Alignment.Top) {
         leadingIcon?.let { Box(Modifier.padding(end = 8.dp, top = 2.dp), contentAlignment = Alignment.Center) { it() } }
@@ -663,11 +715,11 @@ internal fun Ios6SearchField(
     onSearch: (() -> Unit)? = null,
 ) {
     val dark = Ios6.isDark()
-    val shape = RoundedCornerShape(9.dp)
+    val shape = RoundedCornerShape(6.dp)
     Row(modifier.heightIn(min = 34.dp).ios6Lacquer(shape,
         if (dark) Color(0xFF121214) else Color(0xFFFFFFFF),
         if (dark) Color(0xFF0B0B0C) else Color(0xFFF4F4F7),
-        if (dark) Color(0xFF3A3A3E) else Color(0xFF8E9299), gloss = 0f)
+        if (dark) Color(0xFF3A3A3E) else Color(0xFFA6A6AB), gloss = 0f)
         .padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Filled.Search, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.width(6.dp))

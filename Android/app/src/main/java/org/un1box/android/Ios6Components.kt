@@ -80,7 +80,7 @@ fun Button(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    shape: Shape = RoundedCornerShape(10.dp),
+    shape: Shape = RoundedCornerShape(8.dp),
     colors: ButtonColors = ButtonDefaults.buttonColors(),
     elevation: ButtonElevation? = null,
     border: androidx.compose.foundation.BorderStroke? = null,
@@ -106,8 +106,8 @@ fun Button(
     val bottom = when { !enabled -> Color(0xFF9A9AA0); destructive -> Ios6.DestructiveBottom; else -> Ios6.ButtonBottom }
     val edge = when { !enabled -> Color(0xFF8E8E93); destructive -> Color(0xFF70140E); else -> Ios6.ButtonEdge }
     Box(modifier
-        .then(if (enabled) Modifier.shadow(2.dp, shape) else Modifier)
-        .ios6Lacquer(shape, top, bottom, edge, gloss = if (pressed) 0.35f else 1f)
+        .then(if (enabled) Modifier.shadow(1.dp, shape) else Modifier)
+        .ios6Lacquer(shape, top, bottom, edge, gloss = if (pressed) 0.3f else 0.7f)
         .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
         .padding(contentPadding), contentAlignment = Alignment.Center) {
         CompositionLocalProvider(
@@ -156,7 +156,7 @@ fun OutlinedButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    shape: Shape = RoundedCornerShape(10.dp),
+    shape: Shape = RoundedCornerShape(8.dp),
     contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 9.dp),
     content: @Composable RowScope.() -> Unit,
 ) {
@@ -164,8 +164,8 @@ fun OutlinedButton(
     val pressed by source.collectIsPressedAsState()
     val top = if (enabled) Ios6.GrayButtonTop else Color(0xFFE6E6EA)
     val bottom = if (enabled) Ios6.GrayButtonBottom else Color(0xFFC9C9CE)
-    Box(modifier.then(if (enabled) Modifier.shadow(1.5.dp, shape) else Modifier)
-        .ios6Lacquer(shape, top, bottom, Ios6.GrayButtonEdge, gloss = if (pressed) 0.3f else 0.9f)
+    Box(modifier.then(if (enabled) Modifier.shadow(1.dp, shape) else Modifier)
+        .ios6Lacquer(shape, top, bottom, Ios6.GrayButtonEdge, gloss = if (pressed) 0.25f else 0.55f)
         .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
         .padding(contentPadding), contentAlignment = Alignment.Center) {
         CompositionLocalProvider(
@@ -317,7 +317,7 @@ fun AlertDialog(
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismissRequest() },
             contentAlignment = Alignment.Center) {
             Column(Modifier.widthIn(min = 260.dp, max = 300.dp)
-                .ios6Lacquer(RoundedCornerShape(12.dp), Ios6.AlertTop, Ios6.AlertBottom, Color(0xFF0E141C), gloss = 0.9f)
+                .ios6Lacquer(RoundedCornerShape(10.dp), Ios6.AlertTop, Ios6.AlertBottom, Color(0xFF0E141C), gloss = 0.5f)
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}) {
                 // Long messages scroll inside the sheet; the buttons stay pinned below them.
                 Column(Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
@@ -377,7 +377,7 @@ fun AlertDialog(
 @Composable
 private fun AlertButtonCell(modifier: Modifier, content: @Composable () -> Unit) {
     Box(modifier.heightIn(min = 44.dp).ios6Lacquer(RoundedCornerShape(0.dp), Ios6.AlertButtonTop, Ios6.AlertButtonBottom,
-        Color(0xFF16283F), gloss = 0.7f), contentAlignment = Alignment.Center) {
+        Color(0xFF16283F), gloss = 0.5f), contentAlignment = Alignment.Center) {
         CompositionLocalProvider(LocalIosAlertButton provides true) { content() }
     }
 }
@@ -390,7 +390,7 @@ fun DropdownMenu(
     expanded: Boolean,
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(10.dp),
+    shape: Shape = RoundedCornerShape(8.dp),
     containerColor: Color = Color.Unspecified,
     content: @Composable ColumnScope.() -> Unit,
 ) {

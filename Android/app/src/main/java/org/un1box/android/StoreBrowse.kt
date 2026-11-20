@@ -9,7 +9,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -210,7 +209,7 @@ internal fun ColumnScope.AppListing(listing: Listing, browser: StoreBrowser, mod
     if (listing.loading && listing.rows.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
     listing.error?.let { ErrorLine(it, onRetry) }
     if (listing.loaded && listing.rows.isEmpty() && listing.error == null) Text(empty, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    LazyColumn(Modifier.weight(1f).testTag("store_browse_results"), state = state, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+    LazyColumn(Modifier.weight(1f).testTag("store_browse_results"), state = state, contentPadding = PaddingValues(vertical = 4.dp)) {
         items(listing.rows) { app -> ResultRow(app, model) }
         if (listing.loading && listing.rows.isNotEmpty()) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp)) }
     }
@@ -305,11 +304,10 @@ internal fun ColumnScope.CategoriesTab(model: StoreModel) {
         val genres = browser.genres
         if (genres == null && browser.genresError == null) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
         browser.genresError?.let { ErrorLine(it) { browser.loadGenres() } }
-        LazyColumn(Modifier.weight(1f).testTag("store_categories"), state = browser.genreList, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+        LazyColumn(Modifier.weight(1f).testTag("store_categories"), state = browser.genreList, contentPadding = PaddingValues(vertical = 4.dp)) {
             items(genres.orEmpty(), key = { it.id }) { genre ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-                    .ios6CellLacquer(RoundedCornerShape(9.dp))
-                    .clickable { browser.openCategory(genre) }.padding(horizontal = 12.dp, vertical = 12.dp),
+                Row(Modifier.fillMaxWidth().ios6TableRow()
+                    .clickable { browser.openCategory(genre) }.padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Text(genre.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
                     Text(genre.count.toString(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -335,11 +333,10 @@ internal fun ColumnScope.CollectionsTab(model: StoreModel) {
         val list = browser.collections
         if (list == null && browser.collectionsError == null) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
         browser.collectionsError?.let { ErrorLine(it, browser::retryCollections) }
-        LazyColumn(Modifier.weight(1f).testTag("store_collections"), state = browser.collectionList, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+        LazyColumn(Modifier.weight(1f).testTag("store_collections"), state = browser.collectionList, contentPadding = PaddingValues(vertical = 4.dp)) {
             items(list.orEmpty(), key = { it.slug }) { item ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-                    .ios6CellLacquer(RoundedCornerShape(9.dp))
-                    .clickable { browser.openCollection(item) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                Row(Modifier.fillMaxWidth().ios6TableRow()
+                    .clickable { browser.openCollection(item) }.padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(item.title, style = MaterialTheme.typography.bodyLarge)

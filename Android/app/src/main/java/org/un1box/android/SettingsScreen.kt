@@ -11,7 +11,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -49,8 +48,8 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
         confirmButton = { TextButton(onClick = { headphonesInfo = false }) { Text("OK") } })
     Ios6Page(Modifier.semantics { testTagsAsResourceId = true }) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Ios6NavBar("Settings", subtitle = "Un1box ${BuildConfig.VERSION_NAME}",
-                start = { Ios6BarButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tag = "settings_back") })
+            Ios6NavBar("Settings",
+                start = { Ios6BackButton("Back", onBack, tag = "settings_back") })
             Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings")) {
                 Group("Language") {
                     // Four languages in one row: the segmented labels drop the row's indent

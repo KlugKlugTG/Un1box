@@ -93,9 +93,9 @@ internal fun SetupWizard(state: SetupState, canCancel: Boolean, onPickFolder: ()
 @Composable
 private fun Welcome(onPrepare: () -> Unit, onFiles: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 28.dp), verticalArrangement = Arrangement.Center) {
-        Box(Modifier.size(76.dp).ios6Lacquer(RoundedCornerShape(16.dp), Ios6.ButtonTop, Ios6.ButtonBottom, Ios6.ButtonEdge),
+        Box(Modifier.size(64.dp).ios6Lacquer(RoundedCornerShape(12.dp), Ios6.ButtonTop, Ios6.ButtonBottom, Ios6.ButtonEdge),
             contentAlignment = Alignment.Center) {
-            Icon(LtIcons.Phone, null, Modifier.size(42.dp), tint = Color.White)
+            Icon(LtIcons.Phone, null, Modifier.size(36.dp), tint = Color.White)
         }
         Spacer(Modifier.height(28.dp))
         Text("Un1box", style = MaterialTheme.typography.headlineLarge)
@@ -109,7 +109,7 @@ private fun Welcome(onPrepare: () -> Unit, onFiles: () -> Unit) {
         Need(LtIcons.Download, "Un1box downloads it", "iOS comes from Apple, or the Internet Archive when Apple no longer has it")
         Need(LtIcons.Layers, "And prepares it", "A minute or a few, with 1.5 to 5 GB free")
         Spacer(Modifier.height(40.dp))
-        Button(onClick = onPrepare, modifier = Modifier.align(Alignment.CenterHorizontally).height(52.dp).testTag("setup_start"), contentPadding = PaddingValues(horizontal = 32.dp)) {
+        Button(onClick = onPrepare, modifier = Modifier.align(Alignment.CenterHorizontally).height(44.dp).testTag("setup_start"), contentPadding = PaddingValues(horizontal = 32.dp)) {
             Text("Get started", style = MaterialTheme.typography.titleMedium)
         }
         TextButton(onClick = onFiles, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).testTag("setup_advanced")) {
@@ -164,7 +164,7 @@ private fun Files(state: SetupState, onPickFolder: () -> Unit, onPickSystem: () 
             label = { Text("Name (optional)") }, placeholder = { Text("Named after the model and iOS version") })
         if (state.error.isNotEmpty()) Text(state.error, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         Spacer(Modifier.height(20.dp))
-        Button(onClick = onCreate, enabled = state.system != null, modifier = Modifier.align(Alignment.CenterHorizontally).height(52.dp).testTag("setup_create"),
+        Button(onClick = onCreate, enabled = state.system != null, modifier = Modifier.align(Alignment.CenterHorizontally).height(44.dp).testTag("setup_create"),
             contentPadding = PaddingValues(horizontal = 32.dp)) { Text("Create device", style = MaterialTheme.typography.titleMedium) }
         GuideLink(Modifier.align(Alignment.CenterHorizontally))
         TextButton(onClick = onPrepare, modifier = Modifier.align(Alignment.CenterHorizontally).testTag("setup_prepare")) {
@@ -225,7 +225,7 @@ private fun Done(name: String, timings: String, onFinish: (Boolean) -> Unit) {
         Text("The first start takes longer while iOS sets itself up.", style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
         Spacer(Modifier.height(36.dp))
-        Button(onClick = { onFinish(true) }, modifier = Modifier.height(52.dp).testTag("setup_launch"), contentPadding = PaddingValues(start = 24.dp, end = 32.dp)) {
+        Button(onClick = { onFinish(true) }, modifier = Modifier.height(44.dp).testTag("setup_launch"), contentPadding = PaddingValues(start = 24.dp, end = 32.dp)) {
             Icon(LtIcons.Play, null, Modifier.size(20.dp)); Spacer(Modifier.width(10.dp)); Text("Start it now", style = MaterialTheme.typography.titleMedium)
         }
         TextButton(onClick = { onFinish(false) }, modifier = Modifier.padding(top = 8.dp)) { Text("Not now") }

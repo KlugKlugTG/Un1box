@@ -1,11 +1,5 @@
 package org.un1box.android
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.expandVertically
@@ -85,31 +79,25 @@ private fun HomeTopBar(host: GuestHost) {
 }
 
 /**
- * The device, life-size-ish, standing in its own pool of light: the bloom behind it pulses while
- * iOS runs, and a faint reflection sits under it so it reads as an object rather than a picture.
+ * The device, life-size-ish, standing in a still pool of light, with a soft shadow under it so it
+ * reads as an object rather than a picture. The light does not pulse: this is a paused or running
+ * machine on a desk, and a breathing glow is an effect, not a state.
  */
 @Composable
 private fun DeviceStage(host: GuestHost, screen: @Composable (Modifier) -> Unit) {
     val glow = when (host.status) {
-        "running" -> LtColors.Accent
+        "running" -> Ios6.Blue
         "starting", "stopping" -> LtColors.Warning
         "failed" -> LtColors.Danger
-        else -> LtColors.Violet
+        else -> Ios6.InkSecondary
     }
-    // The pulse exists only while a session does: an idle home screen should not ask for frames, and
-    // the value is read inside the draw lambda so a beat redraws the light instead of recomposing the
-    // device (which holds the guest's surface).
-    val beat: State<Float>? = if (host.active) {
-        val pulse = rememberInfiniteTransition(label = "stage")
-        pulse.animateFloat(0.55f, 1f, infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Reverse), label = "beat")
-    } else null
+    // One static pool of light: a device standing on a desk, not a screensaver. The old pulsing
+    // bloom asked for frames on an idle screen and made the home view read as a poster.
     Box(Modifier.fillMaxSize().drawBehind {
-        val lit = beat?.value ?: 0.45f
-        // A pool of light on the floor, and the bloom the device is standing in.
-        drawRect(Brush.radialGradient(listOf(glow.copy(alpha = 0.20f * lit), Color.Transparent),
+        drawRect(Brush.radialGradient(listOf(glow.copy(alpha = 0.09f), Color.Transparent),
             center = Offset(size.width / 2f, size.height * 0.52f), radius = size.minDimension * 0.95f))
-        // The radius matches the oval's half-width so the light reaches zero at its edge.
-        drawOval(Brush.radialGradient(listOf(glow.copy(alpha = 0.13f * lit), Color.Transparent),
+        // The radius matches the oval's half-width so the shadow reaches zero at its edge.
+        drawOval(Brush.radialGradient(listOf(Color.Black.copy(alpha = 0.16f), Color.Transparent),
             center = Offset(size.width / 2f, size.height * 0.94f), radius = size.width * 0.34f),
             topLeft = Offset(size.width * 0.16f, size.height * 0.88f), size = androidx.compose.ui.geometry.Size(size.width * 0.68f, size.height * 0.10f))
     }, contentAlignment = Alignment.Center) {
@@ -124,7 +112,7 @@ private fun SessionStats(host: GuestHost) {
     val clock = rememberElapsed(host.running)
     if (!host.running) return
     ChipRow(Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState())) {
-        if (clock.isNotEmpty()) StatChip("Session", clock, LtColors.Violet)
+        if (clock.isNotEmpty()) StatChip("Session", clock, Ios6.Blue)
         if (host.perf.fps > 0) StatChip("FPS", "%.0f".format(host.perf.fps), LtColors.OverlayFps)
         // The worker reports guest CPU only when it could read it, so this is a chip that comes and goes.
         val cpu = host.perf.vcpuPercent

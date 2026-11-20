@@ -9,7 +9,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
@@ -108,9 +107,10 @@ internal fun PrepareScreen(state: PrepareState, busy: Boolean, preparing: Boolea
     Ios6Page(Modifier.semantics { testTagsAsResourceId = true }.testTag("prepare")) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             Ios6NavBar("Prepare", start = {
-                if (!preparing) Ios6BarButton(
-                    if (showProgress || state.step == PrepareStep.DEVICE) Icons.Filled.Close else Icons.AutoMirrored.Filled.ArrowBack,
-                    null, back, tag = "prepare_back")
+                if (!preparing) {
+                    if (showProgress || state.step == PrepareStep.DEVICE) Ios6BarButton(icon = Icons.Filled.Close, onClick = back, tag = "prepare_back")
+                    else Ios6BackButton("Back", back, tag = "prepare_back")
+                }
             })
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)) {
                 when {
@@ -340,7 +340,7 @@ private fun ColumnScope.FilesStep(state: PrepareState, busy: Boolean, onDownload
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Spacer(Modifier.height(20.dp))
     Button(onClick = onPrepare, enabled = !busy && state.ipswReady && state.romReady && state.ipswChecking.isEmpty(),
-        modifier = Modifier.align(Alignment.CenterHorizontally).height(52.dp).testTag("start_preparation"), contentPadding = PaddingValues(horizontal = 32.dp)) {
+        modifier = Modifier.align(Alignment.CenterHorizontally).height(44.dp).testTag("start_preparation"), contentPadding = PaddingValues(horizontal = 32.dp)) {
         Text("Prepare device", style = MaterialTheme.typography.titleMedium)
     }
 }
