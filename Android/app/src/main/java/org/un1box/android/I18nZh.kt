@@ -73,7 +73,7 @@ internal object I18nZh {
         put("A to Z", "A 到 Z")
         put("Accept", "接受")
         put("August", "8 月")
-        put("Camera", "摄像头"),
+        put("Camera", "摄像头")
         put("Cancel", "取消")
         put("Charts", "榜单")
         put("Chosen", "已选择")
@@ -588,7 +588,7 @@ internal object I18nZh {
         put("Could not create the preparation tools folder", "无法创建设备准备工具文件夹")
         put("Guest worker unavailable; input was cancelled", "客户机工作进程不可用，输入已取消")
         put("The archived copy no longer matches this app.", "归档副本已与该应用不匹配。")
-        put("This phone's cameras become the device's cameras, so the Camera app sees a real picture. The guest's own front/back switch follows; Android asks for the camera permission when you turn this on. Applies the next time the device starts", "此手机的前后摄像头将成为设备的摄像头，相机 App 因此能看到真实画面。客户机内的前后切换也会跟随；打开此开关时 Android 会请求摄像头权限。下次启动设备时生效"),
+        put("This phone's cameras become the device's cameras, so the Camera app sees a real picture. The guest's own front/back switch follows; Android asks for the camera permission when you turn this on. Applies the next time the device starts", "此手机的前后摄像头将成为设备的摄像头，相机 App 因此能看到真实画面。客户机内的前后切换也会跟随；打开此开关时 Android 会请求摄像头权限。下次启动设备时生效")
         put("The device gets no camera from the next start", "下次启动后设备不再使用摄像头")
         put("The downloaded IPA failed its checksum check.", "下载的 IPA 校验和检查失败。")
         put("The guest returned an incomplete app identity", "客户机返回的应用标识不完整")
