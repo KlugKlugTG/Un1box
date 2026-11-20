@@ -234,7 +234,13 @@ def android_switch_reaches_the_worker():
     require("RequestPermission()" in activity and "RECORD_AUDIO" in activity,
             "turning the switch on does not ask Android for the permission")
     screen = read("Android/app/src/main/java/org/un1box/android/SettingsScreen.kt")
+    shell = read("Android/app/src/main/java/org/un1box/android/Shell.kt")
     require("host.useMicrophone(" in screen, "the microphone row is not wired to the host")
+    require("microphone_status" in screen and "host.microphoneStatus" in screen,
+            "Settings shows no microphone status line, so a silent guest cannot say whether the "
+            "recorder ran or the guest never opened capture")
+    require("microphoneStatus" in activity and "microphoneStatus" in service and "microphoneStatus" in shell,
+            "the worker's microphone state does not reach the screen")
 
 
 def android_jni_names_match():

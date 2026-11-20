@@ -83,6 +83,9 @@ interface GuestHost {
     fun useCamera(on: Boolean)
     /** What the guest's camera is doing, from the worker: the sensor it is on and the frames it has taken. */
     val cameraStatus: String
+
+    /** What the worker and the engine's microphone ring are doing, for the Settings row. */
+    val microphoneStatus: String
     /** True while this phone's microphone feeds the emulated device's capture port; read at guest start. */
     val microphone: Boolean
     fun useMicrophone(on: Boolean)
