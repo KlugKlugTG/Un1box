@@ -50,11 +50,12 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
     var renaming by remember { mutableStateOf<DeviceSummary?>(null) }
     var deleting by remember { mutableStateOf<DeviceSummary?>(null) }
     BackHandler(onBack = onDismiss)
-    // The dialog's own window reports no system insets at all, so the activity's measurement stands
-    // in for them: without a floor the Add device row sits under the phone's own buttons and cannot
-    // be tapped. If the platform did inset this window, its own padding is already enough.
+    // Whichever of the two knows the phone's own bar, the sheet keeps its floor above it: the
+    // dialog window reports the inset but lays its content out underneath it, and the activity's
+    // own measurement is there for the windows that report nothing at all. Subtracting one from the
+    // other put the Add device row back under the system buttons, so the larger of the two wins.
     val windowBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val systemBottom = (LocalIosBottomInset.current - windowBottom).coerceAtLeast(0.dp)
+    val systemBottom = maxOf(windowBottom, LocalIosBottomInset.current)
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         BoxWithConstraints(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.background(Color.Black.copy(alpha = 0.35f))
             .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) { onDismiss() },
