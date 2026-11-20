@@ -98,11 +98,16 @@ internal fun Modifier.ios6Pinstripe(dark: Boolean): Modifier = drawBehind {
         drawLine(Color.Black.copy(alpha = if (dark) 0.06f else 0.022f), Offset(x + step / 2f, 0f), Offset(x + step / 2f, size.height), 1f)
         x += step
     }
-    // The page catches the room light at the top and falls away at the bottom.
-    drawRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = if (dark) 0.02f else 0.10f), Color.Transparent)),
-        topLeft = Offset.Zero, size = Size(size.width, size.height * 0.35f))
-    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = if (dark) 0.18f else 0.05f))),
-        topLeft = Offset(0f, size.height * 0.7f), size = Size(size.width, size.height * 0.3f))
+    // The page catches the room light at the top and falls away at the bottom. Both are drawn
+    // over the whole page: a Brush's shader is laid out over the draw scope, not over the rect
+    // it fills, so a short rect would cut its gradient off mid-colour and leave a hard line.
+    drawRect(Brush.verticalGradient(
+        0f to Color.White.copy(alpha = if (dark) 0.02f else 0.10f),
+        0.30f to Color.Transparent))
+    drawRect(Brush.verticalGradient(
+        0f to Color.Transparent,
+        0.62f to Color.Transparent,
+        1f to Color.Black.copy(alpha = if (dark) 0.18f else 0.05f)))
 }
 
 /**
@@ -121,10 +126,15 @@ internal fun Modifier.ios6Wallpaper(): Modifier = drawBehind {
         val radius = size.minDimension * (0.18f + i * 0.11f)
         drawCircle(Color.White.copy(alpha = 0.055f - i * 0.006f), radius = radius, center = centre, style = Stroke(width = 1.4f))
     }
-    drawRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.05f), Color.Transparent)),
-        topLeft = Offset.Zero, size = Size(size.width, size.height * 0.3f))
-    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f))),
-        topLeft = Offset(0f, size.height * 0.6f), size = Size(size.width, size.height * 0.4f))
+    // Full-height stops, for the same reason as the pinstripe: a rect shorter than the scope
+    // would end the gradient in mid-colour and leave a seam across the wallpaper.
+    drawRect(Brush.verticalGradient(
+        0f to Color.White.copy(alpha = 0.05f),
+        0.28f to Color.Transparent))
+    drawRect(Brush.verticalGradient(
+        0f to Color.Transparent,
+        0.60f to Color.Transparent,
+        1f to Color.Black.copy(alpha = 0.28f)))
 }
 
 /**

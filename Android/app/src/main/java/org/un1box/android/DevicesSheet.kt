@@ -51,10 +51,12 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
     var deleting by remember { mutableStateOf<DeviceSummary?>(null) }
     BackHandler(onBack = onDismiss)
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.background(Color.Black.copy(alpha = 0.35f))
+        BoxWithConstraints(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.background(Color.Black.copy(alpha = 0.35f))
             .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) { onDismiss() },
             contentAlignment = Alignment.BottomCenter) {
-            Column(Modifier.fillMaxWidth().fillMaxHeight(0.86f)
+            // Hug the rows, and only grow to 86% of the screen when the library is long: with two
+            // devices the old fixed 86% left a large blank pane under them.
+            Column(Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.86f)
                 .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                 .background(Ios6.page(Ios6.isDark()))
                 .ios6Pinstripe(Ios6.isDark())
@@ -64,7 +66,7 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
                 if (host.active) Text("Stop ${host.selected?.name ?: "the running device"} to switch to or add another.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
-                LazyColumn(Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 8.dp),
+                LazyColumn(Modifier.weight(1f, fill = false).padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(0.dp)) {
                     items(host.devices, key = { it.id }) { device ->
                         // A running device's record is marked in use, which is not a crash to recover from.

@@ -108,8 +108,9 @@ private fun DeviceStage(host: GuestHost, screen: @Composable (Modifier) -> Unit)
         // A pool of light on the floor, and the bloom the device is standing in.
         drawRect(Brush.radialGradient(listOf(glow.copy(alpha = 0.20f * lit), Color.Transparent),
             center = Offset(size.width / 2f, size.height * 0.52f), radius = size.minDimension * 0.95f))
+        // The radius matches the oval's half-width so the light reaches zero at its edge.
         drawOval(Brush.radialGradient(listOf(glow.copy(alpha = 0.13f * lit), Color.Transparent),
-            center = Offset(size.width / 2f, size.height * 0.94f), radius = size.width * 0.42f),
+            center = Offset(size.width / 2f, size.height * 0.94f), radius = size.width * 0.34f),
             topLeft = Offset(size.width * 0.16f, size.height * 0.88f), size = androidx.compose.ui.geometry.Size(size.width * 0.68f, size.height * 0.10f))
     }, contentAlignment = Alignment.Center) {
         DeviceFrame(DeviceSkin.forBoard(host.selected?.board), enabled = host.running, button = host::button,
