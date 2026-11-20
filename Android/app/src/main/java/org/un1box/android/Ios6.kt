@@ -81,6 +81,13 @@ import kotlin.math.sin
 /** True while a control is composed on coloured chrome (a toolbar), where labels are white. */
 internal val LocalIosOnChrome = compositionLocalOf { false }
 
+/**
+ * The phone's own bottom bar, in pixels of padding, measured in the activity's window. A Dialog
+ * gets a window of its own and reports no insets there, so a sheet drawn in one reads this to
+ * keep its last row off the system buttons instead of under them.
+ */
+internal val LocalIosBottomInset = compositionLocalOf { 0.dp }
+
 // ---------------------------------------------------------------- textures and lacquer
 
 /**

@@ -764,6 +764,7 @@ internal object I18nRu {
         put("Open", "Открыть")
         put("Install anyway", "Всё равно установить")
         put("Add Source", "Добавить источник")
+        put("Done", "Готово")
         put("Remove", "Удалить")
         put("Refresh", "Обновить")
         put("Information", "Информация")

@@ -50,13 +50,18 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
     var renaming by remember { mutableStateOf<DeviceSummary?>(null) }
     var deleting by remember { mutableStateOf<DeviceSummary?>(null) }
     BackHandler(onBack = onDismiss)
+    // The dialog's own window reports no system insets at all, so the activity's measurement stands
+    // in for them: without a floor the Add device row sits under the phone's own buttons and cannot
+    // be tapped. If the platform did inset this window, its own padding is already enough.
+    val windowBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val systemBottom = (LocalIosBottomInset.current - windowBottom).coerceAtLeast(0.dp)
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         BoxWithConstraints(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.background(Color.Black.copy(alpha = 0.35f))
             .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) { onDismiss() },
             contentAlignment = Alignment.BottomCenter) {
-            // Hug the rows, and only grow to 86% of the screen when the library is long: with two
-            // devices the old fixed 86% left a large blank pane under them.
-            Column(Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.86f)
+            // Hug the rows, and only grow to the screen minus the phone's own bar when the library
+            // is long: with two devices a fixed height left a large blank pane under them.
+            Column(Modifier.fillMaxWidth().heightIn(max = (maxHeight - systemBottom).coerceAtLeast(240.dp))
                 .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                 .background(Ios6.page(Ios6.isDark()))
                 .ios6Pinstripe(Ios6.isDark())
@@ -96,7 +101,7 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
                         }
                     }
                 }
-                Spacer(Modifier.navigationBarsPadding())
+                Spacer(Modifier.height(systemBottom))
             }
         }
     }

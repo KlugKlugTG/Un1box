@@ -389,6 +389,9 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                 } }
                 val snackbar = remember { SnackbarHostState() }
                 LaunchedEffect(notice) { if (notice.isNotEmpty()) { snackbar.showSnackbar(notice); notice = "" } }
+                // Measured here, where the window really has the insets: a dialog's window does not.
+                val systemBottom = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
+                CompositionLocalProvider(LocalIosBottomInset provides systemBottom) {
                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                     // The guest layout stays composed under full-page overlays so its Surface and lease survive them.
                     if (base == Screen.FULLSCREEN) FullscreenScreen(this@MainActivity, guestSurface) else HomeScreen(this@MainActivity, guestSurface)
@@ -428,6 +431,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                 }
                 if (devicesOpen) DevicesSheet(this@MainActivity) { devicesOpen = false }
                 if (licensesOpen) LicenseDialog { licensesOpen = false }
+                }
             }
         }
     }

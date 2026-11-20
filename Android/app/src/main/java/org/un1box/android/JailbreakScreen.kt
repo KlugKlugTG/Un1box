@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowRight
@@ -50,6 +52,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -347,14 +350,20 @@ private fun ListsPage(
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { GroupLabel("Sources", "Refresh", onRefresh) }
             item {
-                // Cydia's own "Add Source": a field and a button, inline, where the sources are.
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(adding, onAdding, Modifier.weight(1f), singleLine = true,
+                // Cydia's own "Add Source": the field, then the button that commits it. The button
+                // is a real lacquered one and the keyboard's Done key does the same, so neither
+                // typing nor tapping leaves the user with nothing happening.
+                Column(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(adding, onAdding, Modifier.fillMaxWidth(), singleLine = true,
                         placeholder = { Text("http://repo.example/") },
-                        label = { Text("Add Source") })
-                    Spacer(Modifier.width(8.dp))
-                    Text("Add", Modifier.clickable(enabled = adding.isNotBlank()) { onAddSource() },
-                        color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                        label = { Text("Add Source") },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { if (adding.isNotBlank()) onAddSource() }))
+                    Spacer(Modifier.height(8.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Ios6BarButton(label = "Add", onClick = onAddSource, enabled = adding.isNotBlank(),
+                            tag = "add_source_button")
+                    }
                 }
             }
             items(sources, key = { it }) { one ->

@@ -518,11 +518,11 @@ fun OutlinedTextField(
     minLines: Int = 1,
     interactionSource: MutableInteractionSource? = null,
 ) {
-    Ios6Field(label) {
+    Ios6Field(modifier, label) { field ->
         Ios6TextFieldCore(
             value = value,
             onValueChange = onValueChange,
-            modifier = modifier,
+            modifier = field,
             enabled = enabled && !readOnly,
             placeholder = placeholder,
             leadingIcon = leadingIcon,
@@ -556,11 +556,11 @@ fun OutlinedTextField(
     minLines: Int = 1,
     interactionSource: MutableInteractionSource? = null,
 ) {
-    Ios6Field(label) {
+    Ios6Field(modifier, label) { field ->
         Ios6TextFieldCore(
             value = value,
             onValueChange = onValueChange,
-            modifier = modifier,
+            modifier = field,
             enabled = enabled && !readOnly,
             placeholder = placeholder,
             leadingIcon = leadingIcon,
@@ -575,8 +575,8 @@ fun OutlinedTextField(
 
 /** The small bold caption a field wears, and the field under it. */
 @Composable
-private fun Ios6Field(label: (@Composable () -> Unit)?, field: @Composable () -> Unit) {
-    Column(Modifier.fillMaxWidth()) {
+private fun Ios6Field(modifier: Modifier, label: (@Composable () -> Unit)?, field: @Composable (Modifier) -> Unit) {
+    Column(modifier.fillMaxWidth()) {
         label?.let {
             Box(Modifier.padding(start = 2.dp, bottom = 4.dp)) {
                 CompositionLocalProvider(
@@ -584,6 +584,6 @@ private fun Ios6Field(label: (@Composable () -> Unit)?, field: @Composable () ->
                     LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) { it() }
             }
         }
-        field()
+        field(Modifier.fillMaxWidth())
     }
 }

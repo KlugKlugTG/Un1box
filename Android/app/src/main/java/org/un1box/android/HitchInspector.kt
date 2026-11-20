@@ -21,6 +21,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -99,7 +100,7 @@ private fun InspectorBody(data: HitchData, onSave: (Long, Long) -> Unit, saving:
             Stat("Avg FPS", String.format(Locale.ROOT, "%.1f", stats.avgFps), Modifier.weight(1f))
             Stat("1% low", String.format(Locale.ROOT, "%.1f", stats.lowFps), Modifier.weight(1f))
             Stat("Worst", String.format(Locale.ROOT, "%.0f ms", stats.worstMs), Modifier.weight(1f))
-            Stat("Hitches", "${stats.hitches}", Modifier.weight(1f), if (stats.hitches > 0) LtColors.Danger else null)
+            Stat("Hitches", "${stats.hitches}", Modifier.weight(1f), warn = stats.hitches > 0)
         }
         Spacer(Modifier.height(16.dp))
         SectionLabel("Frame times · ${stats.frames} frames")
@@ -146,11 +147,14 @@ private fun SectionLabel(text: String) = Text(text, Modifier.padding(bottom = 8.
     color = MaterialTheme.colorScheme.onSurfaceVariant)
 
 @Composable
-private fun Stat(label: String, value: String, modifier: Modifier, color: Color? = null) {
+private fun Stat(label: String, value: String, modifier: Modifier, warn: Boolean = false) {
+    // Silver lacquer is light in both themes, so the tile's inks are the dark ones: on the white
+    // onSurface a number that matters reads as an empty tile.
     Column(modifier.ios6Lacquer(RoundedCornerShape(8.dp), Ios6.GrayButtonTop, Ios6.GrayButtonBottom, Ios6.GrayButtonEdge)
         .padding(horizontal = 10.dp, vertical = 8.dp)) {
-        Text(value, style = MaterialTheme.typography.titleMedium, color = color ?: MaterialTheme.colorScheme.onSurface, maxLines = 1)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+        Text(value, style = MaterialTheme.typography.titleMedium,
+            color = if (warn) Ios6.DestructiveBottom else Ios6.Ink, maxLines = 1)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Ios6.InkSecondary, maxLines = 1)
     }
 }
 
@@ -202,9 +206,13 @@ private fun Detail(data: HitchData, frames: List<HitchFrame>, picked: HitchFrame
     val highlight = MaterialTheme.colorScheme.onSurface
     val breakdown = remember(frames) { frames.map { data.breakdownFor(it) } }
     val top = maxOf(40f, (frames.maxOfOrNull { it.intervalMs } ?: 0f) * 1.1f).coerceAtMost(250f)
-    Canvas(modifier.pointerInput(frames) {
+    // The millisecond captions live in a gutter on the right, so the bars stop short of them
+    // instead of running underneath the text.
+    val gutter = with(LocalDensity.current) { 46.dp.toPx() }
+    Canvas(modifier.pointerInput(frames, gutter) {
         detectTapGestures { offset ->
-            if (frames.isNotEmpty()) onPick(frames[(offset.x / size.width * frames.size).toInt().coerceIn(0, frames.size - 1)])
+            val plot = (size.width - gutter).coerceAtLeast(1f)
+            if (frames.isNotEmpty()) onPick(frames[(offset.x / plot * frames.size).toInt().coerceIn(0, frames.size - 1)])
         }
     }) {
         val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
@@ -213,12 +221,13 @@ private fun Detail(data: HitchData, frames: List<HitchFrame>, picked: HitchFrame
             setShadowLayer(4f, 0f, 0f, android.graphics.Color.BLACK)
         }
         fun y(ms: Float) = size.height - ms.coerceAtMost(top) / top * size.height
+        val plot = (size.width - gutter).coerceAtLeast(1f)
         val guides = listOf(16.7f, 33.3f, 50f, 100f, 200f).filter { it < top }
-        for (g in guides) drawLine(guide, Offset(0f, y(g)), Offset(size.width, y(g)), 1f)
+        for (g in guides) drawLine(guide, Offset(0f, y(g)), Offset(plot, y(g)), 1f)
         val canvas = drawContext.canvas.nativeCanvas
         fun labels() { for (g in guides) canvas.drawText(String.format(Locale.ROOT, "%.0f ms", g), size.width - 4f, y(g) - 4f, labelPaint) }
         if (frames.isEmpty()) { labels(); return@Canvas }
-        val w = size.width / frames.size
+        val w = plot / frames.size
         val gap = if (w > 4f) 1f else 0f
         frames.forEachIndexed { i, f ->
             val left = i * w

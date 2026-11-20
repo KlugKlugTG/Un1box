@@ -764,6 +764,7 @@ internal object I18nZh {
         put("Open", "打开")
         put("Install anyway", "仍然安装")
         put("Add Source", "添加源")
+        put("Done", "完成")
         put("Remove", "删除")
         put("Refresh", "刷新")
         put("Information", "信息")
