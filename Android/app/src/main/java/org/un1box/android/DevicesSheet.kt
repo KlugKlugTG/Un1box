@@ -44,6 +44,7 @@ import androidx.compose.ui.window.DialogProperties
  * The device library, as an iOS 6 sheet: a blue title bar with Done, a lacquered white table of
  * devices, and the Add device row at the bottom. Renaming and deleting are iOS 6 alert sheets.
  */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
     var renaming by remember { mutableStateOf<DeviceSummary?>(null) }

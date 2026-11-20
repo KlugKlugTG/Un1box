@@ -181,9 +181,9 @@ private fun SmallKey(icon: ImageVector, label: String, onClick: () -> Unit, enab
 
 /** The Home button, drawn like the device's: a ring with a rounded square. */
 @Composable
-private fun HomeKey(host: GuestHost, enabled: Boolean, onInteract: () -> Unit, size: Dp = 64.dp) {
+private fun HomeKey(host: GuestHost, enabled: Boolean, onInteract: () -> Unit, diameter: Dp = 64.dp) {
     val haptic = LocalHapticFeedback.current
-    Box(Modifier.size(size).clip(CircleShape)
+    Box(Modifier.size(diameter).clip(CircleShape)
         .drawBehind {
             drawCircle(Brush.radialGradient(listOf(Color(0xFF2C2C30), Color(0xFF0A0A0C))))
             drawCircle(Color.White.copy(alpha = 0.30f), radius = size.minDimension * 0.475f, style = androidx.compose.ui.graphics.drawscope.Stroke(1.2f))
@@ -191,7 +191,7 @@ private fun HomeKey(host: GuestHost, enabled: Boolean, onInteract: () -> Unit, s
         .semantics { contentDescription = "Home"; role = Role.Button }.testTag("home_button")
         .held(enabled, GuestButton.HOME, { button, down -> if (down) onInteract(); host.button(button, down) }) { if (host.settings.haptics) haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
         contentAlignment = Alignment.Center) {
-        Box(Modifier.size(size * 0.3f).border(1.5.dp, Color.White.copy(alpha = if (enabled) 0.6f else 0.2f), RoundedCornerShape(size * 0.07f)))
+        Box(Modifier.size(diameter * 0.3f).border(1.5.dp, Color.White.copy(alpha = if (enabled) 0.6f else 0.2f), RoundedCornerShape(diameter * 0.07f)))
     }
 }
 
