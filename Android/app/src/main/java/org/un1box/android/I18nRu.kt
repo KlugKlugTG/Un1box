@@ -73,6 +73,7 @@ internal object I18nRu {
         put("A to Z", "От A до Z")
         put("Accept", "Принять")
         put("August", "Август")
+        put("Camera", "Камера"),
         put("Cancel", "Отмена")
         put("Charts", "Чарты")
         put("Chosen", "Выбрано")
@@ -587,6 +588,7 @@ internal object I18nRu {
         put("Could not create the preparation tools folder", "Не удалось создать папку инструментов подготовки")
         put("Guest worker unavailable; input was cancelled", "Гостевой рабочий процесс недоступен; ввод отменён")
         put("The archived copy no longer matches this app.", "Архивная копия больше не соответствует этому приложению.")
+        put("This phone's cameras become the device's cameras, so the Camera app sees a real picture. The guest's own front/back switch follows; Android asks for the camera permission when you turn this on. Applies the next time the device starts", "Камеры этого телефона становятся камерами устройства, поэтому приложение «Камера» видит настоящее изображение. Переключение фронтальной и основной камеры внутри гостя тоже работает; при включении Android запросит разрешение на камеру. Применяется при следующем запуске устройства"),
         put("The device gets no camera from the next start", "Со следующего запуска устройство останется без камеры")
         put("The downloaded IPA failed its checksum check.", "Загруженный IPA не прошёл проверку контрольной суммы.")
         put("The guest returned an incomplete app identity", "Гостевая система вернула неполные данные приложения")

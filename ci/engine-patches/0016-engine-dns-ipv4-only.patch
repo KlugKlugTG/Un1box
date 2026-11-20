@@ -1,0 +1,97 @@
+diff --git a/net/slirp-dns.c b/net/slirp-dns.c
+index 77addfd..07e85c6 100644
+--- a/net/slirp-dns.c
++++ b/net/slirp-dns.c
+@@ -26,6 +26,9 @@
+ #include "net/slirp.h"
+ #include "qemu/sockets.h"
+ #include <netdb.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <netinet/in.h>
+ #ifdef CONFIG_DARWIN
+ #include <dns_sd.h>
+ #include <poll.h>
+@@ -140,7 +143,7 @@ static void dns_add_answer(DNSJob *j, uint16_t type, const void *rdata, size_t r
+ #define DNS_CACHE_ENTRIES 32
+ #define DNS_CACHE_RECORDS 8
+ #define DNS_CACHE_NAME 128
+-#define DNS_CACHE_TTL_S 60
++#define DNS_CACHE_TTL_S 300
+ #define DNS_CACHE_FAILURE_TTL_S 10
+ 
+ typedef struct DNSCacheEntry {
+@@ -194,6 +197,51 @@ static void dns_cache_store(const char *name, uint16_t qtype, const DNSCacheEntr
+     G_UNLOCK(dns_cache);
+ }
+ 
++/*
++ * Does this phone have an IPv6 address it could send from?
++ *
++ * netd answers an AAAA question whether or not the phone has a route for it: the address comes
++ * from the DNS server, not from the interface. iOS 6 then tries the first AAAA, waits for a
++ * connect that cannot leave the phone, and only then tries the A record -- a second or two on
++ * every page whose host publishes AAAA. QEMU's user network has the same gap: it answers with
++ * the host's IPv6, which a phone on a v4-only carrier or a VPN without v6 does not have. So an
++ * AAAA answer is only handed to the guest while a global (or unique-local) IPv6 address is up
++ * on the phone; otherwise the answer is an empty NOERROR and the guest goes straight to IPv4.
++ * Loopback and link-local (fe80::/10) do not count: neither can reach an internet host.
++ */
++static bool android_has_ipv6(void)
++{
++    static int cached = -1;
++    static int64_t checked;
++    int64_t now = g_get_real_time() / G_USEC_PER_SEC;
++
++    if (cached >= 0 && now - checked < 30) {
++        return cached;
++    }
++    cached = 0;
++    struct ifaddrs *all = NULL;
++    if (getifaddrs(&all) == 0) {
++        for (const struct ifaddrs *ifa = all; ifa; ifa = ifa->ifa_next) {
++            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET6 ||
++                !(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) {
++                continue;
++            }
++            const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)ifa->ifa_addr;
++            if (IN6_IS_ADDR_LOOPBACK(&a6->sin6_addr) || IN6_IS_ADDR_LINKLOCAL(&a6->sin6_addr)) {
++                continue;
++            }
++            if (IN6_IS_ADDR_V4MAPPED(&a6->sin6_addr)) {
++                continue;
++            }
++            cached = 1;
++            break;
++        }
++        freeifaddrs(all);
++    }
++    checked = now;
++    return cached;
++}
++
+ static void dns_resolve_android(DNSJob *j, const char *name, uint16_t qtype)
+ {
+     /* getaddrinfo supplies addresses, not fabricated MX/TXT answers. */
+@@ -204,10 +252,20 @@ static void dns_resolve_android(DNSJob *j, const char *name, uint16_t qtype)
+     if (dns_cache_lookup(j, name, qtype)) {
+         return;
+     }
++    if ((qtype == 28 || qtype == 255) && !android_has_ipv6()) {
++        /* No IPv6 route on the phone: an empty answer, not a lookup that would hand the guest an
++         * address it cannot reach. A/ANY still resolves below, over IPv4. Not cached: the check
++         * itself is cached for 30 s, and a phone that gains IPv6 should get real AAAA answers at
++         * once rather than after this entry's five minutes. */
++        if (qtype == 28) {
++            j->rcode = 0;
++            return;
++        }
++    }
+     DNSCacheEntry fresh;
+     memset(&fresh, 0, sizeof fresh);
+     struct addrinfo hints = {
+-        .ai_family = qtype == 28 ? AF_INET6 : qtype == 1 ? AF_INET : AF_UNSPEC,
++        .ai_family = qtype == 28 ? AF_INET6 : qtype == 1 ? AF_INET : (android_has_ipv6() ? AF_UNSPEC : AF_INET),
+         .ai_socktype = SOCK_STREAM,
+     }, *res = NULL;
+     int rc = getaddrinfo(name, NULL, &hints, &res);

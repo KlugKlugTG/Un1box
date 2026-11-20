@@ -29,6 +29,7 @@ def patch_with(marker):
 
 MIC_PATCH = patch_with("host-mic")
 BOARDS_PATCH = patch_with("host-mic")
+S5L8920_PATCH = patch_with("The phone's microphone reaches this port")
 
 # The capture port's read of the ring has been shipped in two shapes: the plain call, while the
 # microphone was a patch of its own, and -- since the port grew the A4-only property -- that same
@@ -122,8 +123,8 @@ def engine_patch_flushes_on_stop():
     require("host_mic_flush();" in body, "a stopped capture does not flush the ring")
 
 
-def engine_patch_gives_the_microphone_to_the_a4_boards_only():
-    """The S5L8920 boards share the port model and record silence."""
+def engine_patch_gives_the_microphone_to_every_board_that_has_one():
+    """The A4 boards ship the property; the S5L8920 gets it with the FIFO window that feeds it."""
     body = added_lines(BOARDS_PATCH)
     require('DEFINE_PROP_BOOL("host-mic"' in body,
             "the port has no host-mic property, so every board sharing the model asks the frontend's "
@@ -137,6 +138,15 @@ def engine_patch_gives_the_microphone_to_the_a4_boards_only():
     require('qdev_prop_set_bit(dev, "host-mic", i == 0);' in board,
             "the A4 board file does not set host-mic, so the iPad, the iPhone 4 and the iPod touch 4G "
             "would record silence too")
+    s5l8920 = added_lines(S5L8920_PATCH)
+    require('qdev_prop_set_bit(dev, "host-mic", true);' in s5l8920,
+            "the S5L8920 board does not set host-mic, so the iPhone 3GS and the iPod touch 3G would "
+            "still record silence")
+    require("if (offset == I2S_RXFIFO)" in s5l8920,
+            "the S5L8920's FIFO window still answers 0 for the RX FIFO: the capture chain would copy "
+            "silence out of it")
+    require('"s5l8930.i2s-fifo", 0x400' in s5l8920,
+            "the FIFO window is four bytes wide, so the RX FIFO's +0x38 is not mapped")
 
 
 # --- portable ---------------------------------------------------------------
@@ -278,8 +288,8 @@ CHECKS = [
     ("engine patch: the microphone is asked before the silent voice", engine_patch_asks_the_microphone_first),
     ("engine patch: the three entry points and the API bump", engine_patch_exports_the_api),
     ("engine patch: a stopped capture flushes the ring", engine_patch_flushes_on_stop),
-    ("engine patch: the A4 boards have the microphone, the S5L8920 ones do not",
-     engine_patch_gives_the_microphone_to_the_a4_boards_only),
+    ("engine patch: every board with a microphone sets host-mic",
+     engine_patch_gives_the_microphone_to_every_board_that_has_one),
     ("portable: the API is declared and typed", portable_declares_the_api),
     ("portable: the engine's entry points are resolved, and optional", portable_resolves_exactly_the_exported_names),
     ("portable: one caller reads the ring, the capture port", portable_pushes_from_the_capture_port),

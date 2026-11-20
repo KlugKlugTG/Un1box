@@ -71,11 +71,15 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
                     SwitchRow(LtIcons.Mic, "Microphone", "This phone's microphone becomes the device's input, for Voice Memos, Shazam and anything else that records; iOS asks inside the device the first time an app records. Android asks for the microphone permission when you turn this on. Applies the next time the device starts",
                         host.microphone, "microphone_toggle") { host.useMicrophone(it) }
                 }
-                // No Camera group. The guest's ISP never gets a picture it can use -- its interrupt handler
-                // reports frame metadata that did not toggle from the previous frame, and the Camera app stays
-                // black -- so the switch is taken out rather than left offering something that does not work.
-                // The path behind it is intact (Shell.camera/useCamera/cameraStatus, the worker's capture,
-                // CameraCapture, the CAMERA permission) and docs/TODO.md says what it waits for.
+                Group("Camera") {
+                    SwitchRow(LtIcons.Camera, "Camera",
+                        "This phone's cameras become the device's cameras, so the Camera app sees a real picture. The guest's own front/back switch follows; Android asks for the camera permission when you turn this on. Applies the next time the device starts",
+                        host.camera, "camera_toggle") { host.useCamera(it) }
+                    // Straight from the worker: what the guest asked for and how many frames reached it.
+                    if (host.cameraStatus.isNotEmpty()) Text(host.cameraStatus,
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp).testTag("camera_status"))
+                }
                 Group("Display") {
                     ChoiceRow(LtIcons.Palette, "Theme", ThemeMode.entries, s.theme, { it.label }) { s.theme = it }
                     ChoiceRow(LtIcons.Layers, "Screen scaling", ScreenScaling.entries, s.scaling, { it.label },

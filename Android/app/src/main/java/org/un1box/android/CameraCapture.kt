@@ -18,10 +18,11 @@ import android.util.Size
 /**
  * This phone's back camera into the emulated device's ISP.
  *
- * One camera, and only the back one: the guest asks its ISP for a frame whatever its camera app is showing, and
- * the engine serves the newest picture it has. There is deliberately nothing here to choose between sensors --
- * a capture that waits for the guest to name a sensor is a capture that can wait for ever, and a viewfinder that
- * opens the wrong lens shows nothing at all.
+ * One lens at a time: the guest names the camera it is showing (back or front) through its ISP, and this
+ * capture follows that name. Android allows one client per lens, so a switch is a close and an open; the guest
+ * sees its viewfinder go black for the moment that takes, as it would while a real camera powers its sensor.
+ * Until the guest names one, the back camera runs, so a device that has never opened Camera has something to
+ * show the first time it does.
  *
  * The path is Camera2 -> ImageReader(YUV_420_888) -> Native.cameraFrame, which turns Android's three planes into
  * one NV12 frame (camera_planes.h, tested on its own) and hands it to the engine, whose ISP scales it into the
@@ -44,14 +45,31 @@ internal class CameraCapture(private val context: Context, private val onError: 
     private var lastFrameNs = 0L
     /** Frames handed to the engine since the capture opened, for the Settings line. */
     @Volatile private var delivered = 0L
+    /** The lens the guest asked for: HOST_CAMERA_BACK until it names one. */
+    @Volatile private var wantedSensor = Native.CAMERA_BACK
+    private var openedSensor = -1
 
-    fun start() {
+    fun start(sensor: Int = Native.CAMERA_BACK) {
         if (wanted) return
         wanted = true
+        wantedSensor = sensor
         delivered = 0
         val worker = HandlerThread("camera").apply { start() }
         thread = worker
         handler = Handler(worker.looper).also { it.post { open() } }
+    }
+
+    /**
+     * The guest switched its camera. Called from the status path, so it only records the new wish and lets the
+     * camera thread do the close/open; a switch every status tick would otherwise thrash the camera service.
+     */
+    fun follow(sensor: Int) {
+        if (sensor != Native.CAMERA_FRONT && sensor != Native.CAMERA_BACK) return
+        if (sensor == wantedSensor) return
+        wantedSensor = sensor
+        handler?.post {
+            if (wanted && sensor != openedSensor) reopen("the guest switched to the ${if (sensor == Native.CAMERA_FRONT) "front" else "back"} camera")
+        }
     }
 
     fun stop() {
@@ -82,10 +100,13 @@ internal class CameraCapture(private val context: Context, private val onError: 
             onError("Camera unavailable: Android has no camera service.")
             return
         }
-        val id = cameraId(manager, CameraCharacteristics.LENS_FACING_BACK) ?: run {
-            onError("Camera unavailable: this phone reports no back camera.")
+        val facing = if (wantedSensor == Native.CAMERA_FRONT) CameraCharacteristics.LENS_FACING_FRONT
+                     else CameraCharacteristics.LENS_FACING_BACK
+        val id = cameraId(manager, facing) ?: run {
+            onError("Camera unavailable: this phone reports no ${if (facing == CameraCharacteristics.LENS_FACING_FRONT) "front" else "back"} camera.")
             return
         }
+        openedSensor = wantedSensor
         val map = manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         var target: ImageReader? = null
         for (size in sizes(map)) {
@@ -186,7 +207,7 @@ internal class CameraCapture(private val context: Context, private val onError: 
                 planes[0].buffer, planes[0].rowStride, planes[0].pixelStride,
                 planes[1].buffer, planes[1].rowStride, planes[1].pixelStride,
                 planes[2].buffer, planes[2].rowStride, planes[2].pixelStride,
-                image.width, image.height, Native.CAMERA_BACK,
+                image.width, image.height, wantedSensor,
             )
         } catch (failure: Exception) {
             onError("Camera frame failed: ${failure.message ?: "unknown error"}")
@@ -207,6 +228,7 @@ internal class CameraCapture(private val context: Context, private val onError: 
         session = null
         device = null
         reader = null
+        openedSensor = -1
     }
 
     companion object {
