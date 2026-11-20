@@ -1,7 +1,11 @@
 package org.un1box.android
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Bitmap
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -57,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -112,6 +117,47 @@ internal fun JailbreakScreen(
     var installFile by remember { mutableStateOf("") }
     var installPhase by remember { mutableStateOf("") }
     var installPercent by remember { mutableStateOf(0) }
+
+    // A .deb from this phone, not from a repository: the repositories a tweak was published in are
+    // often gone while the file itself survives. It takes the same road as a downloaded package --
+    // copied into the guest's AutoInstall folder, where Cydia's own startup job installs it.
+    val debPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            error = ""
+            staged = ""
+            var done = 0
+            var failed = 0
+            for (uri in uris) {
+                installFile = debName(context, uri)
+                installPhase = "Copying into the device"
+                installPercent = 0
+                val outcome = withContext(Dispatchers.IO) {
+                    try {
+                        val file = copyDebToCache(context, uri)
+                        try {
+                            Result.success(JailbreakInstaller(context) { socket }.installLocal(file) { phase, percent ->
+                                installPhase = phase
+                                installPercent = percent
+                            })
+                        } finally {
+                            file.delete()
+                        }
+                    } catch (failure: Exception) {
+                        Result.failure(failure)
+                    }
+                }
+                outcome.onSuccess { done++ }.onFailure {
+                    failed++
+                    error = it.message ?: it.javaClass.simpleName
+                }
+            }
+            installFile = ""
+            installPhase = ""
+            if (done > 0) staged = "$done package${if (done == 1) "" else "s"} copied into the device"
+            if (failed > 0 && error.isEmpty()) error = "$failed package${if (failed == 1) "" else "s"} could not be copied"
+        }
+    }
 
     fun refresh(only: String? = null) {
         scope.launch {
@@ -230,6 +276,21 @@ internal fun JailbreakScreen(
                 Text("${JailbreakSources.displayName(url)}: $why",
                     Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
+
+            // Local packages belong on Cydia's home list, beside the repositories: a source can be
+            // dead while its .deb files are still mirrored somewhere on this phone.
+            if (page == JailbreakPage.Lists && list == JailbreakList.PACKAGES) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = { debPicker.launch(arrayOf("*/*")) },
+                        modifier = Modifier.testTag("install_local_deb")) {
+                        Text("Install .deb")
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text("from this phone", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
 
             // The lists scroll inside a weighted box: without the weight a LazyColumn takes the whole
@@ -672,4 +733,24 @@ private fun Chevron() {
 private fun Empty(text: String) {
     Text(text, Modifier.fillMaxWidth().padding(24.dp), style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** The name a picked document reports, for the progress line. */
+private fun debName(context: android.content.Context, uri: Uri): String =
+    runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()?.substringAfterLast('/')?.takeIf { it.isNotEmpty() } ?: "package.deb"
+
+/** A picked document copied into the cache under a name that still ends in .deb. */
+private fun copyDebToCache(context: android.content.Context, uri: Uri): File {
+    val name = debName(context, uri)
+    val safe = name.replace(Regex("[^A-Za-z0-9._+~-]"), "_")
+    val file = File(File(context.cacheDir, "jailbreak").apply { mkdirs() },
+        if (safe.endsWith(".deb", ignoreCase = true)) safe else "$safe.deb")
+    val input = context.contentResolver.openInputStream(uri) ?: throw IllegalArgumentException("The file could not be read.")
+    input.use { source -> file.outputStream().use { source.copyTo(it) } }
+    if (file.length() == 0L) throw IllegalArgumentException("The file is empty.")
+    return file
 }

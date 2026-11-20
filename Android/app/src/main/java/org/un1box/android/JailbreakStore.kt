@@ -596,4 +596,24 @@ internal class JailbreakInstaller(private val context: Context, private val sock
         file.delete()
         return staged
     }
+
+    /**
+     * A .deb the person picked on this phone rather than downloaded from a repository: copied into
+     * the guest's AutoInstall folder under its own name, where Cydia's startup job installs it at
+     * the next start. Nothing is executed in the guest, so a device whose repositories are dead can
+     * still take the packages that survived.
+     */
+    fun installLocal(local: File, progress: (String, Int) -> Unit): String {
+        val socket = socket()
+        if (socket.isEmpty()) throw Failure("Start the device first: the package is put into its file system.")
+        if (!local.isFile || local.length() == 0L) throw Failure("The file could not be read.")
+        if (!local.name.endsWith(".deb", ignoreCase = true)) throw Failure("The file is not a .deb package.")
+        val safe = local.name.substringAfterLast('/').replace(Regex("[^A-Za-z0-9._+~-]"), "_")
+        val staged = "${JailbreakStore().autoInstallDir}/${if (safe.endsWith(".deb", true)) safe else "$safe.deb"}"
+        progress("Copying into the device", 0)
+        GuestApps(context).push(socket, local, staged, timeoutSeconds = 600, event = { event ->
+            if (event.optString("phase") == "upload") progress("Copying into the device", event.optInt("percent"))
+        })
+        return staged
+    }
 }

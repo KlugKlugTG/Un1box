@@ -322,6 +322,22 @@ def the_catalogues_cover_the_tab():
     return "both catalogues carry the tab's strings"
 
 
+def a_local_deb_can_be_staged():
+    """Repositories die; the .deb files they served survive on people's phones."""
+    screen = read(ROOT / "Android/app/src/main/java/org/un1box/android/JailbreakScreen.kt")
+    store = read(ROOT / "Android/app/src/main/java/org/un1box/android/JailbreakStore.kt")
+    require("OpenMultipleDocuments" in screen,
+            "the tab cannot pick a .deb from the phone: a dead repository leaves no other way in")
+    require('testTag("install_local_deb")' in screen,
+            "the local-package button has no tag, so nothing can press it in a check")
+    require("copyDebToCache(" in screen and "copyTo(it)" in screen,
+            "the picked document is never copied to a file the guest can be given")
+    require("fun installLocal(" in store,
+            "the installer has no local-file path: only a repository package can be staged")
+    require("autoInstallDir" in store and "GuestApps(context).push(" in store,
+            "a local package does not go through AutoInstall, where Cydia's startup job installs it")
+
+
 CHECKS = [
     ("gradle: -Pjailbreak reaches BuildConfig and stages the tar", gradle_carries_the_flag),
     ("service: the worker passes --jailbreak and names the tar", service_passes_the_flag_and_names_the_tar),
@@ -338,4 +354,5 @@ CHECKS = [
     ("jailbreak tab: .bz2 indexes have a decompressor", the_bz2_indexes_have_a_decompressor),
     ("jailbreak tab: the APK carries the helper built here", the_apk_carries_this_build_s_helper),
     ("jailbreak tab: the catalogues carry its strings", the_catalogues_cover_the_tab),
+    ("jailbreak tab: a .deb from the phone can be staged", a_local_deb_can_be_staged),
 ]
