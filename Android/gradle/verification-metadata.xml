@@ -11,8 +11,10 @@
          and its whole dependency graph stay checksum-verified. Trusting the two marker POMs keeps a
          fresh runner from failing on the portal's copy, which is how the jailbreak build failed.
       -->
-      <trusting group="org.jetbrains.kotlin.android" name="org.jetbrains.kotlin.android.gradle.plugin" version="2.1.20"/>
-      <trusting group="org.jetbrains.kotlin.plugin.compose" name="org.jetbrains.kotlin.plugin.compose.gradle.plugin" version="2.1.20"/>
+      <trusted-artifacts>
+         <trust group="org.jetbrains.kotlin.android" name="org.jetbrains.kotlin.android.gradle.plugin" version="2.1.20"/>
+         <trust group="org.jetbrains.kotlin.plugin.compose" name="org.jetbrains.kotlin.plugin.compose.gradle.plugin" version="2.1.20"/>
+      </trusted-artifacts>
    </configuration>
    <components>
       <component group="androidx.activity" name="activity" version="1.10.1">
