@@ -178,7 +178,7 @@ private fun Files(state: SetupState, onPickFolder: () -> Unit, onPickSystem: () 
 @Composable
 private fun FileRow(icon: ImageVector, title: String, hint: String, picked: PickedFile?, onPick: () -> Unit, tag: String, action: Boolean = false) {
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)
-        .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+        .ios6CellLacquer()
         .clickable(onClick = onPick).padding(12.dp).testTag(tag),
         verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(30.dp).ios6Lacquer(RoundedCornerShape(7.dp),

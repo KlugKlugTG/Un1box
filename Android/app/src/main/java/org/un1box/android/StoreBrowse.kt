@@ -308,7 +308,7 @@ internal fun ColumnScope.CategoriesTab(model: StoreModel) {
         LazyColumn(Modifier.weight(1f).testTag("store_categories"), state = browser.genreList, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
             items(genres.orEmpty(), key = { it.id }) { genre ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-                    .ios6Lacquer(RoundedCornerShape(9.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+                    .ios6CellLacquer(RoundedCornerShape(9.dp))
                     .clickable { browser.openCategory(genre) }.padding(horizontal = 12.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Text(genre.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
@@ -338,7 +338,7 @@ internal fun ColumnScope.CollectionsTab(model: StoreModel) {
         LazyColumn(Modifier.weight(1f).testTag("store_collections"), state = browser.collectionList, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
             items(list.orEmpty(), key = { it.slug }) { item ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-                    .ios6Lacquer(RoundedCornerShape(9.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+                    .ios6CellLacquer(RoundedCornerShape(9.dp))
                     .clickable { browser.openCollection(item) }.padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {

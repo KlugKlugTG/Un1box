@@ -146,6 +146,29 @@ internal fun Modifier.ios6Lacquer(shape: Shape, top: Color, bottom: Color, edge:
         drawLine(Color.Black.copy(alpha = 0.18f * gloss), Offset(0f, size.height - 1f), Offset(size.width, size.height - 1f), 1f)
     }.border(1.dp, edge, shape)
 
+/**
+ * A lacquered table cell: white paper by day, dark glass at night, and a bluer paper when the
+ * row is the selected one. Callers pass only the shape, so no screen has to know the theme.
+ */
+@Composable
+internal fun Modifier.ios6CellLacquer(shape: Shape = RoundedCornerShape(10.dp), selected: Boolean = false,
+                                     gloss: Float = 0.55f): Modifier {
+    val dark = Ios6.isDark()
+    val top = when {
+        selected && dark -> Color(0xFF2E4463)
+        selected -> Color(0xFFE7F1FD)
+        dark -> Ios6.CellDark
+        else -> Ios6.Cell
+    }
+    val bottom = when {
+        selected && dark -> Color(0xFF20304A)
+        selected -> Color(0xFFD2E4F8)
+        dark -> Color(0xFF1B1B1E)
+        else -> Color(0xFFF4F4F7)
+    }
+    return ios6Lacquer(shape, top, bottom, if (dark) Color(0xFF3A3A3E) else Color(0xFF8E8E93), gloss = gloss)
+}
+
 // ---------------------------------------------------------------- pages and chrome
 
 /** Full-screen pinstriped page; every page composes inside one. */

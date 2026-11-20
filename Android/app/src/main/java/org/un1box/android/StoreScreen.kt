@@ -452,7 +452,7 @@ internal fun ResultRow(app: JSONObject, model: StoreModel, rank: Int? = null) {
     val problem = LegacyStore.incompatibility(app)
     val installedVersion = model.installed[app.optString("bundle_id")]
     Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
-        .ios6Lacquer(RoundedCornerShape(9.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+        .ios6CellLacquer(RoundedCornerShape(9.dp))
         .clickable { model.open(app) }.padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically) {
         rank?.let { Text(it.toString(), Modifier.width(28.dp), style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center); Spacer(Modifier.width(6.dp)) }
@@ -498,7 +498,7 @@ private fun ColumnScope.StoreDetails(model: StoreModel, app: JSONObject, running
             modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 8.dp))
         val rows = model.copies
         Column(Modifier.weight(1f, fill = false).fillMaxWidth()
-            .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))) {
+            .ios6CellLacquer()) {
             if (rows == null) LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp))
             else if (rows.isEmpty()) Text("None found.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             // The copy selected first (the search row's, or its stand-in) can sit far down the list: show it.
@@ -557,7 +557,7 @@ private fun Screenshots(shots: List<StoreShot>) {
 @Composable
 private fun StoreCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) =
     Column(modifier.fillMaxWidth().padding(vertical = 6.dp)
-        .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+        .ios6CellLacquer()
         .padding(horizontal = 16.dp, vertical = 12.dp), content = content)
 
 /**

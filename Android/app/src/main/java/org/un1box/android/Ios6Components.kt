@@ -169,7 +169,8 @@ fun OutlinedButton(
         .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
         .padding(contentPadding), contentAlignment = Alignment.Center) {
         CompositionLocalProvider(
-            LocalContentColor provides if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            // The silver lacquer is light in both themes, so its label is always the dark ink.
+            LocalContentColor provides if (enabled) Ios6.Ink else Ios6.Ink.copy(alpha = 0.5f),
             LocalTextStyle provides MaterialTheme.typography.labelLarge) {
             Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) { content() }
         }
@@ -347,10 +348,12 @@ fun AlertDialog(
                 val neutral = neutralButton
                 if (neutral == null && dismiss != null) {
                     // Two actions sit side by side, dismiss on the left, as UIAlertView drew them.
-                    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp)) {
-                        AlertButtonCell(Modifier.weight(1f)) { dismiss() }
+                    // IntrinsicSize.Min keeps the hairline at the row's height: a fillMaxHeight
+                    // divider inside a wrap-content Row otherwise stretches it to the whole screen.
+                    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+                        AlertButtonCell(Modifier.weight(1f).fillMaxHeight()) { dismiss() }
                         Box(Modifier.width(1.dp).fillMaxHeight().background(Color.Black.copy(alpha = 0.5f)))
-                        AlertButtonCell(Modifier.weight(1f)) { confirmButton() }
+                        AlertButtonCell(Modifier.weight(1f).fillMaxHeight()) { confirmButton() }
                     }
                 } else {
                     Column(Modifier.fillMaxWidth()) {

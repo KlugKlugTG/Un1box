@@ -85,9 +85,10 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
                             }
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text("Add device", style = MaterialTheme.typography.titleSmall)
+                                // The Add row is silver lacquer in both themes, so both labels are the dark ink.
+                                Text("Add device", style = MaterialTheme.typography.titleSmall, color = Ios6.Ink)
                                 Text("From an IPSW, or a device image you have", style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    color = Ios6.Ink.copy(alpha = 0.66f))
                             }
                             Ios6Chevron()
                         }
@@ -115,8 +116,7 @@ private fun DeviceRow(device: DeviceSummary, switchable: Boolean, editable: Bool
     var menu by remember { mutableStateOf(false) }
     Column {
         Row(Modifier.fillMaxWidth()
-            .ios6Lacquer(RoundedCornerShape(10.dp), if (device.selected) Color(0xFFE7F1FD) else Color.White,
-                if (device.selected) Color(0xFFD2E4F8) else Color(0xFFF3F3F6), Color(0xFF8E8E93))
+            .ios6CellLacquer(selected = device.selected)
             .clickable(enabled = switchable && !device.selected, onClick = onSelect)
             .padding(start = 12.dp, end = 6.dp, top = 10.dp, bottom = 10.dp).testTag("device_row"),
             verticalAlignment = Alignment.CenterVertically) {

@@ -142,7 +142,7 @@ private fun SectionLabel(text: String) {
 @Composable
 private fun ChoiceRow(icon: ImageVector?, title: String, detail: String, enabled: Boolean, tag: String, badge: Support? = null, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)
-        .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+        .ios6CellLacquer()
         .clickable(enabled = enabled, onClick = onClick).alpha(if (enabled) 1f else 0.45f).padding(12.dp).testTag(tag),
         verticalAlignment = Alignment.CenterVertically) {
         if (icon != null) {
@@ -160,12 +160,13 @@ private fun ChoiceRow(icon: ImageVector?, title: String, detail: String, enabled
 
 @Composable
 private fun SupportBadge(support: Support) {
+    // The pill is silver in both themes, so its label uses inks dark enough to read on it.
     val color = when (support) {
-        Support.TESTED -> MaterialTheme.colorScheme.primary
-        Support.TESTED_SLOW -> MaterialTheme.colorScheme.tertiary
-        Support.EXPERIMENTAL -> LtColors.Warning
-        Support.UNTESTED -> MaterialTheme.colorScheme.onSurfaceVariant
-        Support.DOESNT_START -> MaterialTheme.colorScheme.error
+        Support.TESTED -> Ios6.Blue
+        Support.TESTED_SLOW -> Color(0xFFB26B00)
+        Support.EXPERIMENTAL -> Color(0xFF8A5A00)
+        Support.UNTESTED -> Ios6.InkSecondary
+        Support.DOESNT_START -> LtColors.Danger
     }
     Text(support.label, Modifier.padding(start = 12.dp).ios6Lacquer(RoundedCornerShape(9.dp),
         Ios6.GrayButtonTop, Ios6.GrayButtonBottom, Ios6.GrayButtonEdge)
@@ -347,7 +348,7 @@ private fun ColumnScope.FilesStep(state: PrepareState, busy: Boolean, onDownload
 @Composable
 private fun Card(icon: ImageVector, title: String, done: Boolean, detail: String, content: @Composable ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)
-        .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93)).padding(14.dp)) {
+        .ios6CellLacquer().padding(14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(28.dp).ios6Lacquer(RoundedCornerShape(7.dp),
                 if (done) Ios6.ButtonTop else Color(0xFFDCDCE1), if (done) Ios6.ButtonBottom else Color(0xFFB8B8BE),
