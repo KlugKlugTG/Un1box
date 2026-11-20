@@ -73,8 +73,7 @@ internal fun SetupWizard(state: SetupState, canCancel: Boolean, onPickFolder: ()
             state.step == SetupStep.DONE -> onFinish(false)
         }
     }
-    Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.testTag("setup"), color = MaterialTheme.colorScheme.background) {
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f), Color.Transparent))))
+    Ios6Page(Modifier.semantics { testTagsAsResourceId = true }.testTag("setup")) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             if (canCancel && state.step != SetupStep.CREATING) Row(Modifier.fillMaxWidth().padding(4.dp)) {
                 IconButton(onClick = { if (state.step == SetupStep.DONE) onFinish(false) else onCancel() }) { Icon(Icons.Filled.Close, "Close") }
@@ -94,8 +93,9 @@ internal fun SetupWizard(state: SetupState, canCancel: Boolean, onPickFolder: ()
 @Composable
 private fun Welcome(onPrepare: () -> Unit, onFiles: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 28.dp), verticalArrangement = Arrangement.Center) {
-        Box(Modifier.size(72.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) {
-            Icon(LtIcons.Phone, null, Modifier.size(38.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+        Box(Modifier.size(76.dp).ios6Lacquer(RoundedCornerShape(16.dp), Ios6.ButtonTop, Ios6.ButtonBottom, Ios6.ButtonEdge),
+            contentAlignment = Alignment.Center) {
+            Icon(LtIcons.Phone, null, Modifier.size(42.dp), tint = Color.White)
         }
         Spacer(Modifier.height(28.dp))
         Text("Un1box", style = MaterialTheme.typography.headlineLarge)
@@ -177,18 +177,24 @@ private fun Files(state: SetupState, onPickFolder: () -> Unit, onPickSystem: () 
 /** A file to choose, with a check once chosen; [action] rows (the folder scan) have no check. */
 @Composable
 private fun FileRow(icon: ImageVector, title: String, hint: String, picked: PickedFile?, onPick: () -> Unit, tag: String, action: Boolean = false) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp))
-        .background(MaterialTheme.colorScheme.surfaceContainer).clickable(onClick = onPick).padding(16.dp).testTag(tag),
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)
+        .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+        .clickable(onClick = onPick).padding(12.dp).testTag(tag),
         verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, Modifier.size(24.dp), tint = if (picked != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.width(16.dp))
+        Box(Modifier.size(30.dp).ios6Lacquer(RoundedCornerShape(7.dp),
+            if (picked != null) Ios6.ButtonTop else Color(0xFFDCDCE1),
+            if (picked != null) Ios6.ButtonBottom else Color(0xFFB8B8BE),
+            if (picked != null) Ios6.ButtonEdge else Color(0xFF8E8E93)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, Modifier.size(17.dp), tint = Color.White)
+        }
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleSmall)
             Text(picked?.name ?: hint, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = if (picked != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if (picked != null) Icon(Icons.Filled.CheckCircle, "Chosen", tint = MaterialTheme.colorScheme.primary)
-        else if (!action) Box(Modifier.size(22.dp).border(1.5.dp, MaterialTheme.colorScheme.outline, CircleShape))
+        if (picked != null) Icon(Icons.Filled.CheckCircle, "Chosen", tint = LtColors.Success)
+        else if (!action) Ios6Chevron()
     }
 }
 

@@ -3,6 +3,7 @@ package org.un1box.android
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -10,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import org.json.JSONObject
 import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
@@ -59,9 +61,13 @@ internal fun LicenseDialog(onClose: () -> Unit) {
             }
         } catch (error: Exception) { failure = "License could not be read: ${error.message ?: "unavailable"}" }
     }
+    val back: (@Composable () -> Unit)? = if (selected != null) {
+        { TextButton(onClick = { selected = null; failure = "" }) { Text("All licenses") } }
+    } else null
     AlertDialog(onDismissRequest = onClose, title = { Text(selected?.second?.first ?: "Open source licenses") },
         text = {
-            LazyColumn(Modifier.testTag("license_content")) {
+            // A bounded list inside the alert's scrollable sheet: a lazy list needs a finite height.
+            LazyColumn(Modifier.testTag("license_content").heightIn(max = 300.dp)) {
                 if (failure.isNotEmpty()) item { Text(failure, color = MaterialTheme.colorScheme.error) }
                 if (selected == null) {
                     for (group in groups) {
@@ -73,7 +79,7 @@ internal fun LicenseDialog(onClose: () -> Unit) {
             }
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Close") } },
-        dismissButton = { if (selected != null) TextButton(onClick = { selected = null; failure = "" }) { Text("All licenses") } })
+        dismissButton = back)
 }
 private fun openSource(context: Context, reference: String, fail: (String) -> Unit) {
     try {

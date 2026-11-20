@@ -47,17 +47,10 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
             "Headphones also turn off the speaker's protection limiter. Some games count on it to keep loud sounds in check and can sound distorted without it; " +
             "if a game crackles or clips, switch this off and restart the device.") },
         confirmButton = { TextButton(onClick = { headphonesInfo = false }) { Text("OK") } })
-    Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }, color = MaterialTheme.colorScheme.background) {
+    Ios6Page(Modifier.semantics { testTagsAsResourceId = true }) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().height(66.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                GlassIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tag = "settings_back")
-                Spacer(Modifier.width(14.dp))
-                Column {
-                    Text("Settings", style = MaterialTheme.typography.headlineSmall)
-                    Text(BuildConfig.VERSION_NAME.let { "Un1box $it" }, style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
+            Ios6NavBar("Settings", subtitle = "Un1box ${BuildConfig.VERSION_NAME}",
+                start = { Ios6BarButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tag = "settings_back") })
             Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag("settings")) {
                 Group("Language") {
                     // Four languages in one row: the segmented labels drop the row's indent
@@ -158,67 +151,72 @@ private fun Group(title: String, content: @Composable ColumnScope.() -> Unit) {
     }
 }
 
-/** The leading glyph of a row, on its own quiet tile so the row has a left edge to line up on. */
+/** The leading glyph of a row, on the blue lacquered tile iOS 6 puts in Settings. */
 @Composable
 private fun RowIcon(icon: ImageVector?, alpha: Float = 1f) {
     if (icon != null) {
-        Box(Modifier.size(34.dp).clip(RoundedCornerShape(11.dp))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f * alpha)), contentAlignment = Alignment.Center) {
-            Icon(icon, null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = alpha))
+        Box(Modifier.size(30.dp).ios6Lacquer(RoundedCornerShape(7.dp), Ios6.ButtonTop, Ios6.ButtonBottom, Ios6.ButtonEdge).alpha(alpha),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, null, Modifier.size(18.dp), tint = Color.White)
         }
-        Spacer(Modifier.width(20.dp))
-    } else Spacer(Modifier.width(54.dp))
+        Spacer(Modifier.width(12.dp))
+    } else Spacer(Modifier.width(42.dp))
 }
 
 @Composable
 private fun SwitchRow(icon: ImageVector?, title: String, subtitle: String?, checked: Boolean, tag: String? = null,
                       info: (() -> Unit)? = null, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        RowIcon(icon)
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        }
-        if (info != null) IconButton(onClick = info) { Icon(LtIcons.Info, "About this setting", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-        else Spacer(Modifier.width(12.dp))
-        Switch(checked, onChange, modifier = if (tag != null) Modifier.testTag(tag) else Modifier)
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun <T> ChoiceRow(icon: ImageVector?, title: String, options: List<T>, selected: T, label: (T) -> String,
-                          subtitle: String? = null, tag: String? = null, compact: Boolean = false, onSelect: (T) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    Column {
+        Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically) {
             RowIcon(icon)
-            Column {
+            Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.bodyLarge)
                 subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
+            if (info != null) IconButton(onClick = info) { Icon(LtIcons.Info, "About this setting", tint = MaterialTheme.colorScheme.primary) }
+            else Spacer(Modifier.width(10.dp))
+            Ios6Switch(checked, onChange, tag = tag)
         }
-        Spacer(Modifier.height(8.dp))
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(start = if (compact) 0.dp else 54.dp).then(if (tag != null) Modifier.testTag(tag) else Modifier)) {
-            options.forEachIndexed { i, option ->
-                SegmentedButton(selected = option == selected, onClick = { onSelect(option) }, shape = SegmentedButtonDefaults.itemShape(i, options.size),
-                    icon = {}, label = { Text(label(option), maxLines = 1,
-                        style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium) })
+        Ios6Separator(inset = if (icon != null) 54.dp else 12.dp)
+    }
+}
+
+@Composable
+private fun <T> ChoiceRow(icon: ImageVector?, title: String, options: List<T>, selected: T, label: (T) -> String,
+                          subtitle: String? = null, tag: String? = null, compact: Boolean = false, onSelect: (T) -> Unit) {
+    Column {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RowIcon(icon)
+                Column {
+                    Text(title, style = MaterialTheme.typography.bodyLarge)
+                    subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
             }
+            Spacer(Modifier.height(8.dp))
+            Ios6Segmented(options.map(label), options.indexOf(selected).coerceAtLeast(0),
+                { onSelect(options[it]) }, Modifier.padding(start = if (compact) 0.dp else 42.dp).then(if (tag != null) Modifier.testTag(tag) else Modifier),
+                compact = compact)
         }
+        Ios6Separator(inset = if (icon != null) 54.dp else 12.dp)
     }
 }
 
 @Composable
 private fun ActionRow(icon: ImageVector?, title: String, subtitle: String?, enabled: Boolean = true, tag: String? = null, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).then(if (tag != null) Modifier.testTag(tag) else Modifier)
-        .padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-        val alpha = if (enabled) 1f else 0.4f
-        RowIcon(icon, alpha)
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha))
-            subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha)) }
+    val alpha = if (enabled) 1f else 0.4f
+    Column {
+        Row(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).then(if (tag != null) Modifier.testTag(tag) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 12.dp).alpha(alpha), verticalAlignment = Alignment.CenterVertically) {
+            RowIcon(icon)
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            Ios6Chevron()
         }
-        Icon(Icons.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha * 0.6f))
+        Ios6Separator(inset = if (icon != null) 54.dp else 12.dp)
     }
 }
 

@@ -50,7 +50,7 @@ import kotlinx.coroutines.delay
 @Composable
 internal fun HomeScreen(host: GuestHost, guestSurface: @Composable (Modifier) -> Unit) {
     var confirmStop by remember { mutableStateOf(false) }
-    AuroraBackdrop(Modifier.semantics { testTagsAsResourceId = true }) {
+    Ios6WallpaperPage(Modifier.semantics { testTagsAsResourceId = true }) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             HomeTopBar(host)
             Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp), contentAlignment = Alignment.Center) {
@@ -71,28 +71,17 @@ internal fun HomeScreen(host: GuestHost, guestSurface: @Composable (Modifier) ->
     if (confirmStop) StopDialog(host) { confirmStop = false }
 }
 
-/** Device on the left, session state on the right, both made of the same glass. */
+/** The iOS 6 navigation bar: the selected device on the left, its session state on the right. */
 @Composable
 private fun HomeTopBar(host: GuestHost) {
-    Row(Modifier.fillMaxWidth().height(62.dp).padding(start = 16.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-        val device = host.selected
-        GlassSurface(Modifier.weight(1f, fill = false).clip(MaterialTheme.shapes.large).clickable { host.openDevices() }
-            .testTag("device_selector"), shape = MaterialTheme.shapes.large) {
-            Row(Modifier.padding(start = 12.dp, end = 10.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(host.status)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f, fill = false)) {
-                    Text(device?.name ?: "No device", style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(device?.subtitle ?: statusLabel(host.status), style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                Icon(Icons.Filled.KeyboardArrowDown, "Devices", Modifier.padding(start = 6.dp).size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        Spacer(Modifier.weight(1f))
-        StatusPill(host.status)
-    }
+    val device = host.selected
+    Ios6NavBar(
+        title = device?.name ?: "No device",
+        subtitle = device?.subtitle ?: statusLabel(host.status),
+        start = {
+            Ios6BarButton(icon = LtIcons.Phone, label = "Devices", onClick = { host.openDevices() }, tag = "device_selector")
+        },
+        end = { StatusPill(host.status) })
 }
 
 /**
@@ -222,19 +211,26 @@ private fun Busy(label: String) {
     }
 }
 
-/** Pause, screenshot, full screen, inspect, stop: one pane of glass over the bottom bar. */
+/** Pause, screenshot, full screen, inspect, stop: one blue toolbar over the bottom bar. */
 @Composable
 private fun SessionDock(host: GuestHost, onStop: () -> Unit) {
-    GlassSurface(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("dock"), raised = true) {
-        Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            val canControl = host.status in listOf("running", "paused")
-            DockButton(if (host.paused) LtIcons.Play else LtIcons.Pause, if (host.paused) "Resume" else "Pause",
-                { host.setPaused(!host.paused) }, Modifier.weight(1f), enabled = canControl, tag = "pause_guest", primary = true)
-            DockButton(LtIcons.Fullscreen, "Full screen", { host.navigate(Screen.FULLSCREEN) }, Modifier.weight(1f), tag = "fullscreen_button")
-            DockButton(LtIcons.Camera, "Screenshot", host::screenshot, Modifier.weight(1f), enabled = canControl, tag = "screenshot_button")
-            if (host.settings.hitchButton) DockButton(LtIcons.Timeline, "Inspect", host::openHitch, Modifier.weight(1f), enabled = canControl, tag = "hitch_button")
-            DockButton(LtIcons.Stop, "Stop", onStop, Modifier.weight(1f),
-                enabled = host.sessionOwned && host.status != "stopping" && !host.storeInstalling, tint = LtColors.Danger, tag = "stop_guest")
+    val dark = Ios6.isDark()
+    Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).testTag("dock")
+        .ios6Lacquer(RoundedCornerShape(9.dp),
+            if (dark) Ios6.NavTopDark else Ios6.NavTop,
+            if (dark) Ios6.NavBottomDark else Ios6.NavBottom,
+            if (dark) Color(0xFF0A0A0B) else Color(0xFF173F6B))) {
+        CompositionLocalProvider(LocalIosOnChrome provides true) {
+            Row(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                val canControl = host.status in listOf("running", "paused")
+                DockButton(if (host.paused) LtIcons.Play else LtIcons.Pause, if (host.paused) "Resume" else "Pause",
+                    { host.setPaused(!host.paused) }, Modifier.weight(1f), enabled = canControl, tag = "pause_guest", primary = true)
+                DockButton(LtIcons.Fullscreen, "Full screen", { host.navigate(Screen.FULLSCREEN) }, Modifier.weight(1f), tag = "fullscreen_button")
+                DockButton(LtIcons.Camera, "Screenshot", host::screenshot, Modifier.weight(1f), enabled = canControl, tag = "screenshot_button")
+                if (host.settings.hitchButton) DockButton(LtIcons.Timeline, "Inspect", host::openHitch, Modifier.weight(1f), enabled = canControl, tag = "hitch_button")
+                DockButton(LtIcons.Stop, "Stop", onStop, Modifier.weight(1f),
+                    enabled = host.sessionOwned && host.status != "stopping" && !host.storeInstalling, tint = LtColors.Danger, tag = "stop_guest")
+            }
         }
     }
 }
@@ -242,6 +238,9 @@ private fun SessionDock(host: GuestHost, onStop: () -> Unit) {
 /** Shutting down is slow and closes every app, so it is confirmed; Save & Stop keeps the session. */
 @Composable
 internal fun StopDialog(host: GuestHost, onDismiss: () -> Unit) {
+    val shutDown: (@Composable () -> Unit)? = if (host.canSaveState) {
+        { TextButton(onClick = { onDismiss(); host.stop() }, modifier = Modifier.testTag("confirm_stop")) { Text("Shut down") } }
+    } else null
     AlertDialog(onDismissRequest = onDismiss, modifier = DialogTags,
         icon = { Icon(LtIcons.Power, null) },
         title = { Text("Stop ${host.selected?.name ?: "device"}?", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center) },
@@ -257,12 +256,9 @@ internal fun StopDialog(host: GuestHost, onDismiss: () -> Unit) {
             else Button(onClick = { onDismiss(); host.stop() }, modifier = Modifier.testTag("confirm_stop"),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Shut down") }
         },
-        dismissButton = {
-            Row {
-                if (host.canSaveState) TextButton(onClick = { onDismiss(); host.stop() }, modifier = Modifier.testTag("confirm_stop")) { Text("Shut down") }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
-            }
-        })
+        // Three actions stack vertically in iOS 6, Cancel last.
+        neutralButton = shutDown,
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
 
 internal fun Color.luminance() = 0.2126f * red + 0.7152f * green + 0.0722f * blue

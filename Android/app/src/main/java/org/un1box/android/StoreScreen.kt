@@ -8,6 +8,7 @@ import android.os.Looper
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -37,6 +38,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -298,8 +300,13 @@ internal class StoreModel(context: Context, private val muxSocket: () -> String?
 @Composable
 internal fun AppIcon(url: String?, size: Int = 48, fallback: String? = null) {
     val bitmap by produceState<Bitmap?>(null, url) { value = url?.let { withContext(Dispatchers.IO) { LegacyStore.icon(it) } } }
-    Box(Modifier.size(size.dp).clip(RoundedCornerShape((size / 4.5f).dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
+    val corner = RoundedCornerShape((size / 4.5f).dp)
+    Box(Modifier.size(size.dp).clip(corner).background(MaterialTheme.colorScheme.surfaceContainerHighest)
+        .border(1.dp, Color(0xFF8E8E93).copy(alpha = 0.55f), corner)) {
         bitmap?.let { Image(it.asImageBitmap(), contentDescription = null, Modifier.fillMaxSize()) }
+        // The gloss every iOS 6 icon wears across its top half.
+        Box(Modifier.fillMaxWidth().fillMaxHeight(0.48f)
+            .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.30f), Color.Transparent))))
         // No icon to be had (the app isn't in the store): its initial, so the row still has something to tap.
         if (bitmap == null && url == null && !fallback.isNullOrBlank()) Text(fallback.trim().take(1).uppercase(), Modifier.align(Alignment.Center),
             style = if (size >= 64) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -316,12 +323,14 @@ internal fun StoreScreen(model: StoreModel, running: Boolean, onPickLocal: () ->
     // Another device (or a guest reporting its exact iOS version) has other apps and other charts.
     LaunchedEffect(model.target) { model.browser.reset(); model.browser.show(model.browser.tab) }
     // Drawn over the activity's content (not a Dialog window, which gets no usable insets edge to edge).
-    Surface(Modifier.fillMaxSize().testTag("store").semantics { testTagsAsResourceId = true }, color = MaterialTheme.colorScheme.background) {
+    Ios6Page(Modifier.testTag("store").semantics { testTagsAsResourceId = true }) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             StoreTopBar(model, running, onPickLocal, canSearch = details == null && plain == null, onBack = {
                 when { details != null -> model.close(); plain != null -> model.installedList.plain = null; model.searchOpen -> model.closeSearch(); model.browser.canGoBack -> model.browser.back(); else -> onClose() }
             })
-            Column(Modifier.padding(horizontal = 16.dp)) {
+            if (model.searchOpen && details == null && plain == null)
+                SearchField(model, Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp))
+            Column(Modifier.padding(horizontal = 12.dp)) {
                 model.crash?.let { report ->
                     val clipboard = LocalClipboardManager.current
                     StoreCard(Modifier.testTag("store_crash_report")) {
@@ -379,52 +388,42 @@ private fun ColumnScope.DeviceTab(model: StoreModel) {
 @Composable
 private fun StoreTopBar(model: StoreModel, running: Boolean, onPickLocal: () -> Unit, canSearch: Boolean, onBack: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
-    val searching = model.searchOpen && canSearch
-    Row(Modifier.fillMaxWidth().height(68.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        GlassIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tag = "store_close")
-        Spacer(Modifier.width(8.dp))
-        if (searching) SearchField(model, Modifier.weight(1f))
-        else {
-            Column(Modifier.weight(1f)) {
-                Text("Legacy Store", style = MaterialTheme.typography.headlineSmall)
-                Text(model.target?.let { "${shortProductName(it.productType)} · iOS ${it.ios}" } ?: "No device selected",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Ios6NavBar(
+        title = "Legacy Store",
+        subtitle = model.target?.let { "${shortProductName(it.productType)} · iOS ${it.ios}" } ?: "No device selected",
+        start = { Ios6BarButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tag = "store_close") },
+        end = {
+            if (canSearch) IconButton(onClick = { model.searchOpen = true }, modifier = Modifier.testTag("store_search")) {
+                Icon(Icons.Filled.Search, "Search", tint = Color.White)
             }
-            if (canSearch) IconButton(onClick = { model.searchOpen = true }, modifier = Modifier.testTag("store_search")) { Icon(Icons.Filled.Search, "Search") }
-        }
-        QueueButton(model)
-        Box {
-            IconButton(onClick = { menu = true }, modifier = Modifier.testTag("store_menu")) { Icon(Icons.Filled.MoreVert, "More") }
-            DropdownMenu(menu, { menu = false }) {
-                DropdownMenuItem(text = { Text("Install an IPA file…") }, leadingIcon = { Icon(LtIcons.File, null) },
-                    onClick = { menu = false; onPickLocal() }, enabled = running && model.servicesAvailable)
-                DropdownMenuItem(text = { Text(if (model.watching) "Recording the launch…" else "Why did the last app quit?") },
-                    leadingIcon = { Icon(LtIcons.Info, null) },
-                    onClick = { menu = false; model.showLastCrash() }, enabled = running && model.servicesAvailable && !model.watching,
-                    modifier = Modifier.testTag("store_crash"))
-                DropdownMenuItem(text = { Text("Record the next app launch (30 s)") }, leadingIcon = { Icon(LtIcons.Info, null) },
-                    onClick = { menu = false; model.watchLaunch() }, enabled = running && model.servicesAvailable && !model.watching,
-                    modifier = Modifier.testTag("store_watch_launch"))
+            QueueButton(model)
+            Box {
+                IconButton(onClick = { menu = true }, modifier = Modifier.testTag("store_menu")) {
+                    Icon(Icons.Filled.MoreVert, "More", tint = Color.White)
+                }
+                DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem(text = { Text("Install an IPA file…") }, leadingIcon = { Icon(LtIcons.File, null) },
+                        onClick = { menu = false; onPickLocal() }, enabled = running && model.servicesAvailable)
+                    DropdownMenuItem(text = { Text(if (model.watching) "Recording the launch…" else "Why did the last app quit?") },
+                        leadingIcon = { Icon(LtIcons.Info, null) },
+                        onClick = { menu = false; model.showLastCrash() }, enabled = running && model.servicesAvailable && !model.watching,
+                        modifier = Modifier.testTag("store_crash"))
+                    DropdownMenuItem(text = { Text("Record the next app launch (30 s)") }, leadingIcon = { Icon(LtIcons.Info, null) },
+                        onClick = { menu = false; model.watchLaunch() }, enabled = running && model.servicesAvailable && !model.watching,
+                        modifier = Modifier.testTag("store_watch_launch"))
+                }
             }
-        }
-    }
+        })
 }
 
-/** The search field that takes the title's place in the top bar; Search runs it, Back closes it. */
+/** The search field under the bar; Search runs it, Back closes it. */
 @Composable
 private fun SearchField(model: StoreModel, modifier: Modifier) {
-    val keyboard = LocalSoftwareKeyboardController.current
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
-    val search = { if (!model.searching && model.target != null) { keyboard?.hide(); model.search() } }
-    TextField(model.query, { model.query = it }, modifier.padding(end = 4.dp).focusRequester(focus).testTag("store_query"),
-        singleLine = true, shape = RoundedCornerShape(28.dp), placeholder = { Text("Search apps and games") },
-        trailingIcon = {
-            if (model.query.isNotEmpty()) IconButton(onClick = { model.query = "" }) { Icon(Icons.Filled.Close, "Clear") }
-        },
-        colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, disabledIndicatorColor = Color.Transparent,
-            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer, unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { search() }))
+    val search = { if (!model.searching && model.target != null) model.search() }
+    Ios6SearchField(model.query, { model.query = it }, modifier.focusRequester(focus).testTag("store_query"),
+        placeholder = "Search apps and games", onSearch = search)
 }
 
 @Composable
@@ -452,11 +451,13 @@ internal fun ResultRow(app: JSONObject, model: StoreModel, rank: Int? = null) {
     }
     val problem = LegacyStore.incompatibility(app)
     val installedVersion = model.installed[app.optString("bundle_id")]
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { model.open(app) }.padding(horizontal = 8.dp, vertical = 8.dp),
+    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
+        .ios6Lacquer(RoundedCornerShape(9.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+        .clickable { model.open(app) }.padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        rank?.let { Text(it.toString(), Modifier.width(32.dp), style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center); Spacer(Modifier.width(8.dp)) }
-        Box(Modifier.alpha(if (problem == null) 1f else 0.5f)) { AppIcon(app.optString("icon_url").ifEmpty { null }, 52) }
-        Spacer(Modifier.width(14.dp))
+        rank?.let { Text(it.toString(), Modifier.width(28.dp), style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center); Spacer(Modifier.width(6.dp)) }
+        Box(Modifier.alpha(if (problem == null) 1f else 0.5f)) { AppIcon(app.optString("icon_url").ifEmpty { null }, 48) }
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(app.optString("name"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall,
                 color = if (problem == null) Color.Unspecified else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -472,6 +473,7 @@ internal fun ResultRow(app: JSONObject, model: StoreModel, rank: Int? = null) {
                 installedVersion != null -> Text("Installed $installedVersion", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
         }
+        Ios6Chevron()
     }
 }
 
@@ -495,7 +497,8 @@ private fun ColumnScope.StoreDetails(model: StoreModel, app: JSONObject, running
         Text("Versions that run on this device", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 8.dp))
         val rows = model.copies
-        Column(Modifier.weight(1f, fill = false).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
+        Column(Modifier.weight(1f, fill = false).fillMaxWidth()
+            .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))) {
             if (rows == null) LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp))
             else if (rows.isEmpty()) Text("None found.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             // The copy selected first (the search row's, or its stand-in) can sit far down the list: show it.
@@ -553,7 +556,8 @@ private fun Screenshots(shots: List<StoreShot>) {
 
 @Composable
 private fun StoreCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) =
-    Column(modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh)
+    Column(modifier.fillMaxWidth().padding(vertical = 6.dp)
+        .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
         .padding(horizontal = 16.dp, vertical = 12.dp), content = content)
 
 /**
@@ -582,7 +586,8 @@ private fun QueueButton(model: StoreModel) {
         IconButton(onClick = { open = true }, modifier = Modifier.testTag("store_queue")) {
             Icon(LtIcons.Download, if (busy) "Installs in progress" else "Installs", tint = if (failed) MaterialTheme.colorScheme.error else LocalContentColor.current)
         }
-        if (busy) CircularProgressIndicator(progress = { queueFraction(items).coerceIn(0.02f, 1f) }, modifier = Modifier.size(40.dp), strokeWidth = 3.dp)
+        if (busy) CircularProgressIndicator(progress = { queueFraction(items).coerceIn(0.02f, 1f) }, modifier = Modifier.size(40.dp),
+            color = Color.White, strokeWidth = 3.dp)
         QueueMenu(model, open) { open = false }
     }
 }
@@ -592,7 +597,7 @@ private fun QueueButton(model: StoreModel) {
 private fun QueueMenu(model: StoreModel, open: Boolean, onDismiss: () -> Unit) {
     val items = model.queue
     DropdownMenu(open, onDismiss, Modifier.widthIn(min = 300.dp, max = 340.dp), shape = MaterialTheme.shapes.large,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        containerColor = MaterialTheme.colorScheme.surface) {
         Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(if (items.any { it.active }) "Installing" else "Installs finished", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
             if (items.any { !it.active }) TextButton(onClick = { model.clearFinished() }) { Text("Clear finished") }

@@ -148,7 +148,10 @@ private fun InstalledRow(app: InstalledApp, model: StoreModel) {
     val found = (installed.lookups[app.bundleId] as? Lookup.Found)?.known
     val update = installed.update(app)
     val queued = model.queuedBundle(app.bundleId)?.takeIf { it.active }
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { model.openInstalled(app) }.padding(horizontal = 8.dp, vertical = 8.dp).testTag("store_installed_row"),
+    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)
+        .ios6Lacquer(RoundedCornerShape(9.dp), androidx.compose.ui.graphics.Color.White, androidx.compose.ui.graphics.Color(0xFFF4F4F7),
+            androidx.compose.ui.graphics.Color(0xFF8E8E93))
+        .clickable { model.openInstalled(app) }.padding(horizontal = 8.dp, vertical = 8.dp).testTag("store_installed_row"),
         verticalAlignment = Alignment.CenterVertically) {
         AppIcon(found?.app?.text("icon_url"), 52, app.title)
         Spacer(Modifier.width(14.dp))
@@ -182,7 +185,9 @@ internal fun ColumnScope.InstalledPlainPage(model: StoreModel, app: InstalledApp
             }
         }
         Spacer(Modifier.height(8.dp))
-        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(16.dp)) {
+        Column(Modifier.fillMaxWidth()
+            .ios6Lacquer(RoundedCornerShape(10.dp), androidx.compose.ui.graphics.Color.White,
+                androidx.compose.ui.graphics.Color(0xFFF4F4F7), androidx.compose.ui.graphics.Color(0xFF8E8E93)).padding(16.dp)) {
             Text("Identifier", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(app.bundleId, style = MaterialTheme.typography.bodyMedium)
             if (app.shortVersion != null && app.build != null && app.build != app.shortVersion) {

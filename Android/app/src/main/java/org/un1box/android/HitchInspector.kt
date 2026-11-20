@@ -41,19 +41,12 @@ private fun frameColor(ms: Float) = when {
 internal fun HitchInspector(data: HitchData?, loadError: String?, onResume: () -> Unit, onSave: (Long, Long) -> Unit,
                             saving: Boolean, savedNotice: String?, onShare: (() -> Unit)?) {
     BackHandler(onBack = onResume)
-    Surface(Modifier.fillMaxSize().then(DialogTags).testTag("hitch_inspector")) {
+    Ios6Page(Modifier.then(DialogTags).testTag("hitch_inspector")) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onResume, modifier = Modifier.testTag("hitch_close")) { Icon(Icons.Filled.Close, "Close and resume") }
-                Column(Modifier.weight(1f)) {
-                    Text("Frame inspector", style = MaterialTheme.typography.titleLarge)
-                    Text(listOfNotNull(data?.appName?.takeIf { it.isNotEmpty() }, "Guest paused").joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                FilledTonalButton(onClick = onResume, modifier = Modifier.padding(end = 8.dp).testTag("hitch_resume")) {
-                    Icon(LtIcons.Play, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Resume")
-                }
-            }
+            Ios6NavBar("Frame inspector",
+                subtitle = listOfNotNull(data?.appName?.takeIf { it.isNotEmpty() }, "Guest paused").joinToString(" · "),
+                start = { Ios6BarButton(Icons.Filled.Close, "Close", onResume, tag = "hitch_close") },
+                end = { Ios6BarButton(LtIcons.Play, "Resume", onResume, tag = "hitch_resume") })
             when {
                 loadError != null -> Message("Could not read the frame history", loadError)
                 data == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -122,7 +115,7 @@ private fun InspectorBody(data: HitchData, onSave: (Long, Long) -> Unit, saving:
             if (slow.size > 8) TextButton(onClick = { all = !all }) { Text(if (all) "Show fewer" else "Show all ${slow.size}") }
         } else {
             Spacer(Modifier.height(16.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)) {
+            GlassSurface(Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(14.dp)) {
                     Icon(LtIcons.Info, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
@@ -154,7 +147,8 @@ private fun SectionLabel(text: String) = Text(text, Modifier.padding(bottom = 8.
 
 @Composable
 private fun Stat(label: String, value: String, modifier: Modifier, color: Color? = null) {
-    Column(modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 8.dp)) {
+    Column(modifier.ios6Lacquer(RoundedCornerShape(8.dp), Ios6.GrayButtonTop, Ios6.GrayButtonBottom, Ios6.GrayButtonEdge)
+        .padding(horizontal = 10.dp, vertical = 8.dp)) {
         Text(value, style = MaterialTheme.typography.titleMedium, color = color ?: MaterialTheme.colorScheme.onSurface, maxLines = 1)
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
     }
@@ -282,7 +276,7 @@ private fun Histogram(stats: RangeStats) {
 @Composable
 private fun FrameCard(data: HitchData, frame: HitchFrame) {
     val b = data.breakdownFor(frame)
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh), modifier = Modifier.fillMaxWidth().testTag("hitch_frame")) {
+    GlassSurface(Modifier.fillMaxWidth().testTag("hitch_frame")) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(10.dp).background(frameColor(frame.intervalMs), RoundedCornerShape(5.dp)))

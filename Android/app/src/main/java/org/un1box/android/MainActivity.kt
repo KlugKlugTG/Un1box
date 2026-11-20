@@ -371,10 +371,10 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                 ((overlay == null && (base == Screen.FULLSCREEN || settings.overlayInDeviceView)) || overlay == Screen.SETTINGS)
             LaunchedEffect(showOverlay, settings.overlay) { monitor.setActive(showOverlay, settings.overlay == OverlayLevel.FULL) }
             Un1boxTheme(settings.theme) {
-                val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-                LaunchedEffect(dark, immersive) {
+                // iOS 6's status bar is black with white glyphs in every app; the guest keeps it hidden.
+                LaunchedEffect(immersive) {
                     WindowCompat.getInsetsController(window, window.decorView).apply {
-                        isAppearanceLightStatusBars = !dark && !immersive; isAppearanceLightNavigationBars = !dark && !immersive
+                        isAppearanceLightStatusBars = false; isAppearanceLightNavigationBars = false
                     }
                 }
                 // One SurfaceView moves between the device and full-screen layouts, keeping its display lease.
@@ -397,8 +397,10 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                         (fadeIn(tween(190)) + slideInVertically(tween(190)) { it / 28 }) togetherWith fadeOut(tween(120))
                     }, label = "page") { page ->
                     when (page) {
-                        Screen.LOADING -> Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(Modifier.size(32.dp), strokeWidth = 3.dp)
+                        Screen.LOADING -> Ios6Page {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(Modifier.size(34.dp), color = Ios6.Blue, strokeWidth = 3.dp)
+                            }
                         }
                         Screen.SETUP -> SetupWizard(setup, canCancel = records.isNotEmpty(),
                             onPickFolder = { pickFolder.launch(null) }, onPickSystem = { pickSystem.launch(arrayOf("application/octet-stream", "*/*")) },

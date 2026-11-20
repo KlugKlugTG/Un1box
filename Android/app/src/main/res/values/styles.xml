@@ -1,1 +1,12 @@
-<resources><style name="AppTheme" parent="android:style/Theme.Material.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:windowLightStatusBar">false</item><item name="android:colorAccent">#71DCC8</item></style></resources>
+<resources>
+    <!-- iOS 6: black status bar with white glyphs, a black home indicator bar, iOS blue as the tint. -->
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">#C2C9D1</item>
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#0B0B0C</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">#3478D4</item>
+    </style>
+</resources>

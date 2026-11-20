@@ -105,15 +105,13 @@ internal fun PrepareScreen(state: PrepareState, busy: Boolean, preparing: Boolea
         }
     }
     BackHandler { back() }
-    Surface(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.testTag("prepare"), color = MaterialTheme.colorScheme.background) {
-        // The setup wizard's backdrop, so moving between the two reads as one flow.
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f), Color.Transparent))))
+    Ios6Page(Modifier.semantics { testTagsAsResourceId = true }.testTag("prepare")) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-            Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (!preparing) IconButton(onClick = back, modifier = Modifier.testTag("prepare_back")) {
-                    if (showProgress || state.step == PrepareStep.DEVICE) Icon(Icons.Filled.Close, "Close") else Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                } else Spacer(Modifier.size(48.dp))
-            }
+            Ios6NavBar("Prepare", start = {
+                if (!preparing) Ios6BarButton(
+                    if (showProgress || state.step == PrepareStep.DEVICE) Icons.Filled.Close else Icons.AutoMirrored.Filled.ArrowBack,
+                    null, back, tag = "prepare_back")
+            })
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)) {
                 when {
                     showProgress -> Progress(state, preparing, busy, onPrepare, onCancel, onRetryImport, onClose)
@@ -138,15 +136,20 @@ private fun Heading(title: String, detail: String) {
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(text, Modifier.padding(top = 16.dp, bottom = 6.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Ios6GroupHeader(text, Modifier.padding(top = 14.dp, bottom = 6.dp))
 }
 
 @Composable
 private fun ChoiceRow(icon: ImageVector?, title: String, detail: String, enabled: Boolean, tag: String, badge: Support? = null, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer)
-        .clickable(enabled = enabled, onClick = onClick).alpha(if (enabled) 1f else 0.45f).padding(16.dp).testTag(tag),
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)
+        .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93))
+        .clickable(enabled = enabled, onClick = onClick).alpha(if (enabled) 1f else 0.45f).padding(12.dp).testTag(tag),
         verticalAlignment = Alignment.CenterVertically) {
-        if (icon != null) { Icon(icon, null, Modifier.size(26.dp), tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(16.dp)) }
+        if (icon != null) {
+            Box(Modifier.size(30.dp).ios6Lacquer(RoundedCornerShape(7.dp), Ios6.ButtonTop, Ios6.ButtonBottom, Ios6.ButtonEdge),
+                contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(17.dp), tint = Color.White) }
+            Spacer(Modifier.width(12.dp))
+        }
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -164,8 +167,9 @@ private fun SupportBadge(support: Support) {
         Support.UNTESTED -> MaterialTheme.colorScheme.onSurfaceVariant
         Support.DOESNT_START -> MaterialTheme.colorScheme.error
     }
-    Text(support.label, Modifier.padding(start = 12.dp).clip(RoundedCornerShape(8.dp)).background(color.copy(alpha = 0.14f))
-        .padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall, color = color)
+    Text(support.label, Modifier.padding(start = 12.dp).ios6Lacquer(RoundedCornerShape(9.dp),
+        Ios6.GrayButtonTop, Ios6.GrayButtonBottom, Ios6.GrayButtonEdge)
+        .padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall.copy(color = color, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
 }
 
 @Composable
@@ -342,10 +346,15 @@ private fun ColumnScope.FilesStep(state: PrepareState, busy: Boolean, onDownload
 
 @Composable
 private fun Card(icon: ImageVector, title: String, done: Boolean, detail: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(16.dp)) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)
+        .ios6Lacquer(RoundedCornerShape(10.dp), Color.White, Color(0xFFF4F4F7), Color(0xFF8E8E93)).padding(14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, Modifier.size(24.dp), tint = if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(16.dp))
+            Box(Modifier.size(28.dp).ios6Lacquer(RoundedCornerShape(7.dp),
+                if (done) Ios6.ButtonTop else Color(0xFFDCDCE1), if (done) Ios6.ButtonBottom else Color(0xFFB8B8BE),
+                if (done) Ios6.ButtonEdge else Color(0xFF8E8E93)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, Modifier.size(16.dp), tint = Color.White)
+            }
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall)
                 Text(detail, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis,

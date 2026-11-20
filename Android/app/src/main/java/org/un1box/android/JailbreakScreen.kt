@@ -28,10 +28,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -181,8 +179,7 @@ internal fun JailbreakScreen(
         }
     })
 
-    Surface(Modifier.fillMaxSize().testTag("jailbreak").semantics { testTagsAsResourceId = true },
-        color = MaterialTheme.colorScheme.background) {
+    Ios6Page(Modifier.testTag("jailbreak").semantics { testTagsAsResourceId = true }) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             JailbreakHeader(
                 title = when (val shown = page) {
@@ -270,7 +267,7 @@ internal fun JailbreakScreen(
 
 }
 
-/** Cydia's header: a back arrow or the screen's name, and the one action the screen has. */
+/** Cydia's header, as iOS 6 draws a navigation bar: back on the left, the action on the right. */
 @Composable
 private fun JailbreakHeader(
     title: String,
@@ -280,29 +277,18 @@ private fun JailbreakHeader(
     onBack: () -> Unit,
     onClose: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        if (back) {
-            Icon(Icons.Filled.ArrowBack, null, Modifier.size(22.dp).clickable { onBack() },
-                tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(12.dp))
-        }
-        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
-            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        if (action != null) {
-            Text(action, Modifier.clickable { onAction() }, color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelLarge)
-            Spacer(Modifier.width(12.dp))
-        }
-        Text("Close", Modifier.clickable { onClose() }, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelMedium)
-    }
+    Ios6NavBar(title,
+        start = { if (back) Ios6BarButton(Icons.Filled.ArrowBack, "Back", onBack) },
+        end = {
+            if (action != null) Ios6BarButton(label = action, onClick = onAction)
+            Ios6BarButton(label = "Close", onClick = onClose)
+        })
 }
 
 /** A line of explanation with its actions, as the tab's own notices are. */
 @Composable
 private fun Notice(title: String, detail: String?, vararg actions: Pair<String, () -> Unit>) {
-    Card {
+    GlassSurface(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
             if (detail != null) Text(detail, style = MaterialTheme.typography.labelSmall,
@@ -576,15 +562,18 @@ private fun PackagePage(
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
         }
         item {
-            Text(
-                when {
-                    installed[pkg.name] == pkg.version -> "Reinstall"
-                    installed[pkg.name] != null -> "Updates"
-                    else -> "Install"
-                },
-                Modifier.clickable(enabled = ready) { onInstall(pkg) },
-                color = if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.titleMedium)
+            Box(Modifier.fillMaxWidth().ios6Lacquer(RoundedCornerShape(10.dp),
+                if (ready) Ios6.ButtonTop else Color(0xFFCFCFD4), if (ready) Ios6.ButtonBottom else Color(0xFF9A9AA0),
+                if (ready) Ios6.ButtonEdge else Color(0xFF8E8E93))
+                .clickable(enabled = ready) { onInstall(pkg) }.padding(vertical = 11.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    when {
+                        installed[pkg.name] == pkg.version -> "Reinstall"
+                        installed[pkg.name] != null -> "Updates"
+                        else -> "Install"
+                    },
+                    color = Color.White, style = MaterialTheme.typography.labelLarge)
+            }
             if (!ready) Text("Start the device to install: the package goes into its file system.",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -603,34 +592,21 @@ private fun Fact(label: String, value: String) {
     }
 }
 
-/** The tab bar at the bottom: Cydia's five lists. */
+/** The tab bar at the bottom: Cydia's five lists, in iOS 6's black lacquer. */
 @Composable
 private fun JailbreakBar(current: JailbreakList, onChoose: (JailbreakList) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly) {
-        for (entry in JailbreakList.entries) {
-            val selected = current == entry
-            val tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            Column(Modifier.clickable { onChoose(entry) }.padding(6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(entry.icon, null, Modifier.size(22.dp), tint = tint)
-                Spacer(Modifier.height(3.dp))
-                Text(entry.label, style = MaterialTheme.typography.labelSmall, color = tint)
-            }
-        }
-    }
+    Ios6TabBar(JailbreakList.entries.map { Ios6TabItem(it.label, it.icon) }, current.ordinal,
+        { onChoose(JailbreakList.entries[it]) })
 }
 
-/** A group's small uppercase label, with the one action it may have. */
+/** A group's silver section bar, with the one action it may have. */
 @Composable
 private fun GroupLabel(text: String, action: String?, onAction: (() -> Unit)?) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Text(text.uppercase(Locale.getDefault()), Modifier.weight(1f),
-            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Ios6GroupHeader(text, Modifier.weight(1f))
         if (action != null && onAction != null) {
-            Text(action, Modifier.clickable { onAction() }, style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(8.dp))
+            Ios6BarButton(label = action, onClick = onAction)
         }
     }
 }
@@ -638,8 +614,7 @@ private fun GroupLabel(text: String, action: String?, onAction: (() -> Unit)?) {
 /** This app's card: a rounded panel the lists are made of. */
 @Composable
 private fun Card(onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
-    GlassSurface(if (onClick != null) Modifier.fillMaxWidth().clickable { onClick() } else Modifier.fillMaxWidth(),
-        strong = true) {
+    GlassSurface(if (onClick != null) Modifier.fillMaxWidth().clickable { onClick() } else Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth()) { content() }
     }
 }
