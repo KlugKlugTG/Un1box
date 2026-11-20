@@ -284,7 +284,11 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   frontend's ring, so every phone without a real host voice heard silence. `0014` also maps the
   S5L8920's separate FIFO window at 0x84500000 to its full 1 KiB instead of four bytes: its capture
   chain reads the RX FIFO at +0x38 of that window, where the old model returned 0, which is a second
-  way a 3GS could record silence while the port itself ran. Check on the phone before believing it.
+  way a 3GS could record silence while the port itself ran. The 3GS also gets its i2s1/Voice port
+  now: iOS 6 builds the input side of its audio device from both I2S controllers, and with only
+  i2s0 the guest had an output route and no microphone at all (Voice Memos: "Connect a
+  microphone"). The Voice port has no host output (it is the telephony path) but the same RX FIFO
+  from the phone's ring. Check on the phone before believing it.
   The switch is read when the guest starts, so turn it on before starting (or restart the guest
   afterwards), and grant Android's microphone permission when it asks. To check, in order: the guest's
   Voice Memos recording of a known sound at 44.1 kHz; `Native.microphoneInfo` (`capturing` 1 and
@@ -351,17 +355,13 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   above the guest view and the view jumped down on wake. It is now an overlay on the guest view.
   (Harness note: the guest re-sleeps ~5 s after a Power wake; a second Power tap before the wake
   shows puts it back to sleep.)
-- [ ] The camera is back behind a Settings switch (Camera: on/off, with the worker's own status
-  line), and the capture now follows the lens the guest names instead of always opening the back
-  one. What is not proven is the picture: a phone build with the switch on used to fill the serial
-  with `AppleH3CamIn::ispInterruptHandler error: Frame metadata index did not toggle from previous
-  frame. 0x00000000/0x01041000` and leave the Camera app black. The frame transport, the ISP's
-  conversion and its metadata record are unchanged in this pass; the next device test decides
-  whether the black viewfinder is the metadata handshake, the host frame's timing at Android's
-  slower vCPU, or the capture's size/rate. The engine models the ISP on the A4 boards only (iPhone 4,
-  iPod touch 4G, iPad 1): the S5L8920 boards have no ISP model, so the switch does nothing on an
-  iPhone 3GS yet. `python3 tests/camera/run.py --engine qemu-ios` checks the whole path, engine side
-  included.
+- [ ] The camera is off and out of Settings again. On the iPod touch 4G (6.1.6) the phone's frames
+  do reach Camera.app at 14 fps, but the picture is upside down (sensor orientation is not applied),
+  the colours invert after the guest switches sensors (the NV12 conversion or the host frame's
+  format), and the guest sat at 99% CPU with the sensor switch pressed. A fix needs a device to
+  check each of those, so the worker keeps the capture off and the row is gone rather than shipping
+  a broken switch. The engine models the ISP on the A4 boards only (iPhone 4, iPod touch 4G, iPad 1);
+  the S5L8920 boards have no ISP model at all, so an iPhone 3GS still cannot use the camera.
 - [ ] The guest's resolver no longer hands iOS 6 AAAA records when the phone has no IPv6 address
   it could send from (`ci/engine-patches/0016-engine-dns-ipv4-only.patch`): page loads otherwise
   wait on a connect that cannot leave the phone before falling back to the A record, which is most

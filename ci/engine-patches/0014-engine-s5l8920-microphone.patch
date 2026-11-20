@@ -1,7 +1,16 @@
 diff --git a/hw/arm/s5l8920.c b/hw/arm/s5l8920.c
-index d6d914e..e9803a0 100644
+index d6d914e..c706595 100644
 --- a/hw/arm/s5l8920.c
 +++ b/hw/arm/s5l8920.c
+@@ -901,7 +901,7 @@ static void s5l8920_init(MachineState *machine)
+     qdev_prop_set_uint8(dev, "version", 1);     /* DT cdma-version */
+     qdev_prop_set_uint64(dev, "dram-size", s->board->dram_size);
+     qdev_prop_set_uint32(dev, "paced-base", S5L8920_I2S0_FIFO);
+-    qdev_prop_set_uint32(dev, "paced-ports", 1);
++    qdev_prop_set_uint32(dev, "paced-ports", 2);
+     sbd = SYS_BUS_DEVICE(dev);
+     sysbus_realize_and_unref(sbd, &error_fatal);
+     sysbus_mmio_map(sbd, 0, S5L8920_CDMA_BASE);
 @@ -1130,6 +1130,15 @@ static void s5l8920_init(MachineState *machine)
       */
      dev = qdev_new(TYPE_S5L8930_I2S);
@@ -18,8 +27,33 @@ index d6d914e..e9803a0 100644
      qdev_prop_set_bit(dev, "ctrl-run", true);   /* AppleS5L8920XI2SController starts TX with CTRL bit 0 */
      qdev_prop_set_uint64(dev, "nco-base", S5L8920_AUDIO_COMPLEX);
      qdev_prop_set_uint32(dev, "nco-ref-hz", S5L8920_NCOREF_HZ);
+@@ -1141,6 +1150,24 @@ static void s5l8920_init(MachineState *machine)
+     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_I2S0_BASE);
+     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, S5L8920_I2S0_FIFO);
+ 
++    /*
++     * I2S1, the Voice device (DT audio1; the A4's second port at 0x84501400). 3GS iOS 6 has two
++     * I2S controllers and mediaserverd builds its virtual audio device from both: with only i2s0
++     * present the guest's audio session had an output route and no input at all, which Voice
++     * Memos reported as "Connect a microphone". Nothing plays through this port here (audio-out
++     * is off: it is the telephony path), but its RX FIFO takes the same host microphone ring, so
++     * an app that records on Voice hears the phone.
++     */
++    dev = qdev_new(TYPE_S5L8930_I2S);
++    qdev_prop_set_uint8(dev, "port", 1);
++    qdev_prop_set_bit(dev, "host-mic", true);
++    qdev_prop_set_bit(dev, "ctrl-run", true);
++    qdev_prop_set_uint64(dev, "nco-base", S5L8920_AUDIO_COMPLEX);
++    qdev_prop_set_uint32(dev, "nco-ref-hz", S5L8920_NCOREF_HZ);
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
++    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S5L8920_I2S0_BASE + 0x1000);
++    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, S5L8920_I2S0_FIFO + 0x1000);
++
+     /* USB device mode: the S5L8720's DWC OTG core and PHY; the built-in host enumerates it. */
+     dev = qdev_new(TYPE_IPOD_TOUCH_USB_PHYS);
+     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
 diff --git a/hw/arm/s5l8930_i2s.c b/hw/arm/s5l8930_i2s.c
-index db5164c..6b3aef5 100644
+index db5164c..29e27a9 100644
 --- a/hw/arm/s5l8930_i2s.c
 +++ b/hw/arm/s5l8930_i2s.c
 @@ -463,14 +463,27 @@ static void i2s_write(void *opaque, hwaddr offset, uint64_t value,
@@ -27,11 +61,11 @@ index db5164c..6b3aef5 100644
  }
  
 +/*
-+ * The S5L8920 gives the port a FIFO window of its own at the DT's i2s0 address (0x84500000),
-+ * separate from the control registers at +0x400. Its TX FIFO is the window's base, where CDMA
-+ * channel 0x15 writes; its RX FIFO sits at +0x38 of that same window, the offset the control
-+ * block uses on the A4, which is where the 3GS's capture chain reads. Mapping four bytes and
-+ * returning 0 for every read there is what made a 3GS record silence while the port itself ran.
++ * The S5L8920 gives each port a FIFO window of its own at the DT's i2sN address (i2s0 at
++ * 0x84500000), separate from the control registers at +0x400. Its TX FIFO is the window's base,
++ * where CDMA writes; its RX FIFO sits at +0x38 of that same window, the offset the control block
++ * uses on the A4, which is where the 3GS's capture chain reads. Mapping four bytes and returning
++ * 0 for every read there is what made a 3GS record silence while the port itself ran.
 + */
  static uint64_t i2s_fifo_read(void *opaque, hwaddr offset, unsigned size)
  {

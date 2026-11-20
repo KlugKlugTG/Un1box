@@ -71,15 +71,10 @@ internal fun SettingsScreen(host: GuestHost, onBack: () -> Unit) {
                     SwitchRow(LtIcons.Mic, "Microphone", "This phone's microphone becomes the device's input, for Voice Memos, Shazam and anything else that records; iOS asks inside the device the first time an app records. Android asks for the microphone permission when you turn this on. Applies the next time the device starts",
                         host.microphone, "microphone_toggle") { host.useMicrophone(it) }
                 }
-                Group("Camera") {
-                    SwitchRow(LtIcons.Camera, "Camera",
-                        "This phone's cameras become the device's cameras, so the Camera app sees a real picture. The guest's own front/back switch follows; Android asks for the camera permission when you turn this on. Applies the next time the device starts",
-                        host.camera, "camera_toggle") { host.useCamera(it) }
-                    // Straight from the worker: what the guest asked for and how many frames reached it.
-                    if (host.cameraStatus.isNotEmpty()) Text(host.cameraStatus,
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp).testTag("camera_status"))
-                }
+                // No camera row: the viewfinder and the stills are not good enough to offer yet
+                // (the picture is upside down on the 4G, its colours invert after a switch and the
+                // guest sat at 99% CPU), so the worker keeps the capture off. The engine path and
+                // CameraCapture are still here for the next pass.
                 Group("Display") {
                     ChoiceRow(LtIcons.Palette, "Theme", ThemeMode.entries, s.theme, { it.label }) { s.theme = it }
                     ChoiceRow(LtIcons.Layers, "Screen scaling", ScreenScaling.entries, s.scaling, { it.label },

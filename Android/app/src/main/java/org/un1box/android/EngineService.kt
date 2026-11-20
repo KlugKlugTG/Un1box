@@ -193,9 +193,10 @@ class EngineService : Service() {
             // device tree's isp node and the guest has no camera at all. IT_CAMERA is the engine's switch for a
             // session the app starts, and it has to be set before the machine is created, which is what the
             // start below does.
-            // The Settings switch (AppSettings.camera). The ISP's DT node is matched only when this is on, so
-            // the flag must be in the environment before Native.start() creates the machine below.
-            cameraWanted = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("camera", false)
+            // No camera: the Settings row is out while the picture is still wrong (rotated, the colours
+            // invert after a sensor switch, and the guest can sit at 99% CPU). A preference stored while
+            // the row existed must not leave a capture running, so the worker decides here, not Settings.
+            cameraWanted = false
             cameraError = ""
             android.system.Os.setenv("IT_CAMERA", if (cameraWanted) "1" else "0", true)
             error = if (coldRecovery) Native.recoverStart(libraryRoot, recordId, headphones) else Native.start(libraryRoot, recordId, headphones)

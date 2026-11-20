@@ -147,6 +147,15 @@ def engine_patch_gives_the_microphone_to_every_board_that_has_one():
             "silence out of it")
     require('"s5l8930.i2s-fifo", 0x400' in s5l8920,
             "the FIFO window is four bytes wide, so the RX FIFO's +0x38 is not mapped")
+    require('qdev_prop_set_uint8(dev, "port", 1);' in s5l8920,
+            "the 3GS has no i2s1/Voice port, and iOS builds its input route from both ports: Voice "
+            "Memos says \"Connect a microphone\"")
+    require('"paced-ports", 2' in s5l8920,
+            "the CDMA paces one I2S window, so a chain on the Voice port is not paced")
+    require('S5L8920_I2S0_BASE + 0x1000' in s5l8920 and 'S5L8920_I2S0_FIFO + 0x1000' in s5l8920,
+            "the Voice port is not mapped at the 3GS's second port window")
+    require('qdev_prop_set_bit(dev, "host-mic", true);' in s5l8920,
+            "the Voice port has no input route to the phone's microphone")
 
 
 # --- portable ---------------------------------------------------------------

@@ -8,7 +8,7 @@ The slices prove what a piece does; these prove the pieces are connected to each
                  falls back to the pattern only when the phone has sent nothing
   native         the JNI entry points the app declares exist, with the names the app asks for
   android        the permission and the request that still belong to the path, the worker's own wiring,
-                 and that Settings' switch reaches the worker before the guest starts
+                 and that Settings no longer offers a switch for a path that delivers no picture
 """
 import os
 import subprocess
@@ -142,41 +142,37 @@ def android_the_permission_and_its_request_stay():
     require("cameraPermission.launch" in activity, "the permission has no request left to launch it")
 
 
-def android_the_worker_decides_and_starts_the_capture():
-    """The worker's wiring: the stored switch is read, the ISP is matched before the start, and the capture runs."""
+def android_the_worker_decides_and_keeps_the_camera_off():
+    """The worker's wiring, and the one place that now decides: no stored preference can start a capture."""
     service = read("Android/app/src/main/java/org/un1box/android/EngineService.kt")
-    require('getBoolean("camera", false)' in service,
-            "the worker does not read the switch Settings writes, so the camera can never come on")
-    require("cameraWanted = getSharedPreferences" in service,
-            "the start path still pins the camera off instead of reading the switch")
+    require('getBoolean("camera"' not in service,
+            "the worker still reads a stored camera preference, and Settings has no switch to turn it off")
+    require("cameraWanted = false" in service, "the worker does not say plainly that the camera stays off")
     require('setenv("IT_CAMERA"' in service,
             "IT_CAMERA is not set before the guest starts: off, the board unmatches the isp node and there is "
             "no camera at all")
     require("CameraCapture(" in service and "startCamera()" in service, "the worker never starts the capture")
-    require("capture.start(Native.cameraSensor())" in service,
-            "the capture starts on a lens the guest did not name")
-    require("camera?.follow(sensor)" in service,
-            "the worker never tells the capture that the guest switched cameras")
+    require("cameraWatch" not in service and "capture.follow(" not in service,
+            "the capture waits for the guest to name a camera again: a guest that never does shows nothing")
     capture = read("Android/app/src/main/java/org/un1box/android/CameraCapture.kt")
-    require("LENS_FACING_BACK" in capture, "the capture does not open the back camera")
-    require("LENS_FACING_FRONT" in capture,
-            "the capture cannot open the front camera when the guest switches to it")
-    require("Native.CAMERA_BACK" in capture and "Native.CAMERA_FRONT" in capture,
-            "the capture does not carry both sensor tags to the engine")
-    require("image.width, image.height, wantedSensor" in capture,
-            "the frame does not say which camera it came from")
+    require("LENS_FACING_BACK" in capture, "the capture has no back camera to open")
+    # The follow-the-guest code stays for the next pass, but nothing starts it: the worker pins the capture off.
+    require("Native.CAMERA_BACK" in capture, "the frame does not say which camera it came from")
 
 
-def android_settings_offers_the_camera():
-    """The switch, the worker's status line and the permission request: a feature a person can turn on."""
+def android_settings_does_not_offer_the_camera():
+    """No switch, and no status line: the guest's ISP delivers no picture, so the row is out.
+
+    What stays is the plumbing the row was wired to, so that putting the row back is a Settings change
+    and not a rebuild of the path."""
     settings = read("Android/app/src/main/java/org/un1box/android/SettingsScreen.kt")
-    for kept in ('"camera_toggle"', '"camera_status"', "host.useCamera", "host.cameraStatus", 'Group("Camera")'):
-        require(kept in settings, f"Settings does not offer the camera: {kept}")
+    for gone in ('"camera_toggle"', '"camera_status"', "host.useCamera", "host.cameraStatus", 'Group("Camera")'):
+        require(gone not in settings, f"Settings still offers the camera: {gone}")
     shell = read("Android/app/src/main/java/org/un1box/android/Shell.kt")
     require("val camera: Boolean" in shell and "val cameraStatus: String" in shell and "fun useCamera(" in shell,
-            "the screen host no longer carries the camera's state")
+            "the screen host no longer carries the camera's state: the plumbing is meant to stay")
     prefs = read("Android/app/src/main/java/org/un1box/android/AppSettings.kt")
-    require('getBoolean("camera", false)' in prefs, "the switch does not persist its value")
+    require('getBoolean("camera", false)' in prefs, "the preference the old switch wrote is not read any more")
 
 
 # --- the stack itself --------------------------------------------------------
@@ -236,7 +232,7 @@ CHECKS = [
     ("portable: the camera API is declared and resolved", portable_declares_the_camera),
     ("native: every entry point the app declares exists", jni_matches_the_app),
     ("android: the permission and the request that go with it stay", android_the_permission_and_its_request_stay),
-    ("android: the worker is wired, and starts the capture",
-     android_the_worker_decides_and_starts_the_capture),
-    ("android: Settings offers the camera", android_settings_offers_the_camera),
+    ("android: the worker is wired, and keeps the camera off itself",
+     android_the_worker_decides_and_keeps_the_camera_off),
+    ("android: Settings does not offer the camera", android_settings_does_not_offer_the_camera),
 ]
