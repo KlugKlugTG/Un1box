@@ -117,6 +117,13 @@ on:
           - "true"
           - "false"
         default: "true"
+      engine_patches:
+        description: Apply ci/engine-patches to the engine checkout (off for an engine branch that carries them)
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
       jailbreak:
         description: Build the jailbreak APK (--jailbreak on every preparation, jb-tar shipped)
         type: choice
@@ -662,7 +669,22 @@ jobs:
       # matters as much as the commit: a patch that *adds* a file (the microphone's
       # hw/arm/host-mic.c and its header) leaves it untracked, and `commit -a` alone leaves it
       # behind, which is a dirty tree to the guard even after the commit.
+      - name: Stage the iPhone 5 preparation tools
+        if: ${{ inputs.engine_ref == 'a6-un1box' && inputs.guest_package_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci/guest-tools
+          gh run download "${{ inputs.guest_package_run_id }}" -R "$GITHUB_REPOSITORY" -n Un1box-a6-tools -D "$RUNNER_TEMP/a6-tools" || {
+            echo '::warning::the guest-package run has no A6 tools; the iPhone 5 recipe will not be able to prepare'
+            exit 0
+          }
+          cp -R "$RUNNER_TEMP/a6-tools"/* ci/guest-tools/
+          ls -la ci/guest-tools
+
       - name: Patch the engine for Android
+        if: ${{ inputs.engine_patches != 'false' }}
         run: |
           git -C qemu-ios apply "$GITHUB_WORKSPACE"/ci/engine-patches/*.patch
           git -C qemu-ios add -A

@@ -19,6 +19,13 @@ on:
         description: Engine branch, tag or commit
         required: true
         default: perf
+      engine_patches:
+        description: Apply ci/engine-patches to the engine checkout (off for an engine branch that carries them)
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
 
 permissions:
   contents: read
@@ -86,6 +93,7 @@ jobs:
           tar -xjf "$SDK32" -C "$RUNNER_TEMP/guest-sdks"
 
       - name: Apply the engine patch series
+        if: ${{ inputs.engine_patches != 'false' }}
         run: |
           git -C qemu-ios apply "$GITHUB_WORKSPACE"/ci/engine-patches/*.patch
 
@@ -130,6 +138,14 @@ jobs:
             ${{ runner.temp }}/guest-package/armv6.itpack
             ${{ runner.temp }}/guest-package/armv7.itpack
             ${{ runner.temp }}/guest-package/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload the iPhone 5 preparation tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: Un1box-a6-tools
+          path: ${{ runner.temp }}/guest-package/a6-tools/
           if-no-files-found: error
           retention-days: 90
 
