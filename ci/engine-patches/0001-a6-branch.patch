@@ -1,0 +1,10 @@
+diff --git a/hw/arm/s5l8950.c b/hw/arm/s5l8950.c
+index 547b8bd0a..8254579be 100644
+--- a/hw/arm/s5l8950.c
++++ b/hw/arm/s5l8950.c
+@@ -2780,3 +2780,5 @@ static void a6_register_types(void)
+     type_register_static(&a6_machine);
+ }
+ type_init(a6_register_types)
++
++/* Built by Un1box CI from the A6 branch. */
