@@ -274,26 +274,27 @@ static std::string dump_digest_cache(const DigestCache &cache) {
 // S5L8900 (iPod touch 1G, original iPhone) and S5L8720 (iPod touch 2G) from their SecureROM, which the caller
 // supplies; the S5L8920/S5L8922 (iPhone 3GS, iPod touch 3G) and A4 boards from prepared files alone. The engine
 // names the -M machine.
-enum class BootFamily { S5L8900, S5L8720, A4 };
+enum class BootFamily { S5L8900, S5L8720, A4, A6 };
 struct BootRoute {
     BootFamily family;
     std::string strategy;
     bool modem;  // baseband=on: the iPhone 3GS and iPhone 4 (the original iPhone's machine has its modem built in)
     std::vector<std::pair<std::string, std::string>> outputs;  // the lock outputs (key, file) the boot reads
-    bool needs_bootrom() const { return family != BootFamily::A4; }
+    bool needs_bootrom() const { return family != BootFamily::A4 && family != BootFamily::A6; }
 };
 static BootRoute boot_route(const std::string &board, const Json &lock) {
     static const std::map<std::string, std::pair<BootFamily, bool>> boards = {
         {"n45ap", {BootFamily::S5L8900, false}}, {"m68ap", {BootFamily::S5L8900, false}},
         {"n72ap", {BootFamily::S5L8720, false}}, {"n18ap", {BootFamily::A4, false}},
         {"n88ap", {BootFamily::A4, true}},       {"k48ap", {BootFamily::A4, false}},
-        {"n81ap", {BootFamily::A4, false}},      {"n90ap", {BootFamily::A4, true}}};
+        {"n81ap", {BootFamily::A4, false}},      {"n90ap", {BootFamily::A4, true}},
+        {"n42ap", {BootFamily::A6, true}}};
     const auto b = boards.find(board);
     require(b != boards.end(), "no boot route for board " + board, LT_UNSUPPORTED);
     BootRoute r{b->second.first, "", b->second.second, {}};
     const Json *strategy = lock.find("boot_strategy");
     r.strategy = strategy && strategy->kind == Json::String ? strategy->string()
-                                                             : r.family == BootFamily::A4 ? "kboot" : "iboot";
+                                                             : r.family == BootFamily::A4 || r.family == BootFamily::A6 ? "kboot" : "iboot";
     const std::pair<std::string, std::string> iboot{"iboot", "iBoot.bin"}, nor{"nor", "nor.bin"},
         gid{"gid_blobs", "gid-blobs.bin"}, kboot{"kboot", "kboot.bin"};
     if (r.family == BootFamily::S5L8900 && r.strategy == "iboot")
@@ -302,7 +303,7 @@ static BootRoute boot_route(const std::string &board, const Json &lock) {
         r.outputs = {iboot, nor, gid};
     else if (r.family == BootFamily::S5L8720 && r.strategy == "bootrom")
         r.outputs = {nor, gid};
-    else if (r.family == BootFamily::A4 && r.strategy == "kboot")
+    else if ((r.family == BootFamily::A4 || r.family == BootFamily::A6) && r.strategy == "kboot")
         r.outputs = {kboot};  // and nor.bin when the device has one (4.x data protection, the S5L8920's own)
     else if (board == "k48ap" && r.strategy == "iboot")
         r.outputs = {iboot, nor, gid};

@@ -60,7 +60,7 @@ internal data class DeviceSkin(
             board == null -> ipodTouch2
             board.startsWith("n81") -> ipodTouch4
             board.startsWith("k48") -> ipad
-            board.startsWith("m68") || board.startsWith("n82") || board.startsWith("n88") || board.startsWith("n90") -> iphone
+            board.startsWith("m68") || board.startsWith("n82") || board.startsWith("n88") || board.startsWith("n90") || board.startsWith("n42") -> iphone
             else -> ipodTouch2
         }
     }
