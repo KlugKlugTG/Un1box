@@ -69,6 +69,9 @@ pub fn decrypt(ipsw: &Ipsw, entry: &Entry, dir: &Path, rootfs: bool, log: &dyn F
     let mut plain_tail = false;
     let kernel = if apple8900::is_container(&kc_raw) {
         lzss::complzss(&apple8900::body(&kc_raw)?)?
+    } else if !has_kbag(&kc_raw)? {
+        // Several 10.x kernelcaches carry no KBAG: the payload is the plain complzss image.
+        lzss::complzss(&img3::payload(&kc_raw)?)?
     } else {
         let (iv, key) = img3_key(&kc_path)?;
         match img3::decrypt(&kc_raw, &iv, &key, false).and_then(|d| lzss::complzss(&d)) {
