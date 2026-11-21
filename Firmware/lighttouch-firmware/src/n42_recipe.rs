@@ -237,6 +237,8 @@ impl Board for N42Board {
         let imei = ident.get("imei").map(str::to_string);
         let mut options = self.machine_options();
         options.remove("imei");
+        // The initializer reads the A6DI stream through the machine's restore-image service (QC 0x500).
+        options.insert("restore-image".to_string(), staged.stream.to_string_lossy().into_owned());
         let serial = c.work.join("restore.log");
         let hardware = self.helper_hardware.clone().ok_or_else(|| create::filled("the board's hardware"))?;
         let d = machine::IPad {
