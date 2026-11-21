@@ -337,6 +337,18 @@ mod tests {
     }
 
     #[test]
+    fn metadata_padding_round_trips() {
+        let d = crate::plistedit::dictionary([
+            ("VersionNumber", 4.into()),
+            ("LaunchDaemons", Value::Dictionary(crate::plistedit::dictionary([("/a.plist", Value::Dictionary(crate::plistedit::dictionary([("Label", "a".into())])))]))),
+        ]);
+        let out = padded_metadata(&d, 4096).unwrap();
+        assert_eq!(out.len(), 4096);
+        let back = Value::from_reader(Cursor::new(&out)).unwrap().into_dictionary().unwrap();
+        assert_eq!(back, d);
+    }
+
+    #[test]
     fn kind_path_is_public() {
         let _ = crate::hfs::editor::Kind::File;
     }

@@ -185,11 +185,15 @@ pub fn install(system: &Path, data: &Path, activation_plan: &[u8], seed: Option<
     for identifier in GROUPS {
         let path = format!("{GROUP_ROOT}{identifier}/{METADATA_NAME}");
         if d.exists(&path) {
-            let existing = plistedit::read(&d, &path)?.ok_or_else(|| invalid("existing SystemGroup metadata differs"))?;
+            let raw = d.read(&path)?;
+            let existing = plist::Value::from_reader(std::io::Cursor::new(&raw))
+                .ok()
+                .and_then(plist::Value::into_dictionary)
+                .ok_or_else(|| invalid("existing SystemGroup metadata differs"))?;
             if !valid_metadata(&existing, identifier) {
                 return Err(invalid("existing SystemGroup metadata differs"));
             }
-            metadata.push(binary_plist(&existing)?);
+            metadata.push(raw);
         } else {
             metadata.push(binary_plist(&container_metadata(identifier, seed)?)?);
         }

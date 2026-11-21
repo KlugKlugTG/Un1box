@@ -366,6 +366,9 @@ pub fn write_bundle(i: &BundleInputs<'_>, now: i64, log: &dyn Fn(&str)) -> Resul
         owners.entry((r.uid, r.gid)).or_default().push(p.clone());
     }
     w.write("usr/local/bin/restored_external", std::fs::read(i.initializer)?, Some(0o755))?;
+    for paths in owners.values_mut() {
+        paths.retain(|p| p != "usr/local/bin/restored_external");
+    }
     owners.entry((0, 0)).or_default().push("usr/local/bin/restored_external".into());
     stage_seed(i.data_seed, Some(i.seed_base_system), &mut w, &mut owners)?;
     if let Some(plan_path) = i.activation_plan {
@@ -431,6 +434,7 @@ fn stage_seed(
     }
     let target = "usr/local/share/qemu/data-seed";
     writer.mkdirs(target)?;
+    owners.entry((0, 0)).or_default().push(target.to_string());
     let mut paths = source.paths()?;
     paths.sort_by_key(|(p, _)| p.split('/').count());
     for (path, r) in &paths {
@@ -478,6 +482,33 @@ pub fn stage(
     let stream = work.join(STREAM);
     write_initial(system, data, &stream, layout)?;
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::a6_storage::A6StorageLayout;
+
+    /// Builds two empty sparse HFS volumes and writes a real A6DI stream. Run explicitly:
+    /// `cargo test -p lighttouch-firmware --lib a6_restore::tests::writes_a_stream -- --ignored`
+    #[test]
+    #[ignore]
+    fn writes_a_stream() {
+        let dir = std::env::temp_dir().join(format!("n42-stream-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let l = A6StorageLayout::standard();
+        let system = dir.join("system.img");
+        let data = dir.join("data.img");
+        crate::hfs::Editor::format(&system, l.system_bytes, "System", false, 1_700_000_000).unwrap();
+        crate::hfs::Editor::format(&data, l.data_bytes, "Data", true, 1_700_000_000).unwrap();
+        let stream = dir.join("initial.a6di");
+        write_initial(&system, &data, &stream, &l).unwrap();
+        let (media, records) = inspect_stream(&stream).unwrap();
+        assert_eq!(media, l.media_bytes);
+        assert!(records > 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Diagnostic helper for tests: is the staged stream's magic/header sane?

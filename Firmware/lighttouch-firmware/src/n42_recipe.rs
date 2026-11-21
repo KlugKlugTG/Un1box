@@ -40,8 +40,6 @@ pub const GUEST_TOOLS: &[&str] = &[
     "it_agent",
     "httpget-armv7",
     "libappsync.dylib",
-    "OpenGLES",
-    "gles-names.h",
 ];
 pub const BASE_MACHINE_OPTIONS: [(&str, &str); 3] =
     [("ppn", "on"), ("camera", "on"), ("quiet-boot", "on")];
