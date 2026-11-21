@@ -1352,6 +1352,7 @@ lt_status lt_device_boot_argv(lt_device *d, const lt_boot_config *c, int *argc, 
         const std::string board = d->lock.at("board").string();
         const auto route = lt::boot_route(board, d->lock);
         const bool n72 = route.family == lt::BootFamily::S5L8720, s5l8900 = route.family == lt::BootFamily::S5L8900;
+        const bool a6 = route.family == lt::BootFamily::A6;
         if (route.needs_bootrom())
             lt::require(c->bootrom_path && lt::fs::is_regular_file(c->bootrom_path),
                         "this device needs its boot ROM (" + std::string(s5l8900 ? "S5L8900" : "iBoot-240.4") + ")");
@@ -1451,12 +1452,18 @@ lt_status lt_device_boot_argv(lt_device *d, const lt_boot_config *c, int *argc, 
         // address space, under the same no-remap condition. LT_INDIRECT_CACHE=off for A/B.
         const char *chain = getenv("LT_CROSS_PAGE_CHAIN");
         const char *indirect = getenv("LT_INDIRECT_CACHE");
-        std::string accel = "tcg";
+        std::string accel = a6 ? "tcg,thread=multi" : "tcg";
         if (!chain || strcmp(chain, "off") != 0) accel += ",cross-page-chain=on";
         if (!indirect || strcmp(indirect, "off") != 0) accel += ",indirect-cache=on";
         if (accel != "tcg") {
             d->args.push_back("-accel");
             d->args.push_back(accel);
+        }
+        if (a6) {
+            // The A6 boards are specified with 1 GiB and four CPUs (two APs, the IOP and the AE2);
+            // the machine's own default is smaller, and MTTCG above needs the room.
+            d->args.push_back("-m");
+            d->args.push_back("1G");
         }
         if (n72) {
             d->args.push_back("-m");
