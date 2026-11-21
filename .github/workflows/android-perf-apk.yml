@@ -540,6 +540,22 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Build firmwarekit for Android
+        run: |
+          set -euo pipefail
+          if ! command -v cargo >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+            . "$HOME/.cargo/env"
+          fi
+          rustup target add aarch64-linux-android
+          NDK="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$NDK/aarch64-linux-android29-clang"
+          export AR_aarch64_linux_android="$NDK/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+          cargo build --release --locked --manifest-path Firmware/lighttouch-firmware/Cargo.toml --target aarch64-linux-android
+          install -m 0755 Firmware/lighttouch-firmware/target/aarch64-linux-android/release/firmwarekit ci/firmwarekit/android/firmwarekit
+          file ci/firmwarekit/android/firmwarekit
+
       - name: Free disk space
         run: |
           df -h / | tail -1
