@@ -44,7 +44,9 @@ pub const GUEST_TOOLS: &[&str] = &[
 pub const BASE_MACHINE_OPTIONS: [(&str, &str); 3] =
     [("ppn", "on"), ("camera", "on"), ("quiet-boot", "on")];
 pub const FIRST_BOOT_DONE: &str = "Process SpringBoard (";
-pub const RESTORE_TIMEOUT: f64 = 1200.0;
+// Swift's 1200 s budget is for an M-series Mac; the same restore on a phone-class host is
+// several times slower, so the one-shot gets 40 minutes rather than failing a working stream.
+pub const RESTORE_TIMEOUT: f64 = 2400.0;
 pub const FIRST_BOOT_TIMEOUT: f64 = 2400.0;
 
 pub struct N42Board {
