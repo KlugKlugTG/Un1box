@@ -217,7 +217,7 @@ fn verified_superblob(data: &[u8], signature: usize, allocation: usize, base: us
             return Err(invalid("truncated CodeDirectory"));
         }
         let version = be32(data, cd + 8);
-        if !(0x20000..=0x20100).contains(&version) {
+        if !(0x20000..0x30000).contains(&version) {
             return Err(invalid("unsupported CodeDirectory version"));
         }
         let minimum = if version >= 0x20100 { 48 } else { 44 };
