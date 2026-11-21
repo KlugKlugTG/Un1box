@@ -29,8 +29,13 @@ pub const BOOT_STEP: &str = "Writing the identity";
 pub const VOLUMES_STEP: &str = "Building the system and data volumes";
 pub const STORE_STEP: &str = "Restoring the flash";
 pub const KEYBAG_STEP: &str = "Creating the data-protection keybag";
+/// Restore boot args. `cpus=1`: the two A6 application cores spin on each
+/// other's locks against the timebase; under MTTCG host scheduling that trips
+/// xnu's 0.52 s hw_lock_bit timeout before launchd (the upstream vCPU-stall
+/// clock fix mitigates but does not eliminate it on a loaded phone). The IOP
+/// and AE2 cores still run; only the restore boot is uniprocessor.
 pub const PREPARATION_BOOT_ARGS: &str =
-    "serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1 enable-hsic=1 amfi_get_out_of_my_way=1";
+    "serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1 enable-hsic=1 amfi_get_out_of_my_way=1 cpus=1";
 pub const BOOT_ARGS: &str =
     "serial=3 debug=0x8 amfi_allow_any_signature=1 cs_enforcement_disable=1 enable-hsic=1 amfi_get_out_of_my_way=1 rd=disk0s1";
 pub const GUEST_TOOLS: &[&str] = &[
