@@ -349,6 +349,21 @@ iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 
   `NativeSession`/`Import`/`NativeAppServices` use, then drop `Packages/DeviceServices` with it.
   Also unreferenced since `scripts/` went: `build-support/{sources.json,developer-disk-images.json}`.
 
+## iPhone 5 (n42ap, A6)
+
+- The engine branch `a6-un1box` in KlugKlugTG/qemu-ios carries upstream's A6 machine
+  (`-M iPhone-5`) plus Un1box's Android layer: host camera and microphone, the Android
+  resolver (IPv4-only, cached), the portable build toolkit, memfd shm, QEMU AES/gcrypt MPI,
+  and the SSI/CFI/PL080 portable device set. It builds for Android and the APK CI produces
+  an installable APK (`a6-build` branch, `engine_ref=a6-un1box`, marker patch).
+- The app knows the board: iPhone5,1/5,2 in the library, A6/SGX543MP3 specs, `n42ap` board
+  facts in the engine, an A6 boot route (`kboot`, modem), 1 GiB and `-accel tcg,thread=multi`.
+- A **prepared N42 base** can be imported. What does not exist is Un1box's own N42
+  preparation: the `libfirmwarekit.so` bundled from LightTouch's Android release (v0.0.13,
+  the newest published) has recipes only through the iPhone 4, and N42's recipe lives in
+  LightTouchMac's Swift FirmwareKit. Until an Android firmwarekit with N42 or a prepared
+  base is available, the iPhone 5 cannot be created in-app; the engine side is ready.
+
 ## Android bugs seen, not yet fixed
 
 - [x] The first touch after the guest wakes was often ignored: the "Guest screen asleep" label sat
