@@ -144,6 +144,20 @@ impl N42Board {
     }
 }
 
+
+/// The preparation boots' accelerator. MTTCG runs the machine's four CPUs on four host threads, which is
+/// where the phone's engine has crashed at random early-boot points while the same code on a host never
+/// did; the restore and seal do not need the parallelism, so they run one TCG thread unless
+/// `LT_PREP_MTTCG=1` asks for the old behaviour.
+fn prep_config(mut c: machine::BootConfig) -> machine::BootConfig {
+    if std::env::var("LT_PREP_MTTCG").as_deref() != Ok("1") {
+        if let Some(i) = c.argv.iter().position(|a| a == "-accel") {
+            c.argv[i + 1] = "tcg,thread=single".to_string();
+        }
+    }
+    c
+}
+
 impl Board for N42Board {
     fn arch(&self) -> &str {
         "armv7"
@@ -259,7 +273,7 @@ impl Board for N42Board {
             wifi: false,
             machine_options: options,
         };
-        let config = machine::iphone5_net(
+        let config = prep_config(machine::iphone5_net(
             &d,
             &hardware,
             &format!("file:{}", serial.display()),
@@ -268,7 +282,7 @@ impl Board for N42Board {
             &[],
             imei.as_deref(),
             false,
-        );
+        ));
         if let Some(dir) = serial.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -404,7 +418,7 @@ impl Board for N42Board {
             wifi: false,
             machine_options: options,
         };
-        let config = machine::iphone5_net(
+        let config = prep_config(machine::iphone5_net(
             &d,
             &hardware,
             &format!("file:{}", serial.display()),
@@ -413,7 +427,7 @@ impl Board for N42Board {
             &[],
             imei.as_deref(),
             false,
-        );
+        ));
         let (r, text) = oneshot::run_wait(
             &c.o.helper,
             &config.argv,
