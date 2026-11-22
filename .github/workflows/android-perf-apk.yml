@@ -1110,6 +1110,16 @@ jobs:
       # The Jailbreak tab's own logic, where a wrong field or a wrong URL is invisible until an install
       # does nothing: the index parser, the source probing and the name a package is staged under
       # (Android/app/src/test, Android/app/src/main/java/org/un1box/android/JailbreakStore.kt).
+      # The engine library with its symbol table, kept for resolving a crash report's base-relative
+      # addresses (the APK's copy is stripped).
+      - name: Upload the engine's symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: a6-engine-symbols
+          path: ci/engine-build/libqemu-arm.so
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Run the JVM unit tests
         continue-on-error: true
         working-directory: Android
