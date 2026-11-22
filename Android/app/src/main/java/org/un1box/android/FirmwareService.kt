@@ -130,11 +130,14 @@ class FirmwareService : Service() {
             "spawn shim ${if (shim.isFile) "present" else "missing"}; app ran the patcher: $spawn" + shimLog()
     }
 
-    /** The spawn shim's log, which names the path firmwarekit actually tried; empty when it wrote none. */
+    /**
+     * The spawn shim's log, which names the path firmwarekit actually tried; empty when it wrote none. It is
+     * appended across runs, so only the last few lines describe this one; the rest is an older job's history.
+     */
     private fun shimLog(): String {
         val log = File(filesDir, "spawn-shim.log")
         if (!log.isFile) return ""
-        val lines = log.readLines().takeLast(40)
+        val lines = log.readLines().takeLast(8)
         return if (lines.isEmpty()) "" else "\nspawn shim:\n" + lines.joinToString("\n")
     }
 

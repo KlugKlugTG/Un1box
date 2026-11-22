@@ -22,6 +22,7 @@ use std::io::{Cursor, Read, Write};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub const RESTORE_START: &str = "A6RESTORE START";
 pub const RESTORE_DONE: &str = "A6RESTORE DONE";
 pub const KEYBAG_DONE: &str = "it_keybag: effaceable formatted, system keybag created";
 pub const RESTORE_LOG: &str = "restore.log";

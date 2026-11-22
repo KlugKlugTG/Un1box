@@ -268,22 +268,51 @@ impl Board for N42Board {
             &[],
             imei.as_deref(),
         );
-        let (r, text) = oneshot::run(
-            &c.o.helper,
-            &config.argv,
-            &serial,
-            None,
-            None,
-            RESTORE_TIMEOUT,
-            &|l| c.log(l),
-            None,
-        )?;
+        if let Some(dir) = serial.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        // The restore boot is the one stage that runs two guest CPUs against a software TCG host; xnu's
+        // hw_lock_bit timeout can fire before launchd even with cpus=1, and the failure is a panic in the
+        // serial, not a wrong image. A panic before the initializer has started has written nothing, so
+        // the same factory NAND can be booted again; a run that reached A6RESTORE is never repeated.
+        let mut attempt = 0;
+        let (r, text) = loop {
+            attempt += 1;
+            let (r, text) = oneshot::run(
+                &c.o.helper,
+                &config.argv,
+                &serial,
+                None,
+                None,
+                RESTORE_TIMEOUT,
+                &|l| c.log(l),
+                None,
+            )?;
+            let panicked_early = text.contains("panic(") && !text.contains(a6_restore::RESTORE_START);
+            if panicked_early && attempt == 1 {
+                c.log("restore boot: the guest panicked before the initializer ran; booting it once more");
+                continue;
+            }
+            break (r, text);
+        };
         for line in text.lines().filter(|l| {
             l.contains("A6RESTORE") || l.contains("A6NATIVE") || l.contains("it_keybag:")
         }) {
             c.log(line);
         }
         if !(r.exited && text.contains(a6_restore::RESTORE_DONE) && text.contains(a6_restore::KEYBAG_DONE)) {
+            // The serial is the only place a guest-side refusal is explained; keep its tail in the log the
+            // app shows, so a failed preparation on a phone says why instead of just "halted".
+            let tail: Vec<&str> = text
+                .lines()
+                .map(str::trim_end)
+                .filter(|l| !l.is_empty() && !l.contains("ApplePMGRTempSensor"))
+                .rev()
+                .take(12)
+                .collect();
+            for line in tail.into_iter().rev() {
+                c.log(&format!("restore serial: {line}"));
+            }
             let why = text
                 .lines()
                 .find_map(|line| {
