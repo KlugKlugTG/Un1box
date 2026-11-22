@@ -148,9 +148,12 @@ class FirmwareService : Service() {
                     val parts = line.split(Regex("\\s+"))
                     if (parts.size >= 2 && parts[0] in setOf("MemTotal:", "MemAvailable:")) parts[0] to parts[1].toLong() / 1024 else null
                 }.toMap()
-            val free = (info["MemAvailable:"] ?: 0).let { if (info["MemTotal:"] != null) it else 0 }
+            val free = info["MemAvailable:"] ?: 0
             val total = info["MemTotal:"] ?: 0
-            if (total == 0L) "" else "\nmemory: ${free} of ${total} MB available"
+            val disk = android.os.StatFs(filesDir.path)
+            val diskFree = disk.availableBytes / (1024 * 1024)
+            val diskTotal = disk.totalBytes / (1024 * 1024)
+            if (total == 0L) "" else "\nmemory: ${free} of ${total} MB available · storage: ${diskFree} of ${diskTotal} MB"
         } catch (_: Exception) {
             ""
         }
