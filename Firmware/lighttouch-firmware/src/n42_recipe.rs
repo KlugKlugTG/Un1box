@@ -339,11 +339,35 @@ impl Board for N42Board {
             let detail = tail.into_iter().rev().collect::<Vec<_>>().join(" | ");
             let detail: String = detail.chars().take(600).collect();
             let message = if detail.is_empty() {
-                // Nothing in the serial at all: the guest never reached its first print, so say that.
-                if text.trim().is_empty() {
-                    format!("restore boot: {why} (the guest wrote no serial output)")
+                // Nothing in the serial at all: the engine never got the guest to its first print, and its
+                // stderr says why (an unknown option, a name it could not open, a machine it refused).
+                let engine = std::fs::read_to_string(serial.with_file_name("restore.log.engine.log"))
+                    .unwrap_or_default();
+                let engine_tail: Vec<String> = engine
+                    .lines()
+                    .map(str::trim_end)
+                    .filter(|l| !l.is_empty())
+                    .rev()
+                    .take(3)
+                    .map(str::to_string)
+                    .collect();
+                if engine_tail.is_empty() {
+                    // Not even the engine said anything: name the machine line it was given, which is the
+                    // one thing that differs between a host that works and a phone that does not.
+                    let machine = config
+                        .argv
+                        .iter()
+                        .position(|a| a == "-M")
+                        .and_then(|i| config.argv.get(i + 1))
+                        .cloned()
+                        .unwrap_or_default();
+                    let machine: String = machine.chars().take(220).collect();
+                    format!("restore boot: {why} (no guest or engine output; -M {machine})")
                 } else {
-                    format!("restore boot: {why}")
+                    format!(
+                        "restore boot: {why} (no guest output; engine: {})",
+                        engine_tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+                    )
                 }
             } else {
                 format!("restore boot: {why} — {detail}")

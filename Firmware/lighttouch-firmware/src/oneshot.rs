@@ -167,7 +167,19 @@ pub fn run_wait(
     during: Option<Box<dyn FnOnce() -> Result<()> + Send>>,
 ) -> Result<(OneShot, String)> {
     let mut command = helper.command(argv);
-    command.env("IT_TVOUT_READY", "1").stdout(Stdio::from(std::io::stderr())).stderr(Stdio::inherit());
+    // The helper's own prints belong in our log; the engine's stderr is where it says why it refused to
+    // start (an unknown option, a machine that would not be created), and on a phone that text would
+    // otherwise vanish into the app's redirect. It goes to a file beside the serial log as well.
+    let stderr_path = serial.with_file_name(format!(
+        "{}.engine.log",
+        serial.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "serial".into())
+    ));
+    let engine_stderr = std::fs::File::create(&stderr_path).ok();
+    command.env("IT_TVOUT_READY", "1").stdout(Stdio::from(std::io::stderr()));
+    command.stderr(match engine_stderr {
+        Some(f) => Stdio::from(f),
+        None => Stdio::inherit(),
+    });
     if helper.own {
         command.env("LT_ONESHOT_STDIN", "1").stdin(Stdio::piped());
     } else {
