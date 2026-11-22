@@ -365,7 +365,7 @@ impl Board for N42Board {
             let all: Vec<&str> = engine.lines().collect();
             let crash_at = all.iter().rposition(|l| l.contains("qemu: fatal signal"));
             let engine_tail: Vec<String> = match crash_at {
-                Some(at) => all[at..].iter().filter(|l| !l.trim().is_empty()).take(14).map(|l| (*l).to_string()).collect(),
+                Some(at) => all[at..].iter().filter(|l| !l.trim().is_empty()).take(26).map(|l| (*l).to_string()).collect(),
                 None => engine
                     .lines()
                     .map(str::trim_end)
