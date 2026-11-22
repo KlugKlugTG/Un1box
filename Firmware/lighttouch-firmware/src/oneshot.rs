@@ -176,6 +176,9 @@ pub fn run_wait(
     ));
     let engine_stderr = std::fs::File::create(&stderr_path).ok();
     command.env("IT_TVOUT_READY", "1").stdout(Stdio::from(std::io::stderr()));
+    // A preparation boot is headless: no display listener, so no frame callback into the host. The engine
+    // honours this in qemu_ios_ui_vm_started; a device boot (the app's own path) never sets it.
+    command.env("LTM_NO_UI", "1");
     command.stderr(match engine_stderr {
         Some(f) => Stdio::from(f),
         None => Stdio::inherit(),
