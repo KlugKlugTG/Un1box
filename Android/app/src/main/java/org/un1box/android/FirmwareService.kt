@@ -101,7 +101,7 @@ class FirmwareService : Service() {
             if (cancelling) state = "cancelled" else {
                 // A device-preparation failure already carries the guest's own reason; the patcher diagnosis and
                 // the shim's log only help the iPad's iBoot chain, and would bury it.
-                val message = (e.message ?: "Firmware preparation failed") + memory()
+                val message = (e.message ?: "Firmware preparation failed") + engineTail() + memory()
                 failure = if (message.contains("restore boot") || message.contains("First start")) message
                           else listOf(message, diagnosis(libs)).joinToString("\n")
                 state = "failed"
@@ -135,6 +135,21 @@ class FirmwareService : Service() {
         }
         return "tools: iBoot32Patcher ${if (patcher.canExecute()) "present" else "missing"}, " +
             "spawn shim ${if (shim.isFile) "present" else "missing"}; app ran the patcher: $spawn" + shimLog()
+    }
+
+    /**
+     * The last lines of firmwarekit's own stderr for this run. A device that halts without a guest message
+     * leaves QEMU's own complaint (an uncaught target signal, a failed mapping) only there.
+     */
+    private fun engineTail(): String {
+        return try {
+            val log = File(cacheDir, "firmwarekit.log")
+            if (!log.isFile) return ""
+            val lines = log.readLines().map { it.trim() }.filter { it.isNotEmpty() }.takeLast(4)
+            if (lines.isEmpty()) "" else "\nengine log: " + lines.joinToString(" | ")
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     /**
