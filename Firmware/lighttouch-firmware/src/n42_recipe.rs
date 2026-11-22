@@ -322,7 +322,12 @@ impl Board for N42Board {
                 })
                 .unwrap_or_else(|| {
                     if r.exited {
-                        format!("halted without the keybag (exit {})", r.exit_code)
+                        let how = if r.exit_code < 0 {
+                            format!("killed by signal {} after {:.0} s", -r.exit_code, r.seconds)
+                        } else {
+                            format!("exit {} after {:.0} s", r.exit_code, r.seconds)
+                        };
+                        format!("halted without the keybag ({how})")
                     } else {
                         format!("no halt after {} s", r.seconds as i64)
                     }

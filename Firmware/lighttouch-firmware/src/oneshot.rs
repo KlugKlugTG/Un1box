@@ -243,7 +243,17 @@ pub fn run_wait(
     if let Ok(e) = failed_rx.try_recv() {
         return Err(e);
     }
-    let r = OneShot { exited: !stopping, exit_code: status.code().unwrap_or(-1), marker, seconds: start.elapsed().as_secs_f64() };
+    // A helper killed by a signal (the phone's low-memory killer sends SIGKILL) has no exit code; keep the
+    // signal so a phone run can tell "the engine refused" from "the system killed it".
+    #[cfg(unix)]
+    let killed = std::os::unix::process::ExitStatusExt::signal(&status);
+    #[cfg(not(unix))]
+    let killed: Option<i32> = None;
+    let exit_code = match status.code() {
+        Some(code) => code,
+        None => -killed.unwrap_or(1),
+    };
+    let r = OneShot { exited: !stopping, exit_code, marker, seconds: start.elapsed().as_secs_f64() };
     log(&format!(
         "one-shot: {} after {:.0} s (exit {})",
         if r.marker { "marker" } else if r.exited { "halted" } else { "timed out" },

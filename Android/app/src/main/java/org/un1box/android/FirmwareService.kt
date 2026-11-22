@@ -101,7 +101,7 @@ class FirmwareService : Service() {
             if (cancelling) state = "cancelled" else {
                 // A device-preparation failure already carries the guest's own reason; the patcher diagnosis and
                 // the shim's log only help the iPad's iBoot chain, and would bury it.
-                val message = e.message ?: "Firmware preparation failed"
+                val message = (e.message ?: "Firmware preparation failed") + memory()
                 failure = if (message.contains("restore boot") || message.contains("First start")) message
                           else listOf(message, diagnosis(libs)).joinToString("\n")
                 state = "failed"
@@ -135,6 +135,25 @@ class FirmwareService : Service() {
         }
         return "tools: iBoot32Patcher ${if (patcher.canExecute()) "present" else "missing"}, " +
             "spawn shim ${if (shim.isFile) "present" else "missing"}; app ran the patcher: $spawn" + shimLog()
+    }
+
+    /**
+     * The phone's memory at the moment a preparation failed. A guest killed by signal 9 is usually the
+     * low-memory killer, and this says whether the phone was actually short or the engine crashed.
+     */
+    private fun memory(): String {
+        return try {
+            val info = java.io.File("/proc/meminfo").readLines()
+                .mapNotNull { line ->
+                    val parts = line.split(Regex("\\s+"))
+                    if (parts.size >= 2 && parts[0] in setOf("MemTotal:", "MemAvailable:")) parts[0] to parts[1].toLong() / 1024 else null
+                }.toMap()
+            val free = (info["MemAvailable:"] ?: 0).let { if (info["MemTotal:"] != null) it else 0 }
+            val total = info["MemTotal:"] ?: 0
+            if (total == 0L) "" else "\nmemory: ${free} of ${total} MB available"
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     /**
