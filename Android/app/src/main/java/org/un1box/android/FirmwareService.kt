@@ -98,7 +98,14 @@ class FirmwareService : Service() {
             note("complete")
             foreground("Your device is prepared. Open Un1box to add it.")
         } catch (e: Exception) {
-            if (cancelling) state = "cancelled" else { failure = listOf(e.message ?: "Firmware preparation failed", diagnosis(libs)).joinToString("\n"); state = "failed" }
+            if (cancelling) state = "cancelled" else {
+                // A device-preparation failure already carries the guest's own reason; the patcher diagnosis and
+                // the shim's log only help the iPad's iBoot chain, and would bury it.
+                val message = e.message ?: "Firmware preparation failed"
+                failure = if (message.contains("restore boot") || message.contains("First start")) message
+                          else listOf(message, diagnosis(libs)).joinToString("\n")
+                state = "failed"
+            }
             writable(out); out.deleteRecursively()
             if (cancelling) PreparationNote.clear(this) else note("failed")
         } finally {

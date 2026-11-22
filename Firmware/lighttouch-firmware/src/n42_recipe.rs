@@ -322,12 +322,33 @@ impl Board for N42Board {
                 })
                 .unwrap_or_else(|| {
                     if r.exited {
-                        "halted without the keybag".to_string()
+                        format!("halted without the keybag (exit {})", r.exit_code)
                     } else {
                         format!("no halt after {} s", r.seconds as i64)
                     }
                 });
-            return Err(Error::new(Code::OneshotFailed, format!("restore boot: {why}")));
+            // The app shows this message and nothing else of the guest's own output, so the reason a
+            // guest halted (a panic, a refusal, a missing device) has to travel inside it.
+            let tail: Vec<&str> = text
+                .lines()
+                .map(str::trim_end)
+                .filter(|l| !l.is_empty() && !l.contains("ApplePMGRTempSensor"))
+                .rev()
+                .take(4)
+                .collect();
+            let detail = tail.into_iter().rev().collect::<Vec<_>>().join(" | ");
+            let detail: String = detail.chars().take(600).collect();
+            let message = if detail.is_empty() {
+                // Nothing in the serial at all: the guest never reached its first print, so say that.
+                if text.trim().is_empty() {
+                    format!("restore boot: {why} (the guest wrote no serial output)")
+                } else {
+                    format!("restore boot: {why}")
+                }
+            } else {
+                format!("restore boot: {why} — {detail}")
+            };
+            return Err(Error::new(Code::OneshotFailed, message));
         }
         for n in [a6_restore::STREAM, a6_restore::RESTORE_RAMDISK, a6_restore::KBOOT_RESTORE] {
             let _ = std::fs::remove_file(c.work.join(n));
