@@ -259,7 +259,7 @@ impl Board for N42Board {
             wifi: false,
             machine_options: options,
         };
-        let config = machine::iphone5(
+        let config = machine::iphone5_net(
             &d,
             &hardware,
             &format!("file:{}", serial.display()),
@@ -267,6 +267,7 @@ impl Board for N42Board {
             None,
             &[],
             imei.as_deref(),
+            false,
         );
         if let Some(dir) = serial.parent() {
             std::fs::create_dir_all(dir)?;
@@ -403,7 +404,7 @@ impl Board for N42Board {
             wifi: false,
             machine_options: options,
         };
-        let config = machine::iphone5(
+        let config = machine::iphone5_net(
             &d,
             &hardware,
             &format!("file:{}", serial.display()),
@@ -411,6 +412,7 @@ impl Board for N42Board {
             None,
             &[],
             imei.as_deref(),
+            false,
         );
         let (r, text) = oneshot::run_wait(
             &c.o.helper,

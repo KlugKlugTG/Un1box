@@ -291,6 +291,22 @@ pub fn iphone5(
     restore: &[String],
     imei: Option<&str>,
 ) -> BootConfig {
+    iphone5_net(d, hardware, serial, audio, netdev, restore, imei, true)
+}
+
+/// Whether a preparation boot gets the machine's network backends. The restore and seal boots talk to the
+/// guest over its own services, never over its network, and a slirp stack the phone's engine carries but
+/// the host's does not is one more thing that can fail before launchd; they boot without it.
+pub fn iphone5_net(
+    d: &IPad,
+    hardware: &DeviceInfo,
+    serial: &str,
+    audio: &[String],
+    netdev: Option<&str>,
+    restore: &[String],
+    imei: Option<&str>,
+    network: bool,
+) -> BootConfig {
     let mut machine = hardware.machine.clone();
     if let IPadBoot::Kernel { image, .. } = &d.boot {
         machine += &format!(",kboot={}", escape(image));
@@ -320,9 +336,11 @@ pub fn iphone5(
     ];
     argv.extend(audio.iter().cloned());
     argv.extend(["-serial".to_string(), serial.to_string()]);
-    argv.extend(wifi);
-    argv.extend(["-netdev".to_string(), wifi0]);
-    argv.extend(cellular);
+    if network {
+        argv.extend(wifi);
+        argv.extend(["-netdev".to_string(), wifi0]);
+        argv.extend(cellular);
+    }
     argv.extend(restore.iter().cloned());
     BootConfig { argv, machine: hardware.machine.clone() }
 }
