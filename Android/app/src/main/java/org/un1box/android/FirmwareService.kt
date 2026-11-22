@@ -98,6 +98,7 @@ class FirmwareService : Service() {
             note("complete")
             foreground("Your device is prepared. Open Un1box to add it.")
         } catch (e: Exception) {
+            keepLogs(out)
             if (cancelling) state = "cancelled" else {
                 // A device-preparation failure already carries the guest's own reason; the patcher diagnosis and
                 // the shim's log only help the iPad's iBoot chain, and would bury it.
@@ -135,6 +136,21 @@ class FirmwareService : Service() {
         }
         return "tools: iBoot32Patcher ${if (patcher.canExecute()) "present" else "missing"}, " +
             "spawn shim ${if (shim.isFile) "present" else "missing"}; app ran the patcher: $spawn" + shimLog()
+    }
+
+    /**
+     * Copies the run's guest serial and engine stderr out of the prepared folder before it is deleted: a
+     * failed device preparation is worth reading in full, and the folder itself is gigabytes.
+     */
+    private fun keepLogs(out: File) {
+        val work = File(out, "work")
+        if (!work.isDirectory) return
+        val keep = File(filesDir, "prep-logs").apply { mkdirs() }
+        for (name in listOf("restore.log", "restore.log.engine.log", "seal.log", "seal.log.engine.log")) {
+            val source = File(work, name)
+            if (source.isFile) runCatching { source.copyTo(File(keep, name), overwrite = true) }
+        }
+        runCatching { File(cacheDir, "firmwarekit.log").takeIf { it.isFile }?.copyTo(File(keep, "firmwarekit.log"), overwrite = true) }
     }
 
     /**

@@ -150,7 +150,9 @@ impl N42Board {
 /// did; the restore and seal do not need the parallelism, so they run one TCG thread unless
 /// `LT_PREP_MTTCG=1` asks for the old behaviour.
 fn prep_config(mut c: machine::BootConfig) -> machine::BootConfig {
-    if std::env::var("LT_PREP_MTTCG").as_deref() != Ok("1") {
+    // Single-threaded TCG was tried against the phone's SIGILL and made no difference, so the
+    // preparation boots keep MTTCG (four vCPUs) and `LT_PREP_TCG_SINGLE=1` remains for an A/B.
+    if std::env::var("LT_PREP_TCG_SINGLE").as_deref() == Ok("1") {
         if let Some(i) = c.argv.iter().position(|a| a == "-accel") {
             c.argv[i + 1] = "tcg,thread=single".to_string();
         }
@@ -358,19 +360,33 @@ impl Board for N42Board {
                 .collect();
             // The engine's own last words are worth more than the guest's when it is the engine that died.
             let engine = std::fs::read_to_string(serial.with_file_name("restore.log.engine.log")).unwrap_or_default();
-            let engine_tail: Vec<String> = engine
-                .lines()
-                .map(str::trim_end)
-                .filter(|l| !l.is_empty())
-                .rev()
-                .take(2)
-                .map(str::to_string)
-                .collect();
+            // A crash report ("qemu: fatal signal ...") is worth every line it prints: signal, pc, lr
+            // and the backtrace. Otherwise the last couple of lines say what the engine was doing.
+            let all: Vec<&str> = engine.lines().collect();
+            let crash_at = all.iter().rposition(|l| l.contains("qemu: fatal signal"));
+            let engine_tail: Vec<String> = match crash_at {
+                Some(at) => all[at..].iter().filter(|l| !l.trim().is_empty()).take(14).map(|l| (*l).to_string()).collect(),
+                None => engine
+                    .lines()
+                    .map(str::trim_end)
+                    .filter(|l| !l.is_empty())
+                    .rev()
+                    .take(2)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect(),
+            };
             let guest = tail.into_iter().rev().collect::<Vec<_>>().join(" | ");
             let detail = if engine_tail.is_empty() {
                 guest
             } else {
-                format!("{guest} ‖ engine: {}", engine_tail.into_iter().rev().collect::<Vec<_>>().join(" | "))
+                let mut lines: Vec<String> = engine_tail;
+                if crash_at.is_none() {
+                    lines.reverse();
+                }
+                format!("{guest} ‖ engine: {}", lines.join(" | "))
             };
             let detail: String = detail.chars().take(600).collect();
             let message = if detail.is_empty() {
