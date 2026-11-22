@@ -356,7 +356,22 @@ impl Board for N42Board {
                 .rev()
                 .take(4)
                 .collect();
-            let detail = tail.into_iter().rev().collect::<Vec<_>>().join(" | ");
+            // The engine's own last words are worth more than the guest's when it is the engine that died.
+            let engine = std::fs::read_to_string(serial.with_file_name("restore.log.engine.log")).unwrap_or_default();
+            let engine_tail: Vec<String> = engine
+                .lines()
+                .map(str::trim_end)
+                .filter(|l| !l.is_empty())
+                .rev()
+                .take(2)
+                .map(str::to_string)
+                .collect();
+            let guest = tail.into_iter().rev().collect::<Vec<_>>().join(" | ");
+            let detail = if engine_tail.is_empty() {
+                guest
+            } else {
+                format!("{guest} ‖ engine: {}", engine_tail.into_iter().rev().collect::<Vec<_>>().join(" | "))
+            };
             let detail: String = detail.chars().take(600).collect();
             let message = if detail.is_empty() {
                 // Nothing in the serial at all: the engine never got the guest to its first print, and its
