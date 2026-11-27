@@ -42,9 +42,12 @@ typedef struct S5L8930I2SState {
     unsigned in_rate;
     uint8_t in_ring[I2S_RING];
     uint32_t in_head, in_tail, in_level;
-    uint8_t rx_frame[4];
+    uint8_t rx_frame[32 * 4];
     unsigned rx_pos;
 } S5L8930I2SState;
+
+static unsigned i2s_channels(S5L8930I2SState *s, bool input) { (void)s; (void)input; return 2; }
+static unsigned i2s_sample_bytes(S5L8930I2SState *s, bool input) { (void)s; (void)input; return 2; }
 
 static void i2s_next_frame(S5L8930I2SState *s);
 static uint64_t i2s_rx_read(S5L8930I2SState *s, unsigned size);

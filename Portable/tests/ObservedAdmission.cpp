@@ -141,7 +141,7 @@ static void packed_contracts(const fs::path &root) {
         const auto rom = root / "rom";
         put(rom, "synthetic ROM");
         const std::string rom_path = rom.string();
-        lt_boot_config boot{sizeof(boot), 1, "iPod-Touch-2G", rom_path.c_str(), nullptr, nullptr, 0};
+        lt_boot_config boot{sizeof(boot), 1, "iPod-Touch-2G", rom_path.c_str(), nullptr, nullptr, 0, 0};
         int argc = 0;
         const char *const *argv = nullptr;
         assert(lt_device_boot_argv(device, &boot, &argc, &argv, &error) == LT_OK);

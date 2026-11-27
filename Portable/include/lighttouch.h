@@ -13,6 +13,10 @@ extern "C" {
  * clean exit. Confirmed cleanup may finish sooner. Kill/timeout retains dirty. */
 #define LT_SHUTDOWN_CONFIRMATION_TIMEOUT_MS 30000u
 #define LT_SHUTDOWN_GRACE_MS 35000u
+/* A Stop before a booting guest's agent first answers (on a device whose agent
+ * answered on an earlier boot) waits up to this long for it before asking iOS;
+ * callers count their deadlines from when iOS is asked (shutdown_route set). */
+#define LT_SHUTDOWN_AGENT_WAIT_MS 20000u
 #define LT_INIT(type) {sizeof(type), LT_ABI_VERSION}
 typedef enum {
     LT_OK = 0,
@@ -58,6 +62,33 @@ lt_status lt_library_rename(lt_library *, const char *record_id, const char *dis
 /* Permanently delete a stopped record: base, writable state and assets. LT_BUSY while its device
  * is open. If it was selected, the first remaining record (if any) becomes selected. */
 lt_status lt_library_remove(lt_library *, const char *record_id, lt_error *);
+/* The fake cellular network of a board with a modem (iPhone 3GS, iPhone 4; the original iPhone's has it built in), per
+ * device: saved in its record (carrier.json), applied at every boot as -global ios-baseband.<property>=<value>, and
+ * written to a running modem when it changes (lt_runtime_reload_carrier). Synthetic values; the defaults are the 3GPP
+ * test network (MCC/MNC 001/01). The rules are the modem's own (qemu-ios hw/misc/ios_baseband_core.c). */
+typedef struct {
+    uint32_t size, version;
+    char carrier[64];     /* 1-32 bytes of UTF-8, no control character or '"' */
+    char mcc_mnc[8];      /* MCC (3 digits) + MNC (2 or 3) */
+    uint32_t registered, sim_present;
+    uint32_t bars;        /* signal, 0-5 */
+    double latitude, longitude; /* where a modem with a GPS receiver (the 3GS's) says the phone is, in degrees */
+    char last_caller[32], last_sender[32]; /* the numbers the app's Call and Send text last used ("" for none) */
+} lt_carrier;
+/* 1 when the board (lt_record_info.board) has a modem: only those devices take carrier settings. */
+uint32_t lt_board_has_modem(const char *board);
+void lt_carrier_defaults(lt_carrier *);
+/* LT_INVALID with a message for the user when the modem would refuse a value. */
+lt_status lt_carrier_check(const lt_carrier *, lt_error *);
+/* A caller or SMS sender: 1-20 digits, optionally after a '+'. */
+uint32_t lt_carrier_number_ok(const char *number);
+/* How much of one SMS a text takes: GSM 7-bit septets of 160 when every character is in that alphabet (escaped ones
+ * count twice), else UTF-16 units of 70. *limit is 0 for text the modem can't send (characters beyond U+FFFF). */
+uint32_t lt_carrier_sms_length(const char *utf8, uint32_t *limit);
+/* The record's saved settings, or the defaults. LT_UNSUPPORTED for a board without a modem. */
+lt_status lt_library_carrier(lt_library *, const char *record_id, lt_carrier *, lt_error *);
+/* Validate (lt_carrier_check) and save. Allowed while the device runs; lt_runtime_reload_carrier applies them. */
+lt_status lt_library_set_carrier(lt_library *, const char *record_id, const lt_carrier *, lt_error *);
 
 /* All paths UTF-8, absolute, private app-owned directories. Destination must not
  * exist. Imports stage beside destination and atomically publish after validation.
@@ -106,6 +137,29 @@ lt_status lt_library_import_observed(lt_library *, const lt_library_import_confi
  * its first start reads nothing either. The folder is consumed, or handed back where it was on failure. */
 lt_status lt_library_adopt_prepared(lt_library *, const lt_library_import_config *, lt_import_phase_fn, void *,
                                     lt_record_info *, lt_error *);
+/* Device transfer (Transfer.cpp): a stopped record as one ZIP64 file (deflate; lighttouch-device.json first, then
+ * record.json, base/, assets/, carrier.json, state/), and such a file added as a new record with a fresh id and its
+ * name made unique (" (2)"). Both stream in order, so the descriptor may be a pipe. The observer sees phase
+ * "exporting", or "importing" then "finishing", with bytes done and total; a nonzero return cancels (LT_CANCELLED)
+ * and removes what was written (a named export file, or the import's stage). LT_BUSY while the device runs. */
+typedef struct {
+    uint32_t size, version;
+    const char *record_id;
+    /* The file to write (made as path.partial, renamed when complete), or NULL to write to fd instead. */
+    const char *path;
+    int32_t fd;
+    /* Who exported it, for the manifest ("LightTouch 0.0.15 (Android)"). */
+    const char *app;
+} lt_export_config;
+lt_status lt_library_export(lt_library *, const lt_export_config *, lt_import_phase_fn, void *, lt_error *);
+typedef struct {
+    uint32_t size, version;
+    /* The file to read, or NULL to read fd (left open). */
+    const char *path;
+    int32_t fd;
+} lt_transfer_import_config;
+lt_status lt_library_import_device(lt_library *, const lt_transfer_import_config *, lt_import_phase_fn, void *,
+                                   lt_record_info *, lt_error *);
 /* Validate/freeze and atomically publish an already-written private sibling
  * stage without copying it. Stage must be an owned 0700 directory; descendants
  * must be owned regular single-link files/directories with no external writers.
@@ -235,6 +289,16 @@ typedef struct {
     uint32_t pcm_queued_packets, reserved;
 } lt_runtime_io_stats;
 lt_status lt_runtime_io_statistics(lt_runtime *, lt_runtime_io_stats *, lt_error *);
+/* Guest storage since the engine loaded: the NAND page reads, programs and erases
+ * its flash controller issued, with the host ns spent serving each kind. Running
+ * totals; difference two samples for rates. LT_UNSUPPORTED from older engines. */
+typedef struct {
+    uint32_t size, version;
+    uint64_t read_ops, read_bytes, read_ns;
+    uint64_t write_ops, write_bytes, write_ns;
+    uint64_t erase_ops, erase_ns;
+} lt_runtime_storage_stats;
+lt_status lt_runtime_storage_statistics(lt_runtime *, lt_runtime_storage_stats *, lt_error *);
 
 /* Optional engine recording; one active host-path capture per worker. Empty
  * path stops and flushes it. Status is 1 active, 0 idle, negative host errno. */
@@ -322,23 +386,8 @@ typedef struct {
     double acceleration[3], angular_velocity[3];
 } lt_motion;
 lt_status lt_runtime_motion(lt_runtime *, const lt_motion *, lt_error *);
-/* The fake drives the fullscreen menu offers: the board's battery and, on the
- * iPhones, the cellular modem the guest's CommCenter talks to.
- *
- * lt_runtime_battery: the level the gas gauge/PMU reports (0..100) and what the
- * charging path says: 0 auto (the board's own logic), 1 charging, 2 not charging,
- * written only where the board models one (the iPad's charging is its USB port's).
- * The guest shows the new level on its next poll. LT_UNSUPPORTED when the engine
- * has no drive or the machine no battery.
- *
- * lt_runtime_modem: one property of the machine's modem in its string form --
- * incoming-call or incoming-sms ("<number>|<text>") to fake a call or a message,
- * remote-answer/remote-hangup for the far end of an outgoing one, and carrier,
- * mcc-mnc, signal-dbm, registered for the network. The guest sees it on its next
- * poll (~5 s for the registration fields). LT_UNSUPPORTED without a modem or that
- * property; queued admission only, the model's own refusal is the engine's log. */
+/* Set the board's battery level (0..100) and charging state (0 auto, 1 charging, 2 not charging). */
 lt_status lt_runtime_battery(lt_runtime *, uint32_t level, uint32_t charging, lt_error *);
-lt_status lt_runtime_modem(lt_runtime *, const char *property, const char *value, lt_error *);
 /* Display mapping excludes letterboxes; rotation 0/90/180/270 clockwise. */
 /* Sensor frame conversion and clock-domain conversion live in native domain.
  * source_timestamp_ns and source_now_ns use the same adapter clock; monotonic
@@ -357,23 +406,22 @@ typedef struct {
     uint64_t timestamp_ns, dropped_frames;
 } lt_pcm_info;
 lt_status lt_runtime_pcm(lt_runtime *, int16_t *, uint32_t capacity_frames, lt_pcm_info *, lt_error *);
-/* The host's microphone into the guest's capture port. Interleaved stereo S16
- * at LT_MIC_RATE; a mono source is duplicated by the caller, and the engine
- * resamples to the rate the guest's capture port runs at. Bounded: LT_AGAIN
- * when the engine's ring had no room for the whole block (the guest is not
- * reading), which is a dropped block and not an error. LT_UNSUPPORTED for an
- * engine built before this tap; the guest then hears silence. Any thread. */
+/* The host's microphone into the guest's capture port (iPhone 3GS, iPhone 4, iPod touch 4G, iPad). Interleaved
+ * stereo S16 at LT_MIC_RATE, count frames; a mono source is duplicated by the caller, and the engine resamples to
+ * the port's rate. LT_AGAIN when the guest is not running or its ring had no room for the whole block (the guest
+ * is not recording: a dropped block, not an error). LT_UNSUPPORTED from engines before the microphone input, whose
+ * guests hear silence. Any thread. */
 #define LT_MIC_RATE 44100
 typedef struct {
     uint32_t size, version;
-    uint32_t sample_rate;      /* the capture port's rate; 0 before one starts */
+    uint32_t sample_rate;      /* the capture port's rate; 0 before the guest starts recording */
     uint32_t queued_frames, capturing;
     uint64_t pushed_frames, dropped_frames;
 } lt_mic_info;
 lt_status lt_runtime_mic_write(lt_runtime *, const int16_t *frames, uint32_t count, lt_error *);
 lt_status lt_runtime_mic_info(lt_runtime *, lt_mic_info *, lt_error *);
-/* Drop what the app pushed and the guest has not taken: what a recorder does when it stops, so the
- * next capture starts at the microphone and not with the tail of the one before it. */
+/* Drop what was pushed and not yet taken: a recorder that stops does this, so the next recording starts at the
+ * microphone and not with the tail of the last one. */
 lt_status lt_runtime_mic_flush(lt_runtime *, lt_error *);
 /* The host's camera into the emulated device's ISP. sensor is LT_CAMERA_BACK or
  * LT_CAMERA_FRONT and is only a label -- one mailbox serves whichever camera the
@@ -398,7 +446,37 @@ lt_status lt_runtime_camera_info(lt_runtime *, int sensor, lt_camera_info *, lt_
 /* Drop every frame nobody drew and every counter: a guest that restarts, or a camera the app closes,
  * must not show the frames from before. */
 lt_status lt_runtime_camera_flush(lt_runtime *, lt_error *);
-
+/* The device's vibration motor (an iPhone's; the iPods and the iPad have none and never run it): on while the guest
+ * runs it, and pulses, how many times it has started since the engine loaded, so a poller that missed a short buzz
+ * between two reads still sees it. A paused guest leaves it as it was. LT_UNSUPPORTED from engines before the
+ * motor. Any thread; two atomic reads. */
+typedef struct {
+    uint32_t size, version;
+    uint32_t on, reserved;
+    uint64_t pulses;
+} lt_vibrator_info;
+lt_status lt_runtime_vibrator(lt_runtime *, lt_vibrator_info *, lt_error *);
+/* Holds (hold != 0) or releases the engine's periodic sync of the device's storage to the host disk, around an app
+ * install: the sync made the guest's writes wait, and an install cut short is lost anyway. Holds nest; stopping the
+ * device still syncs everything. Engines without the hook ignore it. Any thread. */
+lt_status lt_runtime_hold_storage_sync(lt_runtime *, int hold, lt_error *);
+/* The running modem (devices whose board lt_board_has_modem). LT_UNSUPPORTED without a modem or from engines without
+ * its hooks.
+ * reload_carrier: read the record's saved carrier settings again and write the properties that changed to the modem;
+ * before the engine is ready it waits and applies them at the next lt_runtime_poll that finds it ready.
+ * modem: a network-side event: "incoming-call" (value: the caller), "remote-answer" and "remote-hangup" (the other
+ * end picks up the call the phone is making, or ends any call; value ignored), "incoming-sms" (value "<sender>|<text>")
+ * and "gps-fix" (value "lat,lon[,alt[,speed[,course[,accuracy]]]]", "" for no fix). Values are checked with the
+ * modem's rules first (LT_INVALID). LT_AGAIN before the engine is ready. Queued: the modem's own refusal (no channel
+ * to ring on, not registered) shows as "error" in a later status.
+ * modem_status: the modem's state as a JSON object (carrier, mcc-mnc, registered, sim-present, signal-dbm,
+ * call-state: idle|dialing|alerting|incoming|active|held, emergency-call, last-dialed, last-mo-sms "<number>|<text>",
+ * mo-sms-count, gps, gps-fix, attached, power-offs, and error: the refusal of the last write it reflects). The engine
+ * refreshes it after each call, so poll it; "pending": true while a write since is not reflected yet (its error not
+ * known). LT_AGAIN before the first refresh. */
+lt_status lt_runtime_reload_carrier(lt_runtime *, lt_error *);
+lt_status lt_runtime_modem(lt_runtime *, const char *action, const char *value, lt_error *);
+lt_status lt_runtime_modem_status(lt_runtime *, char *json, uint32_t capacity, lt_error *);
 /* Small typed guest operations use the existing agent, never a host/guest shell.
  * Requests are async, at most one pending; caller polls completion. Lost/timeout
  * mutations are not retried. Launch builtin IDs are limited to com.apple.*;
@@ -410,7 +488,12 @@ typedef enum {
     LT_GUEST_LAUNCH_BUILTIN = 2,
     LT_GUEST_TYPE_TEXT = 3,
     LT_GUEST_SYNC = 4,
-    LT_GUEST_LAUNCH_GYRO_PROBE = 5
+    LT_GUEST_LAUNCH_GYRO_PROBE = 5,
+    /* argument: an installed app's bundle ID (any app, not only com.apple.*): benchmark harnesses open games by ID
+     * instead of tapping icons. */
+    LT_GUEST_LAUNCH_APP = 11,
+    /* No argument; output "locked=0|1 passcode=0|1": whether the lock screen is up (benchmarks unlock until 0). */
+    LT_GUEST_LOCK_STATUS = 12
 } lt_guest_operation;
 typedef struct {
     uint32_t size, version;

@@ -39,7 +39,7 @@ import wiring  # noqa: E402
 PATCHES = ROOT / "ci" / "engine-patches"
 BRIDGE = "hw/arm/gles-host.c"
 NAME_TABLE = "include/hw/arm/guest-services/gles-names.h"
-MARKER = "gles_vao_bind"                      # in the bridge once the stack is applied
+MARKER = "GLES_ID_glGenVertexArraysEXT"        # in the bridge once the stack is applied
 
 ENGINE = None
 SANITIZE = False
@@ -192,6 +192,7 @@ def main():
         except Failure as failure:
             ENGINE, note = None, f"unusable: {failure}"
             report.add("engine checkout", False, str(failure))
+        wiring.set_engine(ENGINE)
         print(f"engine: {note}")
 
         print("the engine's vertex array state")

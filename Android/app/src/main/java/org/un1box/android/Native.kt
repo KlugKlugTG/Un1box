@@ -10,12 +10,29 @@ internal object Native {
     external fun adoptPrepared(source: String, libraryRoot: String, displayName: String, rom: String): String
     /** The running import's phase, bytes done and bytes total; an empty phase when none runs. */
     external fun importProgress(): Array<String>
+    /** Write a stopped device to [fd] as a device file (Transfer.cpp); the error or "". Progress through importProgress. */
+    external fun exportDevice(libraryRoot: String, id: String, fd: Int, app: String): String
+    /** Add the device in the device file on [fd]: [error, id, name]. */
+    external fun importDevice(libraryRoot: String, fd: Int): Array<String>
+    /** Stop the running export or import (it cleans up after itself). */
+    external fun cancelTransfer()
     external fun setGuestPackage(libraryRoot: String, id: String, path: String): String
     external fun records(libraryRoot: String): Array<Array<String>>
     external fun select(libraryRoot: String, id: String): String
     external fun rename(libraryRoot: String, id: String, name: String): String
     external fun remove(libraryRoot: String, id: String): String
+    /** A device's carrier settings: [error, carrier, mccMnc, registered, simPresent, bars, latitude, longitude,
+     *  lastCaller, lastSender] ("1"/"0" for flags; error "" when it worked). */
+    external fun carrierGet(libraryRoot: String, id: String): Array<String>
+    /** Check and save them (the same fields without the error); returns the error or "". */
+    external fun carrierSet(libraryRoot: String, id: String, fields: Array<String>): String
+    external fun reloadCarrier(): String
+    /** A network-side event: incoming-call, remote-answer, remote-hangup, incoming-sms ("number|text"). */
+    external fun modem(action: String, value: String): String
+    /** The modem's state as JSON, "" when there is none yet. */
+    external fun modemStatus(): String
     external fun frameTimeline(since: Long): LongArray
+    external fun storageStats(): LongArray
     external fun setPresentScale(mode: Int)
     external fun setPresentVisible(visible: Boolean)
     external fun start(libraryRoot: String, id: String, headphones: Boolean): String
@@ -56,6 +73,17 @@ internal object Native {
     external fun guestPoll(requestId: Long): Array<String>
     external fun guestCancel(requestId: Long)
     external fun audio(buffer: ShortArray): Int
+    /** [count] stereo frames of [frames] to the guest's capture port: 0 taken, 1 dropped (not recording), else -lt_status. */
+    external fun micWrite(frames: ShortArray, count: Int): Int
+    /** Whether the guest has its microphone input running. */
+    external fun micCapturing(): Boolean
+    external fun micFlush()
+    /** capturing, port rate, queued, pushed, dropped; empty when the engine has no microphone input. */
+    external fun micInfo(): LongArray
+    /** The guest's vibration motor: on (0 or 1) and how many times it has started; empty without a running engine. */
+    external fun vibrator(): LongArray
+    /** Holds or releases the engine's periodic storage sync (lt_runtime_hold_storage_sync); nothing without an engine. */
+    external fun holdStorageSync(hold: Boolean)
     /** Mono 16-bit frames into the guest's capture port; returns the frames taken, 0 dropped, negative = error. */
     external fun microphone(samples: ShortArray, count: Int): Int
     external fun microphoneFlush()

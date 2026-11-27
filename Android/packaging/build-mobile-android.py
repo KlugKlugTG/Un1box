@@ -16,6 +16,11 @@ tools use TSS and nothing in either executable references libtatsu, which this
 script checks. Allowed system libraries: libc, libm, libdl, liblog.
 
   build-mobile-android.py OUTPUT [--ndk DIR] [--source-cache DIR ...] [--jobs N]
+  build-mobile-android.py OUTPUT --matches [--ndk DIR]
+
+--matches exits 0 if OUTPUT's libraries and daemon were built from the current
+recipe (the helper is relinked whenever its source changes), else 1: a stale
+OUTPUT must be rebuilt from scratch, apart from OUTPUT/sources.
 
 Archives are taken from OUTPUT/sources, then from --source-cache directories
 (searched a few levels deep; each candidate's sha256 must match), and only
@@ -41,10 +46,16 @@ TRIPLE = 'aarch64-linux-android'
 ABI = 'arm64-v8a'
 ALLOWED_NEEDED = {'libc.so', 'libm.so', 'libdl.so', 'liblog.so'}
 LIB_PATCH = APP / 'build-support/patches/libimobiledevice-sslv3-ios1.patch'
+# The device names each reply's length and libimobiledevice allocated it: refuse more than 32 MiB (upstream
+# LightTouchMac 6978b7a3). libplist copies a shared bplist object per reference: cap nodes and bytes (87974f89).
+LIB_LIMITS_PATCH = APP / 'build-support/patches/libimobiledevice-reply-limits.patch'
+PLIST_PATCH = APP / 'build-support/patches/libplist-bin-limits.patch'
 DAEMON_PATCHES = (  # applied in this order
     ('linux-standard-headers', APP / 'Linux/packaging/patches/usbmuxd-linux-standard-headers.patch'),
     ('private-qemu-config', APP / 'Linux/packaging/patches/usbmuxd-private-qemu-config.patch'),
     ('android-parent-death', HERE / 'patches/usbmuxd-android-parent-death.patch'),
+    # 32760-byte transactions: twice the data per guest turnaround (docs/STORAGE.md, "USB uploads").
+    ('large-transactions', APP / 'build-support/patches/usbmuxd-qemu-large-transactions.patch'),
 )
 HELPER = APP / 'Android/native-services/lt_appservice.c'
 CURL_STUB = (HERE / 'curl-stub/curl/curl.h', HERE / 'curl-stub/curl_stub.c')
@@ -114,6 +125,7 @@ def main():
     parser.add_argument('--ndk', type=Path, default=Path.home() / 'Android/Sdk/ndk/28.2.13676358')
     parser.add_argument('--source-cache', type=Path, action='append')
     parser.add_argument('--jobs', type=int, default=max(1, min(8, os.cpu_count() or 1)))
+    parser.add_argument('--matches', action='store_true', help='Only check whether OUTPUT is up to date')
     args = parser.parse_args()
     output = args.output.resolve()
     ndk = args.ndk.resolve()
@@ -127,14 +139,13 @@ def main():
                         if line.startswith('Pkg.Revision'))
 
     sources, build, prefix, out = output / 'sources', output / 'build', output / 'prefix', output / ABI
-    for directory in (sources, build, prefix / 'lib/pkgconfig', prefix / 'include', out):
-        directory.mkdir(parents=True, exist_ok=True)
     pinned = {p['name']: p for p in json.loads((APP / 'build-support/dependencies.json').read_text())['packages']}
     packages = [pinned[name] for name in ORDER]
 
     recipe = dict(schema=1, abi=ABI, android_api=API, ndk_revision=ndk_revision, packages=packages,
                   daemon_revision=DAEMON, recipe_sha256=sha(__file__),
-                  patch_sha256=sha(LIB_PATCH),
+                  patch_sha256=sha(LIB_PATCH), limits_patch_sha256=sha(LIB_LIMITS_PATCH),
+                  plist_patch_sha256=sha(PLIST_PATCH),
                   daemon_patches={name: sha(path) for name, path in DAEMON_PATCHES},
                   curl_stub_sha256={p.name: sha(p) for p in CURL_STUB},
                   helper_source_sha256=sha(HELPER),
@@ -142,8 +153,13 @@ def main():
     stamp = output / 'build-recipe.json'
     # The helper is the last link step and feeds no library, so editing it reuses the output.
     library_inputs = lambda r: {k: v for k, v in r.items() if k != 'helper_source_sha256'}
-    if stamp.exists() and library_inputs(json.loads(stamp.read_text())) != library_inputs(recipe):
+    current = stamp.exists() and library_inputs(json.loads(stamp.read_text())) == library_inputs(recipe)
+    if args.matches:
+        raise SystemExit(0 if current else 1)
+    if stamp.exists() and not current:
         raise RuntimeError('Use a fresh output for changed mobile build inputs')
+    for directory in (sources, build, prefix / 'lib/pkgconfig', prefix / 'include', out):
+        directory.mkdir(parents=True, exist_ok=True)
     stamp.write_text(json.dumps(recipe, indent=2) + '\n')
 
     trees = {}
@@ -215,6 +231,10 @@ def main():
     if not shim.exists():
         run([env['AR'], 'rcs', shim], build)
 
+    if not (trees['libplist'] / '.lighttouch-limits-patch').exists():
+        with PLIST_PATCH.open('rb') as stream:
+            subprocess.run(['patch', '-p1'], cwd=trees['libplist'], stdin=stream, check=True)
+        (trees['libplist'] / '.lighttouch-limits-patch').touch()
     autotools('libplist', ['--without-cython', '--without-tests'])
     autotools('libimobiledevice-glue', [])
     autotools('libusbmuxd', [])
@@ -224,6 +244,10 @@ def main():
         with LIB_PATCH.open('rb') as stream:
             subprocess.run(['patch', '-p1'], cwd=tree, stdin=stream, check=True)
         (tree / '.lighttouch-ssl-patch').touch()
+    if not (tree / '.lighttouch-limits-patch').exists():
+        with LIB_LIMITS_PATCH.open('rb') as stream:
+            subprocess.run(['patch', '-p1'], cwd=tree, stdin=stream, check=True)
+        (tree / '.lighttouch-limits-patch').touch()
     autotools('libimobiledevice', ['--without-cython', '--without-readline', '--disable-wireless-pairing',
                                    '--with-openssl'])
 

@@ -61,7 +61,7 @@ def engine_from_git(path: Path, scratch: Path) -> Path:
                             capture_output=True)
     if unpack.returncode:
         raise Failure(f"tar failed: {unpack.stderr.decode(errors='ignore')[-400:]}")
-    already = "SDIO_LINK_RETRIES_MAX" in (tree / "hw" / "arm" / "ipod_touch_sdio.c").read_text(errors="ignore")
+    already = "SDIO_LINK_RETRIES_MAX" in (tree / "hw" / "arm" / "bcm_fullmac.c").read_text(errors="ignore")
     if already:
         return tree
     for patch in sorted(PATCHES.glob("*.patch")):
@@ -115,7 +115,7 @@ def main():
     scratch = Path(tempfile.mkdtemp(prefix="lt-network-"))
     try:
         engine = Path(options.engine or ROOT / "qemu-ios")
-        if not (engine / "hw" / "arm" / "ipod_touch_sdio.c").is_file():
+        if not (engine / "hw" / "arm" / "bcm_fullmac.c").is_file():
             print(f"engine: no checkout at {engine}: the link-watchdog slice is skipped")
             patched = None
         else:

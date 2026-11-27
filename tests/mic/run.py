@@ -69,13 +69,9 @@ def engine_from_git(path: Path, scratch: Path) -> Path:
     for patch in patches:
         applied = sh(["git", "apply", str(patch)], cwd=target)
         if applied.returncode:
-            # 0009 alone is enough for the sliced device code; anything else means
-            # the patch stack no longer fits this engine revision.
-            single = sh(["git", "apply", str(wiring.patch_with("host-mic"))], cwd=target)
-            if single.returncode:
-                raise Failure(
-                    f"{patch.name} does not apply to {path} at HEAD, and neither does 0009 alone: "
-                    f"{applied.stderr.strip()}")
+            raise Failure(
+                f"{patch.name} does not apply to {path} at HEAD: "
+                f"{applied.stderr.strip()}")
     return target
 
 
@@ -84,11 +80,14 @@ def resolve_engine(explicit: str | None, scratch: Path) -> tuple[Path | None, st
     path = Path(candidate).expanduser().resolve() if candidate else ROOT.parent / "qemu-ios"
     if path.is_dir() and (path / "hw/arm/s5l8930_i2s.c").is_file():
         text = (path / "hw/arm/s5l8930_i2s.c").read_text(errors="ignore")
-        if "host_mic_read_frame" in text:
+        gles = (path / "hw/arm/gles-host.c").read_text(errors="ignore") if (path / "hw/arm/gles-host.c").is_file() else ""
+        if "host_mic_read_frame" in text and ("glGenVertexArraysEXT" in gles or not list(PATCHES.glob("*.patch"))):
             return path, f"engine tree {path} (already patched)"
         if (path / ".git").exists() or sh(["git", "-C", str(path), "rev-parse", "--git-dir"]).returncode == 0:
             return engine_from_git(path, scratch), f"engine tree {path} at HEAD + ci/engine-patches"
-        raise Failure(f"{path} is an engine tree with our patches and no way to make one")
+        if "host_mic_read_frame" in text:
+            return path, f"engine tree {path}"
+        raise Failure(f"{path} is an engine tree without our patches and no way to make one")
     if candidate:
         raise Failure(f"{path} is not an engine checkout (no hw/arm/s5l8930_i2s.c)")
     return None, "no engine checkout: device-side slices skipped"
@@ -154,6 +153,7 @@ def main():
     SANITIZE = options.sanitize
     try:
         ENGINE, engine_note = resolve_engine(options.engine, scratch)
+        wiring.set_engine(ENGINE)
         print(f"engine: {engine_note}")
 
         print("device capture port")

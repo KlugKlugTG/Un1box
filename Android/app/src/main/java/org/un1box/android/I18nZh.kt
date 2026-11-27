@@ -777,10 +777,251 @@ internal object I18nZh {
         put("Checking .deb", "正在检查 .deb")
         put("Package name or description", "软件包名称或说明")
         put("Section", "分类")
+        // Device specs & screen scaling
+        put("Apple A6", "Apple A6 芯片")
+        put("Apple Swift (2 cores), 1.3 GHz", "Apple Swift（双核），1.3 GHz")
+        put("640 × 1136 (Retina)", "640 × 1136（Retina）")
+        put("Blends pixels: soft, with no jagged edges", "像素融合：画面柔和，无锯齿边缘")
+        put("Hard-edged pixels, some a little wider than others", "硬朗的像素边缘，部分像素略宽一些")
+        put("Crisp", "清晰")
+        put("Sharp pixels, evened out with a hint of blending", "清晰像素，略作混合使边缘更均匀")
+        put("Pixel perfect", "像素完美")
+        put("Whole-number sizes only, with a border", "仅按整数倍缩放，四周留边")
+        put("All", "全部")
+        put("Pixel art", "像素风")
+        put("3D game", "3D 游戏")
+        put("1 cm", "1 厘米")
+        put("Hide preview", "隐藏预览")
+        put("Preview", "预览")
+        put("Method", "方式")
+        put("Real size", "实际尺寸")
+        put("Show at real size", "按实际尺寸显示")
+        put("Pixel perfect sets its own size", "「像素完美」会自行决定显示尺寸")
+        put("The real device's size, for toys and pieces used on the screen", "按真机实际大小显示，适用于需要贴合屏幕的玩具和配件")
+        put("Measure this display", "测量此屏幕")
+        put("as the system reports", "按系统上报值")
+        put("measured", "已测量")
+        put("Squares are 1 cm", "每个方格为 1 厘米")
+        put("Cropped to fit here", "已裁剪以适应此区域")
+        put("Preview full screen", "全屏预览")
+        put(" · cropped", " · 已裁剪")
+        put("full screen shows all of it", "全屏可完整显示")
+        put("full screen shows all of it turned to landscape", "横屏全屏可完整显示")
+        put("this phone is smaller, so part of it is always cropped", "本机屏幕较小，因此总会裁剪掉一部分")
+        put(" · 1× here, cropped", " · 此处为 1×，已裁剪")
+        put(" · uneven pixels", " · 像素不均")
+        put(" · Smooth below 2×", " · 低于 2× 时使用平滑")
+        put(" · smaller here", " · 此处偏小")
+        put("Bank card", "银行卡")
+        put("Ruler", "直尺")
+        put("Hold a bank or ID card upright against the screen, its corner in the outline's top-left corner. Drag the handle until the outline's bottom edge meets the card's.", "将银行卡或身份证竖贴在屏幕上，使其一角对齐框线的左上角。拖动滑块，直到框线底边与卡片下沿对齐。")
+        put("Hold a ruler upright along the marks, its 0 on the top one. Drag the handle until the bottom mark meets the same number on the ruler.", "将直尺竖贴在刻度线旁，0 刻度对齐最上方标记。拖动滑块，直到下方标记与尺上的同一数字对齐。")
+        put("Density", "屏幕密度")
+        put("Larger", "更大")
+        put("Use the system's value", "使用系统默认值")
+        put("This device", "此设备")
+        // Carrier
+        put("No SIM", "无 SIM 卡")
+        put("No Service", "无服务")
+        put("Calling out", "正在呼出")
+        put("Calling out (ringing)", "正在呼出（响铃中）")
+        put("Ringing", "来电响铃")
+        put("Connected", "已接通")
+        put("On hold", "通话保留")
+        put("No call", "无通话")
+        put("the modem is not in a state", "调制解调器当前状态不可用")
+        put("The device isn't on the network yet: iOS may still be starting, or Registered or SIM card is off", "设备尚未入网：iOS 可能仍在启动中，或者「已注册」/「SIM 卡」开关已关闭")
+        put("Call the device", "给设备拨打电话")
+        put("It rings from this number; answer it on the device.", "设备会收到此号码的来电；请在设备上接听。")
+        put("Caller", "主叫号码")
+        put("1 to 20 digits, optionally after a +", "1 至 20 位数字，前面可选加号 +")
+        put("Call", "呼叫")
+        put("Send a text to the device", "向设备发送短信")
+        put("From", "发件人")
+        put("Emoji can't be sent in a text this old", "这样老版本的短信无法发送表情符号")
+        put("Answer", "接听")
+        put("Send text…", "发送短信…")
+        put("Carrier settings…", "运营商设置…")
+        put("Carrier", "运营商")
+        put("This device has no cellular modem.", "此设备没有蜂窝调制解调器。")
+        put("Saved with this device and used every time it starts. Changes reach a running device at once; iOS can take a few seconds to update its status bar.", "会随此设备保存并在每次启动时使用。修改会立即发送到运行中的设备；iOS 状态栏可能需要几秒钟才会刷新。")
+        put("Session dock", "会话栏")
+        put("Show Carrier button", "显示运营商按钮")
+        put("On every iPhone: a dock button for calling the device, sending it texts and these settings", "在所有 iPhone 上显示：会话栏中的一个按钮，用于拨打设备电话、发短信及打开这些设置")
+        put("This session", "本次会话")
+        put("Start the device to see its calls and texts here.", "启动设备后，可在此查看它的通话与短信。")
+        put("The dock's Carrier button calls the device, sends it texts, answers and hangs up", "会话栏的运营商按钮可用于拨打设备、发短信、接听和挂断")
+        put("Turn on Show Carrier button to call and text the device from the dock", "打开「显示运营商按钮」后，即可从会话栏直接呼叫设备或发短信")
+        put("Texts the device sends appear here.", "设备发出的短信会显示在这里。")
+        put("Texts the device sent", "设备发出的短信")
+        put("Network", "网络")
+        put("Carrier name", "运营商名称")
+        put("Shown in the status bar. 1 to 32 characters, no quotes", "显示在状态栏中。1 至 32 个字符，不能含引号")
+        put("001 01 is the test network", "001 01 是测试网络")
+        put("Signal", "信号")
+        put("Registered", "已注册")
+        put("On the network. Off, iOS shows No Service", "已接入网络。关闭时 iOS 会显示「无服务」")
+        put("SIM card", "SIM 卡")
+        put("Location", "位置")
+        put("Where the iPhone's GPS says it is, in degrees", "iPhone 的 GPS 上报的位置，单位为度")
+        put("Latitude", "纬度")
+        put("Longitude", "经度")
+        put("Set", "设定")
+        put("Apple Park", "Apple Park（苹果园区）")
+        // Home / Devices / Setup / Prepare / Settings / Store / Transfer
+        put("More ways to add a device", "更多添加设备方式")
+        put("Import device", "导入设备")
+        put("Export", "导出")
+        put("Force stop", "强制停止")
+        put("Hide the controls", "隐藏控制栏")
+        put("Show the controls", "显示控制栏")
+        put("An app is being installed, so iOS can't shut down until that finishes. Force stop ends it now, like pulling the battery: the app being installed is lost, along with anything else iOS hadn't saved, and the next start checks the device's storage first.", "正在安装应用，安装完成前 iOS 无法正常关机。强制停止会立即终止运行，如同直接拔掉电池：正在安装的应用会丢失，iOS 尚未保存的其他数据也会丢失，下次启动时会先检查设备存储。")
+        put("Keep installing", "继续安装")
+        put("Keep waiting", "继续等待")
+        put("Fullscreen", "全屏")
+        put("From a minute to half an hour, with 1.5 to 10 GB free", "约 1 分钟至半小时，需要 1.5 至 10 GB 可用空间")
+        put("Import a device from another phone or computer", "从另一台手机或电脑导入设备")
+        put("20 to 40 minutes", "20 到 40 分钟")
+        put("Keep the phone plugged in.", "请保持手机连接电源。")
+        put("Prepare", "准备")
+        put("Moving a device from another phone or computer?", "要从另一台手机或电脑迁移设备？")
+        put("Import", "导入")
+        put("Downloads what it needs, then sets it up on this phone.", "下载所需文件，然后在这台手机上完成配置。")
+        put("Not Apple's file for this version; it may not work", "不是 Apple 为该版本提供的文件；可能无法工作")
+        put("downloaded for you", "为你自动下载")
+        put("Use anyway", "仍然使用")
+        put("Boot ROM", "Boot ROM")
+        put("64 KB · downloaded for you", "64 KB · 为你自动下载")
+        put("Adds Cydia and afc2", "添加 Cydia 和 afc2")
+        put("You can leave Un1box while it works.", "处理期间你可以离开 Un1box。")
+        put("Downloading, then preparing…", "正在下载，随后开始准备…")
+        put("Use my own file", "使用我自己的文件")
+        put("Save logs", "保存日志")
+        put("Export logs", "导出日志")
+        put("Collecting logs…", "正在收集日志…")
+        put("Device logs, engine logs and the last crash, as one zip file", "将设备日志、引擎日志和最近一次崩溃报告打包为一个 zip 文件")
+        put("Vibration", "振动")
+        put("Your phone vibrates when the device's own vibration motor runs", "当设备自身的振动马达启动时，本机也会随之振动")
+        put("Screenshot button", "截图按钮")
+        put("Show Screenshot in the session dock on the home screen", "在主屏幕的会话栏中显示截图按钮")
+        put("This phone's microphone becomes the device's input, for Voice Memos, Shazam and anything else that records; iOS asks inside the device the first time an app records. Android asks for the microphone permission when you turn this on", "把本机麦克风作为设备的输入，供语音备忘录、Shazam 等录音应用使用；应用首次录音时 iOS 会在设备内询问。打开此选项时 Android 会请求麦克风权限")
+        put("Connection", "移动连接")
+        put("Select an iPhone first", "请先选择一台 iPhone")
+        put("Network name, signal and SIM card", "网络名称、信号与 SIM 卡")
+        put(" · real size", " · 实际尺寸")
+        put("Removing…", "正在移除…")
+        put("Remove from device", "从设备中移除")
+        put("The app and its data are deleted from the device. You can install it again from the Legacy Store.", "该应用及其数据会从设备上删除。你可以随时从经典商店重新安装。")
+        put("The package is not downloaded.", "软件包尚未下载。")
+        put("App installs need iPhone OS 2 or later.", "安装应用需要 iPhone OS 2 或更高版本。")
+        put("Exporting", "正在导出")
+        put("Importing", "正在导入")
+        put("Finishing up", "即将完成")
+        // Firmware / Services / MainActivity / Exit diagnosis
+        put("Works on Un1box, but runs much slower than the other devices for now.", "可在 Un1box 上运行，但目前速度比其他设备慢得多。")
+        put("Needs iPhone OS 2.0 or later", "需要 iPhone OS 2.0 或更高版本")
+        put("Not on iPod touch 2G yet: it wouldn't start up again after its first restart", "暂不支持 iPod touch 2G：首次重启后无法再次开机")
+        put("Device setup", "设备配置")
+        put("Tap to see its progress.", "点按查看进度。")
+        put("Open Un1box to add it.", "打开 Un1box 即可添加。")
+        put("Couldn't prepare the device", "无法准备设备")
+        put("Open Un1box to see why.", "打开 Un1box 查看原因。")
+        put(", jailbroken", "，已越狱")
+        put(", with a boot ROM", "，含 boot ROM")
+        put(", used anyway (not the version's own IPSW)", "，仍强行使用（非该版本专用 IPSW）")
+        put(" (jailbreak)", "（越狱）")
+        put("Force stopped before iOS finished shutting down. The next start checks the device's storage first.", "在 iOS 完成关机前被强制停止。下次启动时会先检查设备存储。")
+        put("Vibration: this phone has no vibrator", "振动：这台手机没有振动马达")
+        put("Microphone open: the guest is recording", "麦克风已开启：客户机正在录音")
+        put("Microphone off", "麦克风已关闭")
+        put("Waiting for an iOS app to record", "等待 iOS 应用开始录音")
+        put("guest capturing", "客户机正在采集")
+        put("guest not capturing", "客户机未在采集")
+        put("no ring report", "无环形缓冲区报告")
+        put("Running device", "运行中的设备")
+        put("Paused while you're away. Tap to go back to it.", "离开期间已暂停。点按返回设备。")
+        put("Running. Tap to go back to it.", "正在运行。点按返回设备。")
+        put("That file is empty.", "该文件为空。")
+        put("That file isn't an IPSW.", "该文件不是 IPSW。")
+        put("Un1box can't read that file.", "Un1box 无法读取该文件。")
+        put("Checking what it is…", "正在识别文件…")
+        put("Couldn't save the logs: Un1box was closed while the save dialog was open. Try Export logs again.", "未能保存日志：保存对话框打开期间 Un1box 被关闭。请重试「导出日志」。")
+        put("the file couldn't be opened", "无法打开该文件")
+        put("Logs saved", "日志已保存")
+        put("Log export failed", "日志导出失败")
+        put("No active session", "当前没有活动会话")
+        put("The device worker isn't running; try again", "设备工作进程未在运行；请重试")
+        put("the device worker stopped", "设备工作进程已停止")
+        put("Export cancelled", "已取消导出")
+        put("Import cancelled", "已取消导入")
+        put("This phone's microphone feeds the device", "本机麦克风已接入设备")
+        put("The device gets no microphone input", "设备未接入麦克风输入")
+        put("exited by itself", "自行退出")
+        put("killed by a signal", "被信号终止")
+        put("native crash", "原生代码崩溃")
+        put("initialization failure", "初始化失败")
+        put("excessive resource usage", "资源占用过高")
+        put("stopped at the user's request", "用户请求停止")
+        put("force stopped by the user", "被用户强制停止")
+        put("a process it depends on died", "依赖的进程已终止")
+        put("Aborted", "已中止")
+        put("Rotate", "旋转")
     }
 
     /** The English match, then the Chinese replacement, with $1.. for its groups. */
     private val rules: List<Pair<Regex, String>> = listOf(
+        Regex("^The emulator stopped unexpectedly: (.+)\\nThe device's data is kept; press Start to run it again\\.\$") to "模拟器意外停止：\$1\n设备数据已保留，点「开始」可再次运行。",
+        Regex("^(.+) is larger than this screen at its real size, so it's fitted instead\\.\$") to "\$1 按实际尺寸会超过此屏幕，因此已改为缩放适配。",
+        Regex("^([0-9.]+) pixels per inch, measured\$") to "\$1 像素/英寸（已测量）",
+        Regex("^([0-9.]+) pixels per inch, as the system reports\$") to "\$1 像素/英寸（系统上报）",
+        Regex("^([0-9.]+) pixels/inch\$") to "\$1 像素/英寸",
+        Regex("^The system reports ([0-9.]+) pixels per inch\\.\$") to "系统上报为 \$1 像素/英寸。",
+        Regex("^Screen ([0-9.]+ × [0-9.]+) cm · (.+)\$") to "屏幕 \$1 厘米 · \$2",
+        Regex("^(\\d+) ppi\$") to "\$1 像素/英寸",
+        Regex("^(\\d+ × \\d+) rendered · tap to leave\$") to "渲染 \$1 · 点按离开",
+        Regex("^(.+) · tap to leave\$") to "\$1 · 点按离开",
+        Regex("^(\\d+ × \\d+) rendered · (.+)\$") to "渲染 \$1 · \$2",
+        Regex("^(\\d+ × \\d+) rendered\$") to "渲染 \$1",
+        Regex("^real size \\((.+)\\) · (.+)\$") to "实际尺寸（\$1）· \$2",
+        Regex("^real size \\((.+)\\)\$") to "实际尺寸（\$1）",
+        Regex("^(\\d+×) doesn't fit · (.+)\$") to "\$1 放不下 · \$2",
+        Regex("^(\\d+×) doesn't fit\$") to "\$1 放不下",
+        Regex("^1× here, cropped\$") to "此处为 1×，已裁剪",
+        Regex("^(\\d+×) here\$") to "此处为 \$1",
+        Regex("^uneven pixels · smaller here\$") to "像素不均 · 此处偏小",
+        Regex("^uneven pixels\$") to "像素不均",
+        Regex("^Smooth below 2× · smaller here\$") to "低于 2× 时使用平滑 · 此处偏小",
+        Regex("^Smooth below 2×\$") to "低于 2× 时使用平滑",
+        Regex("^(\\d+×) then smoothed · smaller here\$") to "先 \$1 再平滑 · 此处偏小",
+        Regex("^(\\d+×) then smoothed\$") to "先 \$1 再平滑",
+        Regex("^smaller here\$") to "此处偏小",
+        Regex("^Pixel perfect (.+) · (\\d+×) doesn't fit\$") to "像素完美 \$1 · \$2 放不下",
+        Regex("^Pixel perfect (.+)\$") to "像素完美 \$1",
+        Regex("^(.+) · real size, (.+) · cropped\$") to "\$1 · 实际尺寸，\$2 · 已裁剪",
+        Regex("^(.+) · real size, (.+)\$") to "\$1 · 实际尺寸，\$2",
+        Regex("^(.+) · real size\$") to "\$1 · 实际尺寸",
+        Regex("^(.+) · (\\d+×)\$") to "\$1 · \$2",
+        Regex("^(.+) scaling (.+)\$") to "\$1缩放 \$2",
+        Regex("^(.+) scaling\$") to "\$1缩放",
+        Regex("^(.+) pixels\$") to "\$1 像素",
+        Regex("^(.+) has no cellular modem\$") to "\$1 没有蜂窝调制解调器",
+        Regex("^Carrier: (.+)\$") to "运营商：\$1",
+        Regex("^To (.+)\$") to "发送至 \$1",
+        Regex("^Remove (.+)\\?\$") to "移除 \$1？",
+        Regex("^Couldn't remove it: (.+)\$") to "无法移除：\$1",
+        Regex("^Import ended: (.+)\$") to "导入结束：\$1",
+        Regex("^Couldn't import the device: (.+)\$") to "无法导入设备：\$1",
+        Regex("^Preparation of (.+) cancelled\$") to "已取消准备 \$1",
+        Regex("^Preparation of (.+) failed: (.+)\$") to "准备 \$1 失败：\$2",
+        Regex("^Preparation of (.+) started\$") to "已开始准备 \$1",
+        Regex("^Un1box couldn't prepare this IPSW, so it may not support it\\. \\((.+)\\)\$") to "Un1box 无法准备此 IPSW，可能尚未支持该版本。（\$1）",
+        Regex("^Vibration: the guest's motor started \\(buzz (.+), motor pulses (.+)\\)\$") to "振动：客户机马达已启动（振动 \$1 次，脉冲 \$2 次）",
+        Regex("^Microphone closed: (.+) frames pushed, (.+) dropped, guest port at (.+) Hz\$") to "麦克风已关闭：已推送 \$1 帧，丢弃 \$2 帧，客户机采样率 \$3 Hz",
+        Regex("^phone recorder running · ([^·]+) · (.+)\$") to "手机录音运行中 · \$1 · \$2",
+        Regex("^phone recorder running · (.+)\$") to "手机录音运行中 · \$1",
+        Regex("^Android says: (.+) \\(status (.+)\\)(.+)\$") to "Android 返回：\$1（状态 \$2）\$3",
+        Regex("^Android says: (.+)\$") to "Android 返回：\$1",
+        Regex("^signal (.+)\$") to "信号 \$1",
         Regex("^Preparing runs on this phone, takes (.+) and needs about (.+) free\\. Un1box's guest tools are added for you\\.\$") to "准备过程在本机进行，耗时 \$1，需要约 \$2 可用空间。Un1box 会自动加入客户机工具。",
         Regex("^The app needs (.+), which (.+) doesn't have\\. It was built for a newer iOS than (.+)\\.\$") to "应用需要 \$1，但 \$2 中没有它。该应用是为比 \$3 更新的 iOS 构建的。",
         Regex("^The app crashed inside (.+), part of iOS\\. The emulation is the likely cause, not the app\\.\$") to "应用崩溃于 \$1（iOS 的组成部分）。最可能的原因是模拟本身，而不是应用。",

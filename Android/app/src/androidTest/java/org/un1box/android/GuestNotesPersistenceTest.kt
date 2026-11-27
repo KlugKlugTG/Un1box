@@ -77,7 +77,6 @@ class GuestNotesPersistenceTest {
             assertTrue(context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
             assertNotEquals(Process.myPid(), pid)
             assertEquals(expectedApk, acceptanceSha256(File(context.applicationInfo.sourceDir)))
-            val stateDir = File(context.filesDir, "library/records/$record/state").canonicalFile
             val lock = File(context.filesDir, "library/records/$record/base/device.lock.json")
             fun processIdentity() {
                 assertEquals(boot, File("/proc/sys/kernel/random/boot_id").readText().trim())
@@ -103,7 +102,8 @@ class GuestNotesPersistenceTest {
                 assertEquals(pid, s.getInt("pid")); assertEquals(Process.myUid(), s.getInt("uid"))
                 assertTrue("Consumed session required", s.getBoolean("sessionStarted")); assertEquals("running", s.getString("state"))
                 assertEquals("Existing worker error", "", s.getString("error"))
-                assertEquals("Actual consumed state route", File(stateDir, "engine-$pid.log").canonicalPath, File(requireNotNull(s.getString("engineLog"))).canonicalPath)
+                assertTrue("Actual consumed engine log (docs/LOGS.md)", File(requireNotNull(s.getString("engineLog"))).canonicalPath in
+                    listOf("engine.log", "engine.tail.log").map { File(context.filesDir, "logs/$it").canonicalPath })
                 val selected = worker.records().filter { it.getBoolean("selected") }
                 assertEquals("Exactly one selected record", 1, selected.size)
                 assertEquals(record, selected.single().getString("id"))

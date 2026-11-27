@@ -7,6 +7,8 @@
 #include "GuestPackageJudge.hpp"
 #include "FrameStorage.hpp"
 #include "Base64.hpp"
+#include "Carrier.hpp"
+#include "Os.hpp"
 #include "qemu-ios-ui.h"
 #include "qemu-macos-extras.h"
 #include <atomic>
@@ -138,9 +140,17 @@ struct Engine {
     decltype(&qemu_ios_ui_attach) attach = nullptr;
     // Optional: engines before the guest-package hypercalls lack it.
     decltype(&qemu_ios_guest_package_report) package_report = nullptr;
-    // Optional together: the engine that has one of the fake drives has both.
-    decltype(&qemu_ios_ui_battery_set) battery_set = nullptr;
-    decltype(&qemu_ios_ui_modem_write) modem_write = nullptr;
+    // Optional: engines before the storage counters lack it.
+    decltype(&qemu_ios_storage_stats) storage_stats = nullptr;
+    // Optional: the cellular modem (engines before it lack all three).
+    decltype(&qemu_ios_ui_modem_set) modem_set = nullptr;
+    decltype(&qemu_ios_ui_modem_status) modem_status = nullptr;
+    decltype(&qemu_ios_ui_modem_free) modem_free = nullptr;
+    // Optional: the vibration motor (engines before API 2.2 lack it).
+    decltype(&qemu_ios_ui_vibrator) vibrator = nullptr;
+    void (*storage_sync_hold)(bool) = nullptr;  // qemu_ios_storage_sync_hold; typed here so older headers build
+    // Optional: the battery level/charging control.
+    decltype(&qemu_ios_ui_battery) battery_set = nullptr;
     template <class F> F symbol(const char *n) {
         auto p = dlsym(library, n);
         require(p, std::string("engine symbol missing: ") + n, LT_UNSUPPORTED);
@@ -207,8 +217,17 @@ struct Engine {
             camera_state = reinterpret_cast<decltype(camera_state)>(dlsym(library, "qemu_ios_camera_state"));
             package_report =
                 reinterpret_cast<decltype(package_report)>(dlsym(library, "qemu_ios_guest_package_report"));
-            battery_set = reinterpret_cast<decltype(battery_set)>(dlsym(library, "qemu_ios_ui_battery_set"));
-            modem_write = reinterpret_cast<decltype(modem_write)>(dlsym(library, "qemu_ios_ui_modem_write"));
+            storage_stats =
+                reinterpret_cast<decltype(storage_stats)>(dlsym(library, "qemu_ios_storage_stats"));
+            modem_set = reinterpret_cast<decltype(modem_set)>(dlsym(library, "qemu_ios_ui_modem_set"));
+            modem_status = reinterpret_cast<decltype(modem_status)>(dlsym(library, "qemu_ios_ui_modem_status"));
+            modem_free = reinterpret_cast<decltype(modem_free)>(dlsym(library, "qemu_ios_ui_modem_free"));
+            if (!modem_set || !modem_status || !modem_free)
+                modem_set = nullptr, modem_status = nullptr, modem_free = nullptr;
+            vibrator = reinterpret_cast<decltype(vibrator)>(dlsym(library, "qemu_ios_ui_vibrator"));
+            storage_sync_hold =
+                reinterpret_cast<decltype(storage_sync_hold)>(dlsym(library, "qemu_ios_storage_sync_hold"));
+            battery_set = reinterpret_cast<decltype(battery_set)>(dlsym(library, "qemu_ios_ui_battery"));
         } catch (...) {
             dlclose(library);
             library = nullptr;
@@ -317,6 +336,17 @@ struct lt_runtime {
     lt::PcmEpochQueue<lt::PcmPacket> pcm;
     lt::VmPauseControl vm_pause;
     bool audio_enabled = false;
+    // The modem (Carrier.hpp): the settings it was last given (at boot, then by reload_carrier), whether a reload
+    // waits for the engine, and its writes so far against those the status snapshot reflects (stale errors).
+    bool has_modem = false;
+    std::mutex carrier_mutex;
+    lt::carrier::Settings carrier_applied;
+    bool carrier_pending = false;
+    uint64_t modem_writes = 0, modem_reflected = 0, modem_asked = 0;
+    // The engine keeps one refresh queued at most, so a snapshot taken before a write can still come back after the
+    // next call: one identical to the last snapshot before the write counts as not reflecting it, for a while.
+    std::string modem_last_raw, modem_before_write;
+    uint64_t modem_write_ns = 0;
     std::string fault;
     explicit lt_runtime(lt_device *d) : device(d) {}
     ~lt_runtime() {
@@ -372,7 +402,16 @@ struct lt_runtime {
     }
     void publish() {
         bool quit_sent = false;
+        static_assert(lt::GuestShutdownAdmission::boot_budget_ns == uint64_t(LT_SHUTDOWN_AGENT_WAIT_MS) * 1000000);
         lt::GuestShutdownAdmission shutdown_admission;
+        // A device whose agent answered on an earlier boot gets one on this boot too: a Stop before it answers waits
+        // for it (GuestShutdownAdmission::boot_budget_ns) rather than pressing Power on a booting guest.
+        try {
+            if (lt::guest_agent_expected(device))
+                shutdown_admission.expect_agent();
+        } catch (const std::exception &e) {
+            fprintf(stderr, "lighttouch: could not read the guest package verdicts: %s\n", e.what());
+        }
         lt::GuestPackageJudge package_judge;
         int16_t pcm_scratch[8192];
         while (!done) {
@@ -588,6 +627,52 @@ struct lt_runtime {
         publisher_running = false;
     }
 };
+namespace lt {
+// Writes the properties of the record's saved carrier settings that differ from what the modem was last given. The
+// caller holds carrier_mutex. Before the engine is ready nothing can be written: it waits for the next poll.
+static void apply_carrier(lt_runtime *r) {
+    if (!r->engine->ready()) {
+        r->carrier_pending = true;
+        return;
+    }
+    require(r->engine->modem_set, "engine has no cellular modem hooks", LT_UNSUPPORTED);
+    const auto target = carrier::load(r->device->carrier);
+    const auto now = carrier::properties(r->carrier_applied);
+    const auto want = carrier::properties(target);
+    for (size_t i = 0; i < want.size(); i++) {
+        if (want[i].second == now[i].second)
+            continue;
+        require(r->engine->modem_set(want[i].first.c_str(), want[i].second.c_str()),
+                "the modem did not take " + want[i].first, LT_ENGINE);
+        r->modem_writes++;
+        r->modem_before_write = r->modem_last_raw;
+        r->modem_write_ns = now_ns();
+    }
+    r->carrier_applied = target;
+    r->carrier_pending = false;
+}
+// The modem's gps-fix rules (ios_baseband_gps.c ios_bb_gps_set): "" or lat,lon[,alt[,speed[,course[,accuracy]]]].
+static bool gps_fix_ok(const std::string &spec) {
+    if (spec.empty())
+        return true;
+    double v[6] = {0, 0, 0, 0, -1, 5};
+    int n = 0;
+    const char *p = spec.c_str();
+    for (;;) {
+        char *end = nullptr;
+        if (n == 6)
+            return false;
+        v[n++] = std::strtod(p, &end);
+        if (end == p || !std::isfinite(v[n - 1]) || (*end && *end != ','))
+            return false;
+        if (!*end)
+            break;
+        p = end + 1;
+    }
+    return n >= 2 && std::fabs(v[0]) <= 90 && std::fabs(v[1]) <= 180 && std::fabs(v[2]) <= 100000 && v[3] >= 0 &&
+           v[3] <= 1000 && v[4] < 360 && v[5] > 0 && v[5] <= 100000;
+}
+} // namespace lt
 extern "C" {
 lt_status lt_engine_board(const char *library, const char *board, lt_board_info *out, lt_error *e) {
     return lt::guard(e, [&] {
@@ -645,6 +730,9 @@ lt_status lt_runtime_create(const lt_runtime_config *c, lt_runtime **out, lt_err
         runtime->engine = std::make_unique<lt::Engine>(c->engine_library);
         auto facts = runtime->engine->find_board(c->device->lock.at("board").string());
         runtime->guest_capabilities = facts.capabilities;
+        runtime->has_modem = lt::carrier::board_has_modem(c->device->lock.at("board").string());
+        if (runtime->has_modem)
+            runtime->carrier_applied = lt::carrier::load(c->device->carrier);  // what the boot arguments say
         lt_boot_config boot = c->boot;
         if (boot.machine)
             lt::require(std::string(boot.machine) == facts.machine, "machine does not match prepared base");
@@ -808,6 +896,18 @@ lt_status lt_runtime_poll(lt_runtime *r, lt_runtime_status *out, lt_error *e) {
         out->dirty = r->device->dirty;
         out->engine_exit = r->exit_code;
         out->frames = r->frame_count;
+        if (out->state == LT_RUNNING || out->state == LT_PAUSED) {
+            std::lock_guard<std::mutex> carrier(r->carrier_mutex);
+            // A saved change that waited for the engine. Its failure is the modem's to report, not the session's:
+            // the status poll goes on, and the next save tries again.
+            if (r->carrier_pending) {
+                try {
+                    lt::apply_carrier(r);
+                } catch (const std::exception &) {
+                    r->carrier_pending = false;
+                }
+            }
+        }
         std::lock_guard<std::mutex> lock(r->mutex);
         if (!r->fault.empty())
             throw lt::Failure(LT_ENGINE, r->fault);
@@ -903,6 +1003,17 @@ lt_status lt_runtime_io_statistics(lt_runtime *r, lt_runtime_io_stats *out, lt_e
                 r->input_id,
                 uint32_t(r->pcm.packets.size()),
                 0};
+    });
+}
+lt_status lt_runtime_storage_statistics(lt_runtime *r, lt_runtime_storage_stats *out, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::require(r, "null runtime");
+        lt::abi(out);
+        lt::require(r->engine->storage_stats, "engine has no storage counters", LT_UNSUPPORTED);
+        QemuIosStorageStats s{};
+        r->engine->storage_stats(&s);
+        *out = {sizeof(*out), 1, s.read_ops, s.read_bytes, s.read_ns, s.write_ops, s.write_bytes, s.write_ns,
+                s.erase_ops, s.erase_ns};
     });
 }
 lt_status lt_runtime_destroy(lt_runtime *r, lt_error *e) {
@@ -1081,15 +1192,90 @@ lt_status lt_runtime_battery(lt_runtime *r, uint32_t level, uint32_t charging, l
                     "this machine has no battery", LT_UNSUPPORTED);
     });
 }
-
-lt_status lt_runtime_modem(lt_runtime *r, const char *property, const char *value, lt_error *e) {
+lt_status lt_runtime_vibrator(lt_runtime *r, lt_vibrator_info *out, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::require(r, "null runtime");
+        lt::abi(out);
+        lt::require(r->engine->vibrator, "engine has no vibration motor", LT_UNSUPPORTED);
+        uint64_t pulses = 0;
+        const bool on = r->engine->vibrator(&pulses);
+        *out = {sizeof(*out), 1, on ? 1u : 0u, 0, pulses};
+    });
+}
+lt_status lt_runtime_hold_storage_sync(lt_runtime *r, int hold, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::require(r, "null runtime");
+        if (r->engine->storage_sync_hold) {  // engines before it sync every 2 s regardless
+            r->engine->storage_sync_hold(hold != 0);
+        }
+    });
+}
+lt_status lt_runtime_reload_carrier(lt_runtime *r, lt_error *e) {
     return lt::guard(e, [&] {
         lt::require(r && r->started && !r->done && !r->stopping, "runtime not active", LT_AGAIN);
-        lt::require(r->engine->modem_write, "this engine has no modem drive", LT_UNSUPPORTED);
-        lt::require(property && *property && strlen(property) < 64, "modem property name", LT_INVALID);
-        lt::require(value && strlen(value) < 256, "modem property value", LT_INVALID);
-        lt::require(r->engine->modem_write(property, value),
-                    "this machine has no modem, or no such property", LT_UNSUPPORTED);
+        lt::require(r->has_modem, "this device has no cellular modem", LT_UNSUPPORTED);
+        std::lock_guard<std::mutex> lock(r->carrier_mutex);
+        lt::apply_carrier(r);
+    });
+}
+lt_status lt_runtime_modem(lt_runtime *r, const char *action, const char *value, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::require(r && r->started && !r->done && !r->stopping, "runtime not active", LT_AGAIN);
+        lt::require(r->has_modem && r->engine->modem_set, "this device has no cellular modem", LT_UNSUPPORTED);
+        lt::require(action && value, "modem action missing");
+        const std::string name = action, v = value;
+        if (name == "incoming-call")
+            lt::require(lt::carrier::number_ok(v), "A caller is 1 to 20 digits, optionally after a +");
+        else if (name == "incoming-sms") {
+            const auto bar = v.find('|');
+            lt::require(bar != std::string::npos && lt::carrier::number_ok(v.substr(0, bar)),
+                        "A sender is 1 to 20 digits, optionally after a +");
+            lt::require(lt::carrier::sms_text_ok(v.substr(bar + 1)),
+                        "A text is 1 to 160 characters (70 with characters outside the SMS alphabet)");
+        } else if (name == "gps-fix")
+            lt::require(lt::gps_fix_ok(v), "not a GPS fix: lat,lon[,alt[,speed[,course[,accuracy]]]]");
+        else
+            lt::require(name == "remote-answer" || name == "remote-hangup", "unknown modem action " + name);
+        std::lock_guard<std::mutex> lock(r->carrier_mutex);
+        lt::require(r->engine->ready(), "the device is still starting", LT_AGAIN);
+        lt::require(r->engine->modem_set(name.c_str(), name == "remote-answer" || name == "remote-hangup" ? "1" : v.c_str()),
+                    "the modem is not available", LT_AGAIN);
+        r->modem_writes++;
+        r->modem_before_write = r->modem_last_raw;
+        r->modem_write_ns = lt::now_ns();
+    });
+}
+lt_status lt_runtime_modem_status(lt_runtime *r, char *out, uint32_t capacity, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::require(r && out && capacity, "null modem status output");
+        *out = 0;
+        lt::require(r->started && !r->done, "runtime not active", LT_AGAIN);
+        lt::require(r->has_modem && r->engine->modem_status, "this device has no cellular modem", LT_UNSUPPORTED);
+        lt::require(r->engine->ready(), "the device is still starting", LT_AGAIN);
+        std::lock_guard<std::mutex> lock(r->carrier_mutex);
+        char *raw = r->engine->modem_status();
+        // This call returns the snapshot the previous one asked for and asks for the next: the writes it reflects
+        // are those made before the previous call.
+        r->modem_reflected = r->modem_asked;
+        r->modem_asked = r->modem_writes;
+        lt::require(raw, "no modem state yet", LT_AGAIN);
+        std::string json(raw);
+        r->engine->modem_free(raw);
+        r->modem_last_raw = json;
+        const bool unchanged = json == r->modem_before_write && lt::now_ns() - r->modem_write_ns < 2000000000ull;
+        lt::Json status = lt::parse(json);
+        lt::require(status.kind == lt::Json::Object, "invalid modem status");
+        if (r->modem_reflected < r->modem_writes || unchanged) {
+            // Its error, if any, is an older write's.
+            status.object.erase("error");
+            lt::Json pending;
+            pending.kind = lt::Json::Boolean;
+            pending.text = "true";
+            status.object["pending"] = pending;
+        }
+        json = lt::dump(status);
+        lt::require(json.size() < capacity, "modem status exceeds buffer");
+        memcpy(out, json.c_str(), json.size() + 1);
     });
 }
 
@@ -1287,6 +1473,13 @@ lt_status lt_runtime_guest_request(lt_runtime *r, const lt_guest_request *c, uin
         case LT_GUEST_LAUNCH_BUILTIN:
             lt::require(argument.rfind("com.apple.", 0) == 0, "only builtin app IDs allowed");
             op = "launch";
+            break;
+        case LT_GUEST_LAUNCH_APP:
+            op = "launch";
+            break;
+        case LT_GUEST_LOCK_STATUS:
+            op = "lockstatus";
+            lt::require(argument.empty(), "lockstatus takes no argument");
             break;
         case LT_GUEST_LAUNCH_GYRO_PROBE:
             lt::require(r->guest_capabilities & QEMU_IOS_CAP_GYRO,

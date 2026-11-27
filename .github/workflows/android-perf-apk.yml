@@ -5,9 +5,12 @@ name: Android perf APK
 # without a development machine.
 #
 # What is rebuilt: the Kotlin/Compose app, the JNI/native frontend
-# (libun1box_jni.so) and the engine (libqemu-arm.so) from the requested
-# engine ref. The defaults pin the last perf revision compatible with this
-# patch stack; advancing perf requires rebasing the stack and the guest packages.
+# (libun1box_jni.so), the Rust preparation worker (firmwarekit, with activation
+# and iBoot32Patcher compiled in-process), the USB/app-service helpers
+# (libusbmuxd_qemu.so, liblt_appservice.so), jb-bunzip2, and the engine
+# (libqemu-arm.so) from the requested engine ref. The defaults pin the engine
+# revision compatible with this patch stack; advancing it requires rebasing
+# the stack and the guest packages.
 #
 # The `variant` input picks what is assembled: `release` (the default) is the
 # shipped shape -- minified, no debug-env/QMP channels -- and `debug` keeps the
@@ -15,10 +18,12 @@ name: Android perf APK
 # ANGLE provider when `angle_arm64` is on, and both default to the platform GLES
 # driver: the bundled ANGLE is selectable, not selected.
 #
-# What is reused: firmwarekit (device preparation), its one-shot booter, the
-# USB bridge and it_seal are extracted from a published release APK. The two
-# guest itpacks are then replaced with a matching serial-49 artifact from the
-# guest-package workflow, so the host-side engine fix ships with its guest side.
+# Guest packages & guest tools: downloaded from the matching serial-49
+# guest-package workflow run (`Un1box-guest-packages-49`, which includes the full
+# exported guest-tools tree and armv6/armv7 itpacks). Only if an older
+# `guest_package_run_id` lacking `guest-tools/` is requested does the build fall
+# back to extracting `assets/guest-tools/` from a base release APK before
+# overlaying the serial-49 itpacks.
 #
 # The APK is signed with a keystore generated on the first run and reused after
 # that, so successive runs of this workflow update each other in place. It is
@@ -57,15 +62,15 @@ on:
       engine_ref:
         description: Engine branch, tag or commit to build
         required: true
-        default: e6ab90f02c7fa4d4a81696da7d1204be5c259bac
+        default: 1955aea6930119c34b968c0596dc3cd72d67e839
       base_release_repository:
-        description: Release whose APK supplies firmwarekit, USB bridge and guest tools
+        description: Fallback release if guest-package lacks the full guest-tools set
         required: true
         default: blake-lucas/LightTouch
       base_release_tag:
-        description: Release tag for those inputs (e.g. v0.0.10, or "latest")
+        description: Fallback release tag (e.g. v0.0.15, or "latest")
         required: false
-        default: v0.0.10
+        default: v0.0.15
       guest_package_run_id:
         description: Successful guest-package workflow run to use (blank searches all branches for the latest compatible artifact)
         required: false
@@ -119,14 +124,14 @@ on:
           - "false"
         default: "true"
       jailbreak:
-        description: Build the jailbreak APK (--jailbreak on every preparation, jb-tar shipped)
+        description: Build the jailbreak APK (--jailbreak on every preparation, libjbBz2.so shipped)
         type: choice
         options:
           - "false"
           - "true"
         default: "false"
   # The jailbreak build's entry point (jailbreak-apk.yml): the same build, with preparation passing
-  # --jailbreak and jb-tar shipped for it. Only the inputs that workflow sets are declared here; the rest
+  # --jailbreak and libjbBz2.so shipped for it. Only the inputs that workflow sets are declared here; the rest
   # keep the workflow_dispatch defaults above.
   workflow_call:
     inputs:
@@ -135,13 +140,13 @@ on:
         default: KlugKlugTG/qemu-ios
       engine_ref:
         type: string
-        default: e6ab90f02c7fa4d4a81696da7d1204be5c259bac
+        default: 1955aea6930119c34b968c0596dc3cd72d67e839
       base_release_repository:
         type: string
         default: blake-lucas/LightTouch
       base_release_tag:
         type: string
-        default: v0.0.10
+        default: v0.0.15
       variant:
         type: string
         default: release
@@ -158,7 +163,7 @@ on:
         type: string
         default: "true"
       jailbreak:
-        description: Build the jailbreak APK (--jailbreak on every preparation, jb-tar shipped)
+        description: Build the jailbreak APK (--jailbreak on every preparation, libjbBz2.so shipped)
         type: string
         default: "false"
 
@@ -195,13 +200,15 @@ jobs:
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_NDK_VERSION: 28.2.13676358
+      RUST_VERSION: "1.99.1"
+      LT_MAVEN_MIRROR: https://maven-central.storage-download.googleapis.com/maven2/
       # A pull request run has no inputs: these are the workflow_dispatch defaults. They live here, not inside
       # the steps, so no ${{ }} can end up inside a shell expansion (a missing brace there swallows the script).
       LT_JOBS: ${{ inputs.jobs || '4' }}
       ENGINE_REPO: ${{ inputs.engine_repository || 'KlugKlugTG/qemu-ios' }}
-      ENGINE_REF: ${{ inputs.engine_ref || 'e6ab90f02c7fa4d4a81696da7d1204be5c259bac' }}
+      ENGINE_REF: ${{ inputs.engine_ref || '1955aea6930119c34b968c0596dc3cd72d67e839' }}
       DECLARED_BASE_RELEASE_REPO: ${{ inputs.base_release_repository || 'blake-lucas/LightTouch' }}
-      DECLARED_BASE_RELEASE_TAG: ${{ inputs.base_release_tag || 'v0.0.10' }}
+      DECLARED_BASE_RELEASE_TAG: ${{ inputs.base_release_tag || 'v0.0.15' }}
       DECLARED_DEBUGGABLE: ${{ inputs.debuggable || 'true' }}
       DECLARED_VARIANT: ${{ inputs.variant || 'release' }}
       DECLARED_ANGLE_ARM64: ${{ inputs.angle_arm64 || 'true' }}
@@ -209,8 +216,8 @@ jobs:
       ANGLE_BUNDLE_SHA256: ${{ inputs.angle_bundle_sha256 || 'c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1' }}
       DECLARED_DEPENDENCY_VERIFICATION: ${{ inputs.dependency_verification || 'strict' }}
       # The jailbreak build, when this run is the one jailbreak-apk.yml calls. Everything it changes is
-      # gated on this: the Gradle property that carries --jailbreak and stages jb-tar, the names below, and
-      # the release tag. A normal run has "false" and is byte-for-byte the build it was before.
+      # gated on this: the Gradle property that carries --jailbreak and stages libjbBz2.so, the names below,
+      # and the release tag. A normal run has "false".
       DECLARED_JAILBREAK: ${{ inputs.jailbreak || 'false' }}
       MESON: ${{ github.workspace }}/meson/bin/meson
 
@@ -235,7 +242,133 @@ jobs:
           echo "sha=$(git -C qemu-ios rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "APK is named ci/Un1box-<engine>-arm64-$DECLARED_VARIANT.apk"
 
-      - name: Extract firmwarekit, USB bridge and guest tools from the published APK
+      - name: Overlay guest packages serial 49
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ inputs.guest_package_run_id || '' }}
+        run: |
+          set -euo pipefail
+          WORKFLOW=guest-package.yml
+          CURRENT_PATCHES="$(for patch in ci/engine-patches/*.patch; do printf '%s %s\n' "${patch##*/}" "$(git hash-object "$patch")"; done | sort)"
+          # Retention is storage policy, not a package-build input. Ignore those YAML lines so the
+          # already-built package stays reusable when we extend its retention period.
+          CURRENT_WORKFLOW_SHA="$(python3 - <<'PYHASH'
+          import hashlib, pathlib, re
+          text = pathlib.Path('.github/workflows/guest-package.yml').read_text()
+          text = re.sub(r'(?m)^[ \t]*retention-days:[ \t]*[0-9]+[ \t]*\r?$', '', text)
+          print(hashlib.sha256(text.encode()).hexdigest())
+          PYHASH
+          )"
+          SELECTED_RUN=""
+          PACKAGE_DIR="$RUNNER_TEMP/guest-packages-49"
+
+          workflow_matches_source() {
+            local run_id="$1" package_sha package_patches package_workflow
+            package_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.head_sha')" || return 1
+            package_patches="$(gh api "repos/$GITHUB_REPOSITORY/contents/ci/engine-patches?ref=$package_sha" --jq '.[] | select(.type == "file" and (.name | endswith(".patch"))) | [.name, .sha] | join(" ")' | sort)" || return 1
+            [ "$package_patches" = "$CURRENT_PATCHES" ] || return 1
+            package_workflow="$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/guest-package.yml?ref=$package_sha" --jq '.content' | base64 --decode | python3 -c 'import hashlib,re,sys; text=sys.stdin.read(); text=re.sub(r"(?m)^[ \t]*retention-days:[ \t]*[0-9]+[ \t]*\r?$", "", text); print(hashlib.sha256(text.encode()).hexdigest())')" || return 1
+            [ "$package_workflow" = "$CURRENT_WORKFLOW_SHA" ]
+          }
+
+          for attempt in $(seq 1 30); do
+            if [ -n "$REQUESTED_RUN_ID" ]; then
+              CANDIDATES="$REQUESTED_RUN_ID"
+            else
+              # Search every branch. The guest package is reusable when its patch and build recipe
+              # match; requiring the APK PR's branch misses valid artifacts from an earlier PR.
+              CANDIDATES="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW/runs?per_page=100" \
+                --jq '.workflow_runs[] | select(.conclusion == "success") | .id')"
+            fi
+
+            while IFS= read -r RUN_ID; do
+              [ -n "$RUN_ID" ] || continue
+              HAS_ARTIFACT="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+                --jq '[.artifacts[] | select(.name == "Un1box-guest-packages-49" and .expired == false)] | length')"
+              [ "$HAS_ARTIFACT" -gt 0 ] || continue
+              if workflow_matches_source "$RUN_ID"; then
+                rm -rf "$PACKAGE_DIR"
+                mkdir -p "$PACKAGE_DIR"
+                if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+                    --name Un1box-guest-packages-49 --dir "$PACKAGE_DIR" &&
+                   [ -f "$PACKAGE_DIR/ENGINE_REVISION" ] &&
+                   [ "$(cat "$PACKAGE_DIR/ENGINE_REVISION")" = "$(git -C qemu-ios rev-parse HEAD)" ]; then
+                  SELECTED_RUN="$RUN_ID"
+                  break
+                fi
+              fi
+              echo "Skipping guest-package run $RUN_ID: its engine revision, patch or package build recipe differs."
+            done <<< "$CANDIDATES"
+            [ -n "$SELECTED_RUN" ] && break
+
+            if [ -n "$REQUESTED_RUN_ID" ]; then
+              PACKAGE_STATUS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REQUESTED_RUN_ID" --jq '.status')"
+              [ "$PACKAGE_STATUS" != completed ] || break
+              if ! workflow_matches_source "$REQUESTED_RUN_ID"; then
+                echo '::error::The requested guest-package run has a different patch or build recipe.'
+                exit 1
+              fi
+            else
+              # Wait only for a pending package build with the same inputs, not unrelated runs.
+              PENDING_RUNS="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW/runs?per_page=100" \
+                --jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | .[].id')"
+              MATCHING_PENDING=0
+              while IFS= read -r RUN_ID; do
+                [ -n "$RUN_ID" ] || continue
+                if workflow_matches_source "$RUN_ID"; then
+                  MATCHING_PENDING=1
+                  break
+                fi
+              done <<< "$PENDING_RUNS"
+              [ "$MATCHING_PENDING" -gt 0 ] || break
+            fi
+            echo "Waiting for a matching serial-49 guest-package artifact ($attempt/30)..."
+            sleep 20
+          done
+
+          [ -n "$SELECTED_RUN" ] || {
+            echo '::error::No unexpired serial-49 guest-package artifact with matching source was found across branches. Build/approve the guest-package workflow or provide guest_package_run_id.'
+            exit 1
+          }
+          test -s "$PACKAGE_DIR/armv6.itpack"
+          test -s "$PACKAGE_DIR/armv7.itpack"
+          python3 - "$PACKAGE_DIR" <<'PY'
+          import hashlib, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          expected = {}
+          for line in (root / 'SHA256SUMS').read_text().splitlines():
+              fields = line.split(None, 1)
+              if len(fields) != 2:
+                  raise SystemExit(f'invalid SHA256SUMS entry: {line!r}')
+              name = pathlib.Path(fields[1].strip().lstrip('*')).name
+              if name in expected:
+                  raise SystemExit(f'duplicate checksum for {name}')
+              expected[name] = fields[0].lower()
+          for name in ('armv6.itpack', 'armv7.itpack'):
+              path = root / name
+              if not path.is_file():
+                  raise SystemExit(f'missing guest package: {path}')
+              actual = hashlib.sha256(path.read_bytes()).hexdigest()
+              if expected.get(name) != actual:
+                  raise SystemExit(f'{name}: checksum mismatch (manifest={expected.get(name)}, actual={actual})')
+              print(f'{name}: SHA-256 verified')
+          PY
+          mkdir -p ci/guest-tools
+          if [ -d "$PACKAGE_DIR/guest-tools" ] && [ -s "$PACKAGE_DIR/guest-tools/it_seal" ] && \
+             [ -s "$PACKAGE_DIR/guest-tools/it_initialize" ]; then
+            cp -a "$PACKAGE_DIR/guest-tools/." ci/guest-tools/
+            echo "GUEST_TOOLS_READY=true" >> "$GITHUB_ENV"
+            echo "Loaded full guest-tools set from guest-package run $SELECTED_RUN."
+          else
+            echo "GUEST_TOOLS_READY=false" >> "$GITHUB_ENV"
+          fi
+          install -m 0644 "$PACKAGE_DIR/armv6.itpack" ci/guest-tools/armv6.itpack
+          install -m 0644 "$PACKAGE_DIR/armv7.itpack" ci/guest-tools/armv7.itpack
+          echo "GUEST_PACKAGE_RUN_ID=$SELECTED_RUN" >> "$GITHUB_ENV"
+          echo "Overlaid serial-49 armv6/armv7 itpacks from workflow run $SELECTED_RUN."
+
+      - name: Fallback guest tools from published APK (if needed)
+        if: env.GUEST_TOOLS_READY != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_RELEASE_REPO: ${{ env.DECLARED_BASE_RELEASE_REPO }}
@@ -344,7 +477,7 @@ jobs:
           base_dir = ci / 'base'
           base_dir.mkdir(parents=True, exist_ok=True)
           apk = base_dir / asset_name
-          print(f'Downloading {asset_name} from {resolved_repo}@{resolved_tag} ...')
+          print(f'Downloading {asset_name} from {resolved_repo}@{resolved_tag} for guest-tools fallback ...')
 
           dl = subprocess.run([
               'gh', 'release', 'download', resolved_tag,
@@ -359,181 +492,31 @@ jobs:
                   check=True,
               )
 
-          wanted_keys = (
-              'assets/guest-tools/armv6.itpack', 'assets/guest-tools/armv7.itpack',
-              'assets/guest-tools/it_seal', 'assets/licenses/firmwarekit/manifest.json',
-              'lib/arm64-v8a/libfirmwarekit.so', 'lib/arm64-v8a/liblighttouch_oneshot.so',
-              'lib/arm64-v8a/libusbmuxd_qemu.so', 'lib/arm64-v8a/liblt_appservice.so',
-          )
-
           with zipfile.ZipFile(apk) as archive:
               names = archive.namelist()
-              missing = [key for key in wanted_keys if key not in names]
-              if missing:
-                  raise SystemExit(f'{apk.name} does not carry {missing}')
-
-              def copy_tree(prefix, destination):
-                  destination = pathlib.Path(destination)
-                  for name in names:
-                      if not name.startswith(prefix) or name.endswith('/'):
-                          continue
-                      output = destination / name[len(prefix):]
-                      output.parent.mkdir(parents=True, exist_ok=True)
-                      with archive.open(name) as source, open(output, 'wb') as target:
-                          shutil.copyfileobj(source, target)
-                      mode = archive.getinfo(name).external_attr >> 16
-                      if mode:
-                          os.chmod(output, mode & 0o7777)
-                  return destination
-
-              copy_tree('assets/guest-tools/', ci / 'guest-tools')
-              copy_tree('assets/licenses/firmwarekit/', ci / 'firmwarekit/android/licenses')
-              executables = {
-                  'lib/arm64-v8a/libfirmwarekit.so': ci / 'firmwarekit/android/firmwarekit',
-                  'lib/arm64-v8a/liblighttouch_oneshot.so': ci / 'firmwarekit/android/lighttouch-oneshot',
-                  'lib/arm64-v8a/libusbmuxd_qemu.so': ci / 'mobile-services/arm64-v8a/libusbmuxd_qemu.so',
-                  'lib/arm64-v8a/liblt_appservice.so': ci / 'mobile-services/arm64-v8a/liblt_appservice.so',
-              }
-              for name, output in executables.items():
+              if 'assets/guest-tools/it_seal' not in names:
+                  raise SystemExit(f'{apk.name} does not carry assets/guest-tools/it_seal')
+              for name in names:
+                  if not name.startswith('assets/guest-tools/') or name.endswith('/'):
+                      continue
+                  rel_name = name[len('assets/guest-tools/'):]
+                  if rel_name in ('armv6.itpack', 'armv7.itpack'):
+                      continue
+                  output = ci / 'guest-tools' / rel_name
                   output.parent.mkdir(parents=True, exist_ok=True)
-                  output.write_bytes(archive.read(name))
-                  os.chmod(output, 0o755)
+                  with archive.open(name) as source, open(output, 'wb') as target:
+                      shutil.copyfileobj(source, target)
+                  mode = archive.getinfo(name).external_attr >> 16
+                  if mode:
+                      os.chmod(output, mode & 0o7777)
 
           shutil.rmtree(base_dir, ignore_errors=True)
-
-          for required in (
-              'guest-tools/armv6.itpack', 'guest-tools/armv7.itpack', 'guest-tools/it_seal',
-              'firmwarekit/android/firmwarekit', 'firmwarekit/android/lighttouch-oneshot',
-              'firmwarekit/android/licenses/manifest.json',
-              'mobile-services/arm64-v8a/libusbmuxd_qemu.so',
-              'mobile-services/arm64-v8a/liblt_appservice.so',
-          ):
-              path = ci / required
-              if not path.is_file():
-                  raise SystemExit(f'missing extracted input: {path}')
-
           env_path = os.environ.get('GITHUB_ENV')
           if env_path:
               with open(env_path, 'a', encoding='utf-8') as env_file:
                   env_file.write(f'BASE_RELEASE_RESOLVED={resolved_repo} {resolved_tag} ({asset_name})\n')
-          print(f'extracted firmwarekit, USB bridge and guest tools from {resolved_repo}@{resolved_tag} ({asset_name})')
+          print(f'extracted guest-tools fallback from {resolved_repo}@{resolved_tag} ({asset_name})')
           PY
-
-      - name: Overlay guest packages serial 49
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REQUESTED_RUN_ID: ${{ inputs.guest_package_run_id || '' }}
-        run: |
-          set -euo pipefail
-          WORKFLOW_ID=400843872
-          CURRENT_PATCHES="$(for patch in ci/engine-patches/*.patch; do printf '%s %s\n' "${patch##*/}" "$(git hash-object "$patch")"; done | sort)"
-          # Retention is storage policy, not a package-build input. Ignore those YAML lines so the
-          # already-built package stays reusable when we extend its retention period.
-          CURRENT_WORKFLOW_SHA="$(python3 - <<'PYHASH'
-          import hashlib, pathlib, re
-          text = pathlib.Path('.github/workflows/guest-package.yml').read_text()
-          text = re.sub(r'(?m)^[ \t]*retention-days:[ \t]*[0-9]+[ \t]*\r?$', '', text)
-          print(hashlib.sha256(text.encode()).hexdigest())
-          PYHASH
-          )"
-          SELECTED_RUN=""
-          PACKAGE_DIR="$RUNNER_TEMP/guest-packages-49"
-
-          workflow_matches_source() {
-            local run_id="$1" package_sha package_patches package_workflow
-            package_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.head_sha')" || return 1
-            package_patches="$(gh api "repos/$GITHUB_REPOSITORY/contents/ci/engine-patches?ref=$package_sha" --jq '.[] | select(.type == "file" and (.name | endswith(".patch"))) | [.name, .sha] | join(" ")' | sort)" || return 1
-            [ "$package_patches" = "$CURRENT_PATCHES" ] || return 1
-            package_workflow="$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/guest-package.yml?ref=$package_sha" --jq '.content' | base64 --decode | python3 -c 'import hashlib,re,sys; text=sys.stdin.read(); text=re.sub(r"(?m)^[ \t]*retention-days:[ \t]*[0-9]+[ \t]*\r?$", "", text); print(hashlib.sha256(text.encode()).hexdigest())')" || return 1
-            [ "$package_workflow" = "$CURRENT_WORKFLOW_SHA" ]
-          }
-
-          for attempt in $(seq 1 30); do
-            if [ -n "$REQUESTED_RUN_ID" ]; then
-              CANDIDATES="$REQUESTED_RUN_ID"
-            else
-              # Search every branch. The guest package is reusable when its patch and build recipe
-              # match; requiring the APK PR's branch misses valid artifacts from an earlier PR.
-              CANDIDATES="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_ID/runs?per_page=100" \
-                --jq '.workflow_runs[] | select(.conclusion == "success") | .id')"
-            fi
-
-            while IFS= read -r RUN_ID; do
-              [ -n "$RUN_ID" ] || continue
-              HAS_ARTIFACT="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
-                --jq '[.artifacts[] | select(.name == "Un1box-guest-packages-49" and .expired == false)] | length')"
-              [ "$HAS_ARTIFACT" -gt 0 ] || continue
-              if workflow_matches_source "$RUN_ID"; then
-                rm -rf "$PACKAGE_DIR"
-                mkdir -p "$PACKAGE_DIR"
-                if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
-                    --name Un1box-guest-packages-49 --dir "$PACKAGE_DIR" &&
-                   [ -f "$PACKAGE_DIR/ENGINE_REVISION" ] &&
-                   [ "$(cat "$PACKAGE_DIR/ENGINE_REVISION")" = "$(git -C qemu-ios rev-parse HEAD)" ]; then
-                  SELECTED_RUN="$RUN_ID"
-                  break
-                fi
-              fi
-              echo "Skipping guest-package run $RUN_ID: its engine revision, patch or package build recipe differs."
-            done <<< "$CANDIDATES"
-            [ -n "$SELECTED_RUN" ] && break
-
-            if [ -n "$REQUESTED_RUN_ID" ]; then
-              PACKAGE_STATUS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REQUESTED_RUN_ID" --jq '.status')"
-              [ "$PACKAGE_STATUS" != completed ] || break
-              if ! workflow_matches_source "$REQUESTED_RUN_ID"; then
-                echo '::error::The requested guest-package run has a different patch or build recipe.'
-                exit 1
-              fi
-            else
-              # Wait only for a pending package build with the same inputs, not unrelated runs.
-              PENDING_RUNS="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_ID/runs?per_page=100" \
-                --jq '[.workflow_runs[] | select(.status == "queued" or .status == "in_progress")] | .[].id')"
-              MATCHING_PENDING=0
-              while IFS= read -r RUN_ID; do
-                [ -n "$RUN_ID" ] || continue
-                if workflow_matches_source "$RUN_ID"; then
-                  MATCHING_PENDING=1
-                  break
-                fi
-              done <<< "$PENDING_RUNS"
-              [ "$MATCHING_PENDING" -gt 0 ] || break
-            fi
-            echo "Waiting for a matching serial-49 guest-package artifact ($attempt/30)..."
-            sleep 20
-          done
-
-          [ -n "$SELECTED_RUN" ] || {
-            echo '::error::No unexpired serial-49 guest-package artifact with matching source was found across branches. Build/approve the guest-package workflow or provide guest_package_run_id.'
-            exit 1
-          }
-          test -s "$PACKAGE_DIR/armv6.itpack"
-          test -s "$PACKAGE_DIR/armv7.itpack"
-          python3 - "$PACKAGE_DIR" <<'PY'
-          import hashlib, pathlib, sys
-          root = pathlib.Path(sys.argv[1])
-          expected = {}
-          for line in (root / 'SHA256SUMS').read_text().splitlines():
-              fields = line.split(None, 1)
-              if len(fields) != 2:
-                  raise SystemExit(f'invalid SHA256SUMS entry: {line!r}')
-              name = pathlib.Path(fields[1].strip().lstrip('*')).name
-              if name in expected:
-                  raise SystemExit(f'duplicate checksum for {name}')
-              expected[name] = fields[0].lower()
-          for name in ('armv6.itpack', 'armv7.itpack'):
-              path = root / name
-              if not path.is_file():
-                  raise SystemExit(f'missing guest package: {path}')
-              actual = hashlib.sha256(path.read_bytes()).hexdigest()
-              if expected.get(name) != actual:
-                  raise SystemExit(f'{name}: checksum mismatch (manifest={expected.get(name)}, actual={actual})')
-              print(f'{name}: SHA-256 verified')
-          PY
-          install -m 0644 "$PACKAGE_DIR/armv6.itpack" ci/guest-tools/armv6.itpack
-          install -m 0644 "$PACKAGE_DIR/armv7.itpack" ci/guest-tools/armv7.itpack
-          echo "GUEST_PACKAGE_RUN_ID=$SELECTED_RUN" >> "$GITHUB_ENV"
-          echo "Overlaid serial-49 armv6/armv7 itpacks from workflow run $SELECTED_RUN."
 
       - name: JDK 17
         uses: actions/setup-java@v4
@@ -551,7 +534,7 @@ jobs:
             /usr/local/lib/android/sdk/ndk /usr/local/lib/android/sdk/sources \
             /usr/local/share/chromium /usr/lib/firefox /var/lib/docker/overlay2/* || true
           df -h / /mnt 2>/dev/null | tail -3
-      - name: Install host tools, NDK 28.2 and CMake 3.22.1
+      - name: Install host tools, NDK 28.2, CMake 3.22.1 and Rust
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build pkg-config python3-venv perl autoconf automake libtool
@@ -561,43 +544,37 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" --install "ndk;$ANDROID_NDK_VERSION" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0"
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target aarch64-linux-android
+          rustup default "$RUST_VERSION"
           ninja --version
           meson/bin/meson --version
+          cargo --version
 
-      # firmwarekit's iPad 1 (k48) recipe shells out to iBoot32Patcher for the iBoot RSA/debug/boot-args
-      # patches and looks for it next to its own executable (or at FIRMWAREKIT_IBOOT_PATCHER). On macOS it
-      # is in the app bundle; on Android nothing carried it, so preparing an iPad died with
-      # "iBoot32Patcher (/iBoot32Patcher) not runnable: ... The file doesn't exist." It is a few hundred
-      # lines of C with no dependencies beyond libc, pinned with its patch in build-support, so it is built
-      # here from that pin and staged like the other executables: the Gradle build packages
-      # ci/firmwarekit/android/iBoot32Patcher as libiBoot32Patcher.so, and FirmwareService names it in the
-      # child's environment. The same step builds the spawn shim: the recipe launches the patcher as "env <path>
-      # ...", a bare name that Android's posix_spawn resolves against the working directory only and /usr/bin does
-      # not exist to satisfy, so the shim is preloaded into firmwarekit, runs the patcher directly in env's place
-      # and logs every access and spawn it sees (FirmwareService names the log). Only the NDK's compiler, readelf
-      # and the sources in this repository are used.
-      #
-      # The reused firmwarekit (v0.0.10) spawns that path directly and reads FIRMWAREKIT_IBOOT_PATCHER --
-      # checked in its strings, not assumed. Packages/FirmwareKit's own K48IBoot.patchIBoot runs it through
-      # /usr/bin/env instead, which Android has no such path for: a firmwarekit built from this tree, or
-      # reused from a newer tag, must stop spawning that (run the tool directly, or use /bin/env, which
-      # Android's toybox does provide) or the iPad path breaks again the moment the reuse tag moves.
-      # The app-service helper is what carries a package into the guest (its push and pull actions),
-      # and the one in the base release predates them: without this, the Jailbreak tab's Install says
-      # "Unknown argument" and nothing is staged. Android/native-services/lt_appservice.c is built here
-      # with the pinned libraries Android/packaging/build-mobile-android.py fetches by hash; the
-      # extracted copy stays as the fallback, and the built one is checked for the actions themselves
-      # (strings is what a host can ask an Android binary).
+      - name: Cache Cargo crates
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: lt-cargo-arm64-${{ env.RUST_VERSION }}-${{ env.DECLARED_DEBUGGABLE }}-${{ hashFiles('Cargo.lock', 'crates/lighttouch-firmware/**') }}
+          restore-keys: |
+            lt-cargo-arm64-${{ env.RUST_VERSION }}-${{ env.DECLARED_DEBUGGABLE }}-
+            lt-cargo-arm64-${{ env.RUST_VERSION }}-
+
+      # The app-service helper carries push/pull/uninstall/trust into the guest.
+      # Android/native-services/lt_appservice.c is built here with the pinned libraries
+      # Android/packaging/build-mobile-android.py fetches by hash, and checked for push|pull.
       - name: Cache the guest app services built here
         uses: actions/cache@v4
         with:
           path: ci/mobile-services-built
-          key: lt-mobile-services-${{ hashFiles('Android/native-services/lt_appservice.c', 'Android/packaging/build-mobile-android.py', 'build-support/dependencies.json') }}
+          key: lt-mobile-services-${{ hashFiles('Android/native-services/lt_appservice.c', 'Android/packaging/**', 'build-support/dependencies.json', 'build-support/patches/*') }}
 
       - name: Build the guest app services for arm64 Android
-        continue-on-error: true
         run: |
-          if [ -f ci/mobile-services-built/arm64-v8a/liblt_appservice.so ]; then
+          if [ -f ci/mobile-services-built/arm64-v8a/liblt_appservice.so ] && \
+             [ -f ci/mobile-services-built/arm64-v8a/libusbmuxd_qemu.so ]; then
             echo "restored from the cache"
           else
             python3 Android/packaging/build-mobile-android.py ci/mobile-services-built \
@@ -608,54 +585,42 @@ jobs:
             [ -f "$file" ] || { echo "::error::the services build left no $name"; exit 1; }
           done
           if strings ci/mobile-services-built/arm64-v8a/liblt_appservice.so | grep -q 'push|pull'; then
+            mkdir -p ci/mobile-services/arm64-v8a
             cp ci/mobile-services-built/arm64-v8a/*.so ci/mobile-services/arm64-v8a/
             echo "the APK will carry this build's app-service helper"
           else
-            echo "::error::the helper built here has no push/pull: the APK would keep the base release's"
+            echo "::error::the helper built here has no push/pull"
             exit 1
           fi
 
-      - name: Build iBoot32Patcher and the spawn shim for arm64 Android
+      # Builds firmwarekit (crates/lighttouch-firmware, with activation & iBoot32Patcher compiled
+      # directly inside), jb-bunzip2 (build-support/jb-bunzip2.c, staged as libjbBz2.so when
+      # -Pjailbreak=true) and the crate license manifest.
+      - name: Build firmwarekit, jb-bunzip2 and notices for arm64 Android
         run: |
-          python3 - <<'PY' > /tmp/iboot32patcher-pin
-          import json
-          package = next(p for p in json.load(open('build-support/dependencies.json'))['packages']
-                         if p['name'] == 'iBoot32Patcher')
-          print(package['url'], package['sha256'], package['directory'])
-          PY
-          read -r URL SHA DIR < /tmp/iboot32patcher-pin
-          curl -fsSL --retry 3 -o /tmp/iboot32patcher.tar.gz "$URL"
-          echo "$SHA  /tmp/iboot32patcher.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/iboot32patcher.tar.gz -C /tmp
-          patch -p1 -d "/tmp/$DIR" < build-support/patches/iBoot32Patcher-ltm.patch
           TOOLS="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          # 16 KiB LOAD alignment, like every other executable this APK carries (Android/scripts/check-apk.py).
-          "$TOOLS/aarch64-linux-android29-clang" -O2 -Wno-multichar -Wno-int-conversion -I"/tmp/$DIR" \
-            -Wl,-z,max-page-size=16384 "/tmp/$DIR"/src/*.c -o ci/firmwarekit/android/iBoot32Patcher
-          chmod 755 ci/firmwarekit/android/iBoot32Patcher
-          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/iBoot32Patcher | grep -q 'AArch64'
-          python3 build-support/stage-iboot32patcher-notice.py ci/firmwarekit/android/licenses "/tmp/$DIR/LICENSE"
-          # The recipe launches the patcher as "env <patcher> <in> <out> --rsa ...": a bare name, which macOS
-          # resolves on PATH and Android does not (bionic's posix_spawn searches nothing). This library is put in
-          # front of that spawn with LD_PRELOAD: it runs the patcher directly where env was asked for, and logs
-          # every access and spawn the process makes, so a failure names the path that was actually wanted.
-          "$TOOLS/aarch64-linux-android29-clang" -O2 -fPIC -shared -Wl,-soname,libspawnshim.so \
-            -o ci/firmwarekit/android/spawn-shim.so Packages/FirmwareKit/build-support/spawn-shim.c -ldl
-          # firmwarekit's jailbreak option installs Cydia by running the host's tar ("-tf", "-tvf" and
-          # "-xkf ... -C ... --exclude ..."). Android has no /usr/bin/tar and toybox's has neither -k nor
-          # --exclude, so this small tar is built for arm64 and the same shim redirects that path to it.
-          # The Gradle build stages it as libjbTar.so only when -Pjailbreak=true.
-          "$TOOLS/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
-            -o ci/firmwarekit/android/jb-tar Packages/FirmwareKit/build-support/jb-tar.c -lz
-          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/jb-tar | grep -q 'AArch64'
+          CRASH_FEAT=""
+          [ "$DECLARED_DEBUGGABLE" = "false" ] || CRASH_FEAT="--features crash-test"
+          CC_aarch64_linux_android="$TOOLS/aarch64-linux-android29-clang" \
+          AR_aarch64_linux_android="$TOOLS/llvm-ar" \
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLS/aarch64-linux-android29-clang" \
+            cargo build --release --locked --target aarch64-linux-android \
+              -p lighttouch-firmware --bin firmwarekit $CRASH_FEAT
+          mkdir -p ci/firmwarekit/android
+          cp target/aarch64-linux-android/release/firmwarekit ci/firmwarekit/android/firmwarekit
+          "$TOOLS/llvm-strip" ci/firmwarekit/android/firmwarekit
+          chmod 755 ci/firmwarekit/android/firmwarekit
+          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/firmwarekit | grep -q 'AArch64'
           # The repositories of these systems serve their package indexes as .bz2 (BigBoss's 9 973
           # packages are only there) and Android has no bzip2 at all: this small decompressor is what
-          # the Jailbreak tab runs. Staged as libjbBz2.so for a jailbreak build, like jb-tar.
+          # the Jailbreak tab runs. Staged as libjbBz2.so for a jailbreak build.
           "$TOOLS/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
-            -o ci/firmwarekit/android/jb-bunzip2 Packages/FirmwareKit/build-support/jb-bunzip2.c
+            -o ci/firmwarekit/android/jb-bunzip2 build-support/jb-bunzip2.c
           "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/jb-bunzip2 | grep -q 'AArch64'
-          "$TOOLS/llvm-readelf" -h ci/firmwarekit/android/spawn-shim.so | grep -q 'AArch64'
-          ls -la ci/firmwarekit/android/iBoot32Patcher ci/firmwarekit/android/spawn-shim.so ci/firmwarekit/android/jb-tar ci/firmwarekit/android/jb-bunzip2
+          python3 crates/lighttouch-firmware/stage-notices.py ci/firmwarekit/android/licenses \
+            --target aarch64-linux-android \
+            --source-reference "https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME}"
+          ls -la ci/firmwarekit/android/firmwarekit ci/firmwarekit/android/jb-bunzip2 ci/firmwarekit/android/licenses
 
       # The patches carry changes to the engine's own build scripts (0012 adds
       # --enable-encoder=aac to contrib/portable/build-deps.py, which is what builds FFmpeg for
@@ -667,16 +632,15 @@ jobs:
       # build-engine.py refuses a dirty source tree ("Commit source changes before a
       # reproducible engine build"), so the patch is committed here; fixed dates keep that
       # commit, and with it the recorded revision and the engine cache key, stable. `git add -A`
-      # matters as much as the commit: a patch that *adds* a file (the microphone's
-      # hw/arm/host-mic.c and its header) leaves it untracked, and `commit -a` alone leaves it
-      # behind, which is a dirty tree to the guard even after the commit.
+      # matters as much as the commit: a patch that *adds* a file leaves it untracked, and
+      # `commit -a` alone leaves it behind, which is a dirty tree to the guard even after the commit.
       - name: Patch the engine for Android
         run: |
           git -C qemu-ios apply "$GITHUB_WORKSPACE"/ci/engine-patches/*.patch
           git -C qemu-ios add -A
           GIT_AUTHOR_DATE=2001-01-01T00:00:00Z GIT_COMMITTER_DATE=2001-01-01T00:00:00Z \
             git -C qemu-ios -c user.name=ci -c user.email=ci@localhost \
-            commit -q -m "ci: engine patches (slirp DNS, GLES, TCG fast paths, microphone, buffer mapping, Voice Memos AAC)"
+            commit -q -m "ci: engine patches (slirp DNS, GLES, TCG fast paths, buffer mapping)"
           git -C qemu-ios log --oneline -1
           git -C qemu-ios status --porcelain
 
@@ -708,7 +672,10 @@ jobs:
               qemu-ios/contrib/portable/build-crypto-deps.py \
               qemu-ios/contrib/portable/libgpg-error-android-lock.patch \
               qemu-ios/contrib/ffmpeg/*.patch \
-              qemu-ios/subprojects/packagefiles/libslirp-set-restricted.patch
+              qemu-ios/subprojects/packagefiles/libslirp-set-restricted.patch \
+              qemu-ios/subprojects/packagefiles/libslirp-windows.patch \
+              qemu-ios/subprojects/packagefiles/libslirp-restricted-dns.patch \
+              qemu-ios/subprojects/packagefiles/libslirp-unix-hup.patch
           } | sha256sum | cut -c1-24 )
           engine=$( {
             toolchain
@@ -861,6 +828,16 @@ jobs:
           echo "::error::no Gradle distribution source answered with the pinned archive"
           exit 1
 
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper
+          key: lt-gradle-${{ hashFiles('Android/gradle/wrapper/gradle-wrapper.properties', 'Android/gradle/verification-metadata.xml', 'Android/app/build.gradle.kts') }}
+          restore-keys: |
+            lt-gradle-
+
       - name: Preflight the Gradle build
         working-directory: Android
         run: |
@@ -912,7 +889,7 @@ jobs:
       # --without-default-features resolves that option's "auto" to disabled: -netdev user
       # did not exist, the Wi-Fi card's default netdev was never added ("Wi-Fi has no
       # network"), no lease came, and every app reported no connection. libslirp is built
-      # for Android here, with the engine's own set-restricted/dns-forward patch, into the
+      # for Android here, with the engine's own subprojects/packagefiles patches, into the
       # prefix dependency('slirp') reads.
       - name: Build libslirp for Android
         run: |
@@ -922,9 +899,12 @@ jobs:
           fi
           if [ ! -d ci/slirp-src/.git ]; then
             git clone --quiet https://gitlab.freedesktop.org/slirp/libslirp.git ci/slirp-src
-            git -C ci/slirp-src checkout --quiet d09dc9a70360ee7838acccbd234ab83f3b9b37a5
           fi
-          git -C ci/slirp-src apply "$GITHUB_WORKSPACE/qemu-ios/subprojects/packagefiles/libslirp-set-restricted.patch"
+          git -C ci/slirp-src reset --hard --quiet d09dc9a70360ee7838acccbd234ab83f3b9b37a5
+          for p in libslirp-set-restricted.patch libslirp-windows.patch libslirp-restricted-dns.patch libslirp-unix-hup.patch; do
+            patch_file="$GITHUB_WORKSPACE/qemu-ios/subprojects/packagefiles/$p"
+            [ -f "$patch_file" ] && git -C ci/slirp-src apply "$patch_file"
+          done
           BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
           {
             echo '[binaries]'
@@ -940,6 +920,7 @@ jobs:
             echo '[properties]'
             echo 'needs_exe_wrapper = true'
           } > ci/libslirp-cross.txt
+          rm -rf ci/libslirp-build
           PKG_CONFIG_LIBDIR="$PWD/ci/deps/prefix/lib/pkgconfig" \
             "$MESON" setup ci/libslirp-build ci/slirp-src \
             --cross-file ci/libslirp-cross.txt --buildtype=release \
@@ -972,7 +953,7 @@ jobs:
         continue-on-error: true
         run: python3 tests/gles/run.py --engine qemu-ios
 
-      - name: Self-check the name and the idle loops
+      - name: Self-check the name, catalogues, activation and packaging
         continue-on-error: true
         run: |
           python3 tests/branding/run.py
@@ -983,6 +964,8 @@ jobs:
           # Kotlin habits that cost a build each: a '#' comment, a tuple assignment, take(n) on a
           # ByteArray, a '/*' inside a doc comment (Kotlin's comments nest).
           python3 tests/kotlin/run.py
+          python3 tests/port/test_android_package.py
+          sh tests/activation/run.sh
 
       # The guest's Wi-Fi link: the dongle model's association watchdog, sliced out of the engine and
       # driven with a fake clock (tests/network/run.py). iOS 5 drops a join that lands in the middle of
@@ -991,9 +974,10 @@ jobs:
         continue-on-error: true
         run: python3 tests/network/run.py --engine qemu-ios
 
-      # The archives firmwarekit's jailbreak option extracts, pinned by SHA-1 in SystemEdits/Cydia.swift:
-      # the jailbreak self-check compares the tar this APK builds against the host's own on the real bytes
-      # when they are here (a cache hit after the first run) and on its own fixtures when they are not.
+      # The archives firmwarekit's jailbreak option extracts, pinned by SHA-1 in
+      # crates/lighttouch-firmware/src/cydia.rs: tests/jailbreak/run.py verifies the pinned bytes
+      # when present alongside jb-bunzip2 (build-support/jb-bunzip2.c) and the wiring across
+      # Gradle, FirmwareService, JailbreakStore, lt_appservice.c and the workflows.
       - name: Cache the pinned jailbreak archives
         uses: actions/cache@v4
         with:
@@ -1015,9 +999,6 @@ jobs:
           done
           ls -la tests/jailbreak/archives
 
-      # The jailbreak path: the tar firmwarekit's Cydia step runs as /usr/bin/tar, checked against the
-      # host's own tar on the archives it is pinned to, and the shim redirect that reaches it through a
-      # real spawn. No engine needed.
       - name: Self-check the jailbreak path
         continue-on-error: true
         run: python3 tests/jailbreak/run.py
@@ -1120,33 +1101,6 @@ jobs:
             "${angle_args[@]}" \
             ":app:assemble${DECLARED_VARIANT^}"
 
-      # firmwarekit's k48 recipe asks for "<nativeLibraryDir>/iBoot32Patcher": a bundle-style name an APK
-      # cannot carry through jniLibs, which packages only lib*.so. The entry is appended to the assembled APK
-      # instead (append mode leaves every existing entry, its compression and its alignment alone, which
-      # matters for resources.arsc), and the installer extracts lib/<abi>/ entries verbatim. The preloaded
-      # spawn shim also redirects that name to libiBoot32Patcher.so, so either route finds the tool.
-      - name: Add the patcher under the name firmwarekit looks for
-        working-directory: Android
-        run: |
-          APK="$(ls "app/build/outputs/apk/$DECLARED_VARIANT/"*.apk | head -1)"
-          python3 - "$APK" ../ci/firmwarekit/android/iBoot32Patcher <<'PY'
-          import sys, zipfile, pathlib
-          apk, patcher = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-          data = patcher.read_bytes()
-          with zipfile.ZipFile(apk, "a") as archive:
-              names = archive.namelist()
-              entry = "lib/arm64-v8a/iBoot32Patcher"
-              if entry in names:
-                  raise SystemExit(f"{apk} already carries {entry}")
-              info = zipfile.ZipInfo(entry)
-              info.external_attr = 0o755 << 16
-              info.compress_type = zipfile.ZIP_DEFLATED
-              archive.writestr(info, data)
-          with zipfile.ZipFile(apk) as check:
-              assert check.read("lib/arm64-v8a/iBoot32Patcher") == data
-          print(f"added lib/arm64-v8a/iBoot32Patcher ({len(data)} bytes) to {apk}")
-          PY
-
       # AGP signs a debug build with whatever it finds (or makes) at
       # ~/.android/debug.keystore, which is not the cached key: a run would then
       # hand out an APK that cannot update the one before it. Sign with this
@@ -1201,8 +1155,13 @@ jobs:
             echo "- application revision: $(git rev-parse HEAD) ($GITHUB_REPOSITORY)"
             echo "- engine revision: $(git -C qemu-ios rev-parse HEAD) ($ENGINE_REPO $ENGINE_REF)"
             echo "- engine build: arm64-v8a, NDK $ANDROID_NDK_VERSION, --android-api 29, $LT_JOBS jobs"
-            echo "- reused from ${BASE_RELEASE_RESOLVED:-$DECLARED_BASE_RELEASE_REPO $DECLARED_BASE_RELEASE_TAG}: firmwarekit, lighttouch-oneshot, USB bridge, it_seal"
-            echo "- guest itpacks: serial 49 from guest-package run ${GUEST_PACKAGE_RUN_ID}"
+            echo "- firmwarekit: built from crates/lighttouch-firmware (Rust $RUST_VERSION aarch64-linux-android, activation + iBoot32Patcher compiled in-process)"
+            echo "- USB / app-service helpers: built from Android/packaging/build-mobile-android.py + Android/native-services/lt_appservice.c"
+            if [ "${GUEST_TOOLS_READY:-false}" = "true" ]; then
+              echo "- guest tools & serial-49 itpacks: guest-package run ${GUEST_PACKAGE_RUN_ID}"
+            else
+              echo "- guest tools fallback: ${BASE_RELEASE_RESOLVED:-$DECLARED_BASE_RELEASE_REPO $DECLARED_BASE_RELEASE_TAG}; serial-49 itpacks from guest-package run ${GUEST_PACKAGE_RUN_ID}"
+            fi
             ANGLE_TAG="${ANGLE_BUNDLE_URL:-}"; ANGLE_TAG="${ANGLE_TAG%/*}"; ANGLE_TAG="${ANGLE_TAG##*/}"
             if [ -n "${ANGLE_ARM64_MANIFEST_SHA256:-}" ]; then
               echo "- ARM64 ANGLE provider: $ANGLE_TAG (${ANGLE_BUNDLE_URL##*/}), closure $ANGLE_ARM64_MANIFEST_SHA256, notices $ANGLE_ARM64_NOTICES_SHA256"
@@ -1214,9 +1173,9 @@ jobs:
               echo "- application: org.un1box.android.jb, signed with the jailbreak keystore ($LT_JB_SIGNER_SHA256):"
               echo "  its own application, so it installs beside the normal Un1box and its devices are prepared"
               echo "  again inside it"
-              echo "- jailbreak build: every preparation passes --jailbreak (afc2, Cydia and Substrate, from the"
-              echo "  pinned Legacy-iOS-Kit bootstrap), and firmwarekit's Cydia step runs the shim-redirected"
-              echo "  jb-tar in place of the /usr/bin/tar Android does not have"
+              echo "- jailbreak build: every preparation passes --jailbreak (afc2, Cydia and Substrate, extracted"
+              echo "  in-process from the pinned Legacy-iOS-Kit bootstrap in crates/lighttouch-firmware/src/cydia.rs),"
+              echo "  and libjbBz2.so is staged for decompressing BigBoss .bz2 package indexes"
             else
               echo "- application: org.un1box.android, signed with the debug keystore ($LT_SIGNER_SHA256)"
               echo "- jailbreak build: no (preparations are stock; use the Jailbreak APK workflow for one)"

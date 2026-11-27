@@ -114,8 +114,8 @@ internal class GuestApps(private val context: Context) {
     }
 
     /** The guest's newest crash report: (file name, the report's description text), or null if it has none. */
-    fun lastCrash(socket: String): Pair<String, String>? {
-        val result = run(socket, listOf("crashlog"), 60)
+    fun lastCrash(socket: String, timeoutSeconds: Long = 60): Pair<String, String>? {
+        val result = run(socket, listOf("crashlog"), timeoutSeconds)
         val name = if (result.isNull("name")) return null else result.optString("name")
         val text = result.optString("text")
         // .plist reports wrap the human-readable report in a <string> under "description".
@@ -145,6 +145,9 @@ internal class GuestApps(private val context: Context) {
         val chosen = if (explained.size > 60) explained.takeLast(60) else explained
         return if (chosen.isNotEmpty()) chosen.joinToString("\n") else lines.takeLast(40).joinToString("\n")
     }
+
+    /** Removes the app and its data from the guest; the guest's installer answers once both are gone. */
+    fun uninstall(socket: String, bundleId: String): JSONObject = run(socket, listOf("uninstall", "--bundle-id", bundleId), 120)
 
     fun install(socket: String, ipa: File, bundleId: String, cancelled: () -> Boolean, event: (JSONObject) -> Unit): JSONObject =
         run(socket, listOf("install", "--ipa", ipa.absolutePath, "--bundle-id", bundleId), 900, cancelled, event)

@@ -12,6 +12,8 @@ require(shutdownGraceMs > 0)
 // firmwarekit. A normal build carries neither and prepares stock systems. The recipes that don't take
 // the option say so themselves (N45's: "the jailbreak option needs iPhone OS 2.0 or later").
 val jailbreak = providers.gradleProperty("jailbreak").orElse("false").get().toBoolean()
+val gitCommit = providers.exec { commandLine("git", "-C", rootProject.projectDir.parentFile.absolutePath, "rev-parse", "--short", "HEAD") }
+    .standardOutput.asText.map { it.trim() }.orElse("").get()
 android {
     namespace = "org.un1box.android"
     compileSdk = 35
@@ -25,15 +27,16 @@ android {
         if (jailbreak) applicationIdSuffix = ".jb"
         minSdk = 29
         targetSdk = 35
-        versionCode = 13
+        versionCode = 15
         // Which build is running, in Settings and in a profile: the jailbreak app id already tells them
         // apart, and this is what a person reads off the phone.
-        versionName = "0.0.13" + (if (jailbreak) "-jailbreak" else "")
+        versionName = "0.0.15" + (if (jailbreak) "-jailbreak" else "")
         // The launcher label, through a resource because a manifest string cannot be renamed per build:
         // two "Un1box" icons side by side would be a guess, not a choice.
         resValue("string", "app_name", if (jailbreak) "Un1box JB" else "Un1box")
         buildConfigField("long", "SHUTDOWN_GRACE_MS", "${shutdownGraceMs}L")
         buildConfigField("boolean", "JAILBREAK", "$jailbreak")
+        buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += providers.gradleProperty("targetAbis").orElse("arm64-v8a,x86_64").get().split(",") }
         externalNativeBuild { cmake { arguments += listOf("-DLT_NATIVE_JOBS=" + providers.gradleProperty("nativeJobs").orElse("2").get(), "-DANDROID_STL=c++_shared", "-DLT_PORTABLE_DIR=" + providers.gradleProperty("portableDir").orElse(file("../../Portable").absolutePath).get(), "-DLT_ENGINE_ROOT=" + providers.gradleProperty("engineRoot").orElse("").get(), "-DLIGHTTOUCH_QEMU_SOURCE=" + providers.gradleProperty("qemuSource").orElse("").get()) } }
@@ -79,6 +82,8 @@ val prepareCatalog = tasks.register<Copy>("prepareFirmwareCatalog") {
     into(catalogAssets)
 }
 android.sourceSets["main"].assets.srcDir(catalogAssets)
+// Scaling comparison photos for the Screen Scaling screen's live preview (art/preview/scaling/*.png).
+android.sourceSets["main"].assets.srcDir(file("../../art/preview"))
 tasks.named("preBuild").configure { dependsOn(prepareCatalog) }
 
 // Guest tools (-PguestToolsDir: scripts/build.sh firmware-tools, qemu-ios contrib/export-guest-artifacts.sh's
@@ -87,10 +92,11 @@ tasks.named("preBuild").configure { dependsOn(prepareCatalog) }
 providers.gradleProperty("guestToolsDir").orNull?.let { input ->
     val packs = file(input)
     // Every file firmwarekit create reads by name: SystemEdits.Helpers (tools, seal, glTest, both itpacks, AppSync,
-    // the GL front end and its name table), N72Recipe.guestTools (it_agent, it_typein, sblaunch, sbdlicon) and N45's
-    // opengles-1x.exports, plus the launchd jobs the seed package loads. firmwarekit only notices a missing one when a
-    // device is prepared ("guest helper <name> missing from <dir>"), long after the APK was installed, so the check
-    // belongs here: an install that cannot prepare every catalog firmware should not be built at all.
+    // the GL front end and its name table), N72Recipe.guestTools (it_agent, it_typein, sblaunch, sbdlicon),
+    // itproxy/ittrust (activation/trust) and N45's opengles-1x.exports, plus the launchd jobs the seed package loads.
+    // firmwarekit only notices a missing one when a device is prepared ("guest helper <name> missing from <dir>"),
+    // long after the APK was installed, so the check belongs here: an install that cannot prepare every catalog
+    // firmware should not be built at all.
     val required = listOf(
         "armv6.itpack", "armv7.itpack",
         "it_pbd", "it_prefs", "it_msmquiet.dylib", "it_seal", "it_gltest",
@@ -100,6 +106,7 @@ providers.gradleProperty("guestToolsDir").orNull?.let { input ->
         "OpenGLES", "OpenGLES-1x", "gles-names.h", "opengles-1x.exports",
         "com.qemu.it-pbd.plist", "com.qemu.it-prefs.plist", "com.qemu.it-agent.plist",
         "com.qemu.it-seal.plist", "com.qemu.it-gltest.plist",
+        "itproxy", "ittrust",
     )
     val missing = required.filterNot { packs.resolve(it).let { f -> f.isFile && f.length() > 0 } }
     require(missing.isEmpty()) {
@@ -140,21 +147,15 @@ val sourceRevision = providers.gradleProperty("sourceRevision").orElse(
 val sourceReference = providers.gradleProperty("sourceReference").orElse(
     sourceRevision.map { "https://github.com/KlugKlugTG/Un1box/tree/$it" }
 )
-// firmwarekit, the preparer every port shares (-PfirmwareKitDir: scripts/build.sh firmwarekit-android): it,
-// lighttouch-oneshot and iBoot32Patcher ship as executables in nativeLibraryDir, with the notices of what it
-// links. The patcher is what firmwarekit's iPad 1 (k48) recipe shells out to; nothing carried it on Android
-// before, so an iPad failed with "iBoot32Patcher (/iBoot32Patcher) not runnable". It launches it as
-// "env <patcher> ...", a bare name that Android's posix_spawn resolves against the working directory only, so
-// libspawnshim.so rides along: FirmwareService preloads it into firmwarekit, where it runs the patcher directly
-// in env's place and logs the access and spawn calls a failure needs.
+// firmwarekit (crates/lighttouch-firmware, Rust), the preparer every port shares (-PfirmwareKitDir: scripts/build.sh
+// firmwarekit-android): it ships as libfirmwarekit.so in nativeLibraryDir with the notices of what it links;
+// preparation boots load libqemu-arm.so in-process, and iBoot patching + Cydia tar extraction are built right into it.
 //
-// A jailbreak build adds jb-tar (build-support/jb-tar.c) as libjbTar.so: firmwarekit's Cydia step installs the
-// bootstrap by running the host's tar ("-tf", "-tvf" and "-xkf ... -C ... --exclude ..."), and Android has no
-// /usr/bin/tar -- toybox's has neither -k nor --exclude. The same shim redirects that path to this copy.
+// A jailbreak build adds jb-bunzip2 (build-support/jb-bunzip2.c) as libjbBz2.so for the Jailbreak store's Packages.bz2 indexes.
 providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
     val kit = file(input)
-    val required = listOf("firmwarekit", "lighttouch-oneshot", "iBoot32Patcher", "spawn-shim.so", "licenses/manifest.json") +
-        (if (jailbreak) listOf("jb-tar", "jb-bunzip2") else emptyList())
+    val required = listOf("firmwarekit", "licenses/manifest.json") +
+        (if (jailbreak) listOf("jb-bunzip2") else emptyList())
     require(required.all { kit.resolve(it).isFile }) {
         "firmwareKitDir must hold ${required.joinToString(", ")} (scripts/build.sh firmwarekit-android)"
     }
@@ -162,10 +163,6 @@ providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
     val firmwareKitNotices = layout.buildDirectory.dir("generated/firmwareKitNotices")
     val stage = tasks.register<Copy>("prepareFirmwareKit") {
         from(kit) { include("firmwarekit"); rename { "libfirmwarekit.so" } }
-        from(kit) { include("lighttouch-oneshot"); rename { "liblighttouch_oneshot.so" } }
-        from(kit) { include("iBoot32Patcher"); rename { "libiBoot32Patcher.so" } }
-        from(kit) { include("spawn-shim.so"); rename { "libspawnshim.so" } }
-        if (jailbreak) from(kit) { include("jb-tar"); rename { "libjbTar.so" } }
         if (jailbreak) from(kit) { include("jb-bunzip2"); rename { "libjbBz2.so" } }
         into(firmwareKitJniLibs.map { it.dir("arm64-v8a") })
     }

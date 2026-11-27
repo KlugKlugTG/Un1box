@@ -1,6 +1,6 @@
 name: Build iOS guest packages
 
-# This workflow builds only armv6.itpack and armv7.itpack. It does not build the Android APK or QEMU.
+# This workflow builds armv6.itpack, armv7.itpack and the full guest-tools set. It does not build the Android APK or QEMU.
 # The default engine revision is pinned with the Android workflow: its patch stack
 # must be rebased before either default is advanced to a newer perf revision.
 
@@ -20,7 +20,7 @@ on:
       engine_ref:
         description: Engine branch, tag or commit
         required: true
-        default: e6ab90f02c7fa4d4a81696da7d1204be5c259bac
+        default: 1955aea6930119c34b968c0596dc3cd72d67e839
 
 permissions:
   contents: read
@@ -50,7 +50,7 @@ jobs:
     timeout-minutes: 120
     env:
       ENGINE_REPO: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_repository || 'KlugKlugTG/qemu-ios' }}
-      ENGINE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_ref || 'e6ab90f02c7fa4d4a81696da7d1204be5c259bac' }}
+      ENGINE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_ref || '1955aea6930119c34b968c0596dc3cd72d67e839' }}
       GH_TOKEN: ${{ github.token }}
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
 
@@ -100,20 +100,24 @@ jobs:
           xcrun --find clang
           xcrun ld -v
           if ! command -v ldid >/dev/null; then brew install ldid; fi
+          if ! command -v jq >/dev/null; then brew install jq; fi
 
-      - name: Build guest packages serial 49
+      - name: Build guest packages serial 49 and export guest tools
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/guest-package"
+          EXPORT="$RUNNER_TEMP/guest-export"
+          rm -rf "$OUT" "$EXPORT"
+          mkdir -p "$OUT/guest-tools"
           if ! ARMV6_SDK="$RUNNER_TEMP/guest-sdks/iPhoneOS3.1.3.sdk" \
                IPAD_SDK="$RUNNER_TEMP/guest-sdks/iPhoneOS3.2.sdk" \
-               bash qemu-ios/contrib/guest-package/build.sh "$OUT" > "$RUNNER_TEMP/guest-package.log" 2>&1; then
-            tail -200 "$RUNNER_TEMP/guest-package.log"
+               bash qemu-ios/contrib/export-guest-artifacts.sh "$EXPORT"; then
+            [ -f "$EXPORT/build.log" ] && tail -200 "$EXPORT/build.log" || true
             exit 1
           fi
-          if grep -q 'guest-package: warning:' "$RUNNER_TEMP/guest-package.log"; then
-            cat "$RUNNER_TEMP/guest-package.log"
-            for component_log in "$OUT"/logs/*.log; do
+          if grep -q 'guest-package: warning:' "$EXPORT/build.log"; then
+            cat "$EXPORT/build.log"
+            for component_log in "$EXPORT"/build/logs/*.log; do
               [ -f "$component_log" ] || continue
               echo "::group::${component_log##*/}"
               tail -200 "$component_log"
@@ -123,10 +127,20 @@ jobs:
             exit 1
           fi
           test "$(sed -n 's/^serial //p' qemu-ios/contrib/guest-package/VERSION)" = 49
-          grep -E 'armv6 serial 49|armv7 serial 49|serial 49' "$RUNNER_TEMP/guest-package.log"
+          grep -E 'armv6 serial 49|armv7 serial 49|serial 49' "$EXPORT/build.log"
           git -C qemu-ios rev-parse HEAD > "$OUT/ENGINE_REVISION"
-          test -s "$OUT/armv6.itpack"
-          test -s "$OUT/armv7.itpack"
+          cp -a "$EXPORT/ipad-guest-tools/." "$OUT/guest-tools/"
+          cp -p "$OUT/guest-tools/armv6.itpack" "$OUT/armv6.itpack"
+          cp -p "$OUT/guest-tools/armv7.itpack" "$OUT/armv7.itpack"
+          for required in \
+            armv6.itpack armv7.itpack it_seal it_keybag it_keybag-armv6 \
+            OpenGLES OpenGLES-1x gles-names.h opengles-1x.exports \
+            it_initialize it_mobilegestalt launchd-cache-template httpget-armv7 \
+            libappsync.dylib libappsync-legacy.dylib appsync-launch \
+            it_agent it_typein.dylib sblaunch sbdlicon itproxy ittrust
+          do
+            test -s "$OUT/guest-tools/$required"
+          done
           shasum -a 256 "$OUT/armv6.itpack" "$OUT/armv7.itpack" | tee "$OUT/SHA256SUMS"
 
       - name: Upload only the guest packages
@@ -138,6 +152,7 @@ jobs:
             ${{ runner.temp }}/guest-package/armv7.itpack
             ${{ runner.temp }}/guest-package/SHA256SUMS
             ${{ runner.temp }}/guest-package/ENGINE_REVISION
+            ${{ runner.temp }}/guest-package/guest-tools/
           if-no-files-found: error
           retention-days: 90
 
@@ -147,7 +162,7 @@ jobs:
         with:
           name: Un1box-guest-package-build-log
           path: |
-            ${{ runner.temp }}/guest-package.log
-            ${{ runner.temp }}/guest-package/logs/
+            ${{ runner.temp }}/guest-export/build.log
+            ${{ runner.temp }}/guest-export/build/logs/
           if-no-files-found: ignore
           retention-days: 7

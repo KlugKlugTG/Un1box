@@ -6,10 +6,12 @@
  * system usbmuxd or a physical device. Port of Desktop/app_services/helper.py
  * and mobile.py:
  *
- *   liblt_appservice.so info    --socket <mux.sock>
- *   liblt_appservice.so install --socket <mux.sock> --ipa <path> --bundle-id <id>
- *   liblt_appservice.so list    --socket <mux.sock>
- *   liblt_appservice.so syslog  --socket <mux.sock> --seconds <1..600>
+ *   liblt_appservice.so info      --socket <mux.sock>
+ *   liblt_appservice.so install   --socket <mux.sock> --ipa <path> --bundle-id <id>
+ *   liblt_appservice.so list      --socket <mux.sock>
+ *   liblt_appservice.so uninstall --socket <mux.sock> --bundle-id <id>
+ *   liblt_appservice.so push|pull --socket <mux.sock> --local <path> --remote <path> [--service <name>]
+ *   liblt_appservice.so syslog    --socket <mux.sock> --seconds <1..600>
  *
  * Output is JSON Lines on stdout (one object per line, flushed):
  *   {"target":{"product_type":"iPod2,1","ios":"3.1.3"}}       always first
@@ -51,6 +53,7 @@
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
 #include <libimobiledevice/afc.h>
+#include <usbmuxd.h>
 #include <libimobiledevice/installation_proxy.h>
 #include <libimobiledevice/syslog_relay.h>
 #include <plist/plist.h>
@@ -59,6 +62,12 @@
 #define CONNECT_WINDOW_MS 20000
 #define CONNECT_RETRY_MS 500
 #define UPLOAD_CHUNK (1u << 20)         /* one AFC write each, answered before the next: see mobile.py */
+/* AFC sessions writing the IPA at once, each taking the next 1 MiB as soon as its last write is answered (desktop:
+ * lighttouch-services apps.rs). Each write waits for the guest to store it; several in flight keep the USB link busy,
+ * and taking them in order keeps every write within a few MiB of the file's end (docs/STORAGE.md). LT_UPLOAD_AFC in
+ * the helper's environment overrides the count, for A/B (1: one stream); LT_UPLOAD_SPLIT=parts gives each session a
+ * fixed contiguous part instead, as before, where iOS filled the gap ahead of the later parts before answering. */
+#define UPLOAD_SESSIONS 8
 #define INSTALL_ABSOLUTE_S 600       /* plus the unpacked size at UNPACK_FLOOR_BPS */
 #define INSTALL_IDLE_S 90           /* no status and no unpacking progress for this long */
 #define UNPACK_FLOOR_BPS (256u << 10)
@@ -269,17 +278,33 @@ static int session_open(struct session *s)
 	int64_t deadline = now_ms() + CONNECT_WINDOW_MS;
 	const char *phase = "find guest";
 	int code = 0;
+	int forgot = 0;
 	for (;;) {
 		idevice_error_t derr = idevice_new_with_options(&s->device, NULL, IDEVICE_LOOKUP_USBMUX);
 		if (derr == IDEVICE_E_SUCCESS) {
 			lockdownd_error_t lerr = lockdownd_client_new_with_handshake(s->device, &s->lockdown, CLIENT_LABEL);
 			if (lerr == LOCKDOWN_E_SUCCESS)
 				return 0;
+			/* The guest no longer knows the stored host (iOS 10 drops a pairing unused for 180 days, Reset All
+			 * Settings drops them all; the iPhone 5's comes from preparation). libimobiledevice pairs again only
+			 * when there is no record, so forget it once: the next handshake pairs, and asks for Trust. */
+			if (lerr == LOCKDOWN_E_INVALID_HOST_ID && !forgot) {
+				char *udid = NULL;
+				if (idevice_get_udid(s->device, &udid) == IDEVICE_E_SUCCESS && udid) {
+					usbmuxd_delete_pair_record(udid);
+					free(udid);
+					forgot = 1;
+				}
+			}
 			phase = "lockdown handshake";
 			code = lerr;
 			s->lockdown = NULL;
 			idevice_free(s->device);
 			s->device = NULL;
+			if (forgot == 1) {
+				forgot = 2;
+				continue;
+			}
 		} else {
 			phase = "find guest";
 			code = derr;
@@ -289,7 +314,10 @@ static int session_open(struct session *s)
 			break;
 		sleep_ms(CONNECT_RETRY_MS);
 	}
-	emit_error("%s failed (device error %d). Try again after iOS finishes starting.", phase, code);
+	if (code == LOCKDOWN_E_PAIRING_DIALOG_RESPONSE_PENDING)
+		emit_error("Unlock the guest and tap Trust on its screen to let Un1box install apps.");
+	else
+		emit_error("%s failed (device error %d). Try again after iOS finishes starting.", phase, code);
 	return -1;
 }
 
@@ -359,6 +387,18 @@ static lockdownd_service_descriptor_t start_service(struct session *s, const cha
 	}
 	emit_error("start %s failed (device error %d). Try again after iOS finishes starting.", name, (int)err);
 	return NULL;
+}
+
+/* One quiet attempt, for optional extra connections: a failure is no error for the user. */
+static lockdownd_service_descriptor_t start_service_quiet(struct session *s, const char *name)
+{
+	lockdownd_service_descriptor_t service = NULL;
+	if (!s->lockdown || lockdownd_start_service(s->lockdown, name, &service) != LOCKDOWN_E_SUCCESS || !service) {
+		if (service)
+			lockdownd_service_descriptor_free(service);
+		return NULL;
+	}
+	return service;
 }
 
 static instproxy_client_t instproxy_open(struct session *s)
@@ -586,6 +626,49 @@ static int action_list(struct session *s)
 	buf_puts(&b, "]}}");
 	plist_free(apps);
 	emit(&b);
+	return 0;
+}
+
+/* ---------- uninstall ---------- */
+
+/* A bundle identifier, as the app's own validation allows it: what iOS accepts and
+ * what can be put on a command line without quoting. */
+static int bundle_id_valid(const char *id)
+{
+	size_t len = id ? strlen(id) : 0;
+	if (len == 0 || len >= 256)
+		return 0;
+	for (const char *p = id; *p; p++) {
+		int ok = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+		         *p == '.' || *p == '-' || *p == '_';
+		if (!ok)
+			return 0;
+	}
+	return 1;
+}
+
+/* Removal is synchronous here (no status callback): the guest's installer answers once the app
+ * and its data are gone, and the parent's deadline is what bounds a guest that never answers.
+ * What becomes of a running copy is the guest's business, not ours. */
+static int action_uninstall(struct session *s, const char *bundle_id)
+{
+	instproxy_client_t client = instproxy_open(s);
+	if (!client)
+		return 1;
+	struct buf before = {0};
+	buf_puts(&before, "{\"phase\":\"mutation\",\"status\":\"uninstalling\"}");
+	emit(&before);
+	instproxy_error_t err = instproxy_uninstall(client, bundle_id, NULL, NULL, NULL);
+	instproxy_client_free(client);
+	if (err != INSTPROXY_E_SUCCESS) {
+		emit_error("removing %s failed (device error %d).", bundle_id, (int)err);
+		return 1;
+	}
+	struct buf done = {0};
+	buf_puts(&done, "{\"result\":{\"bundle_id\":");
+	json_string(&done, bundle_id);
+	buf_puts(&done, ",\"uninstalled\":true}}");
+	emit(&done);
 	return 0;
 }
 
@@ -834,6 +917,65 @@ static int afc_check(afc_error_t err, const char *phase)
 	return -1;
 }
 
+struct upload_part {
+	afc_client_t afc;
+	uint64_t handle;
+	int fd;
+	uint64_t start, end;
+	uint64_t *next;         /* shared, atomic: the next chunk's offset; NULL for a fixed part from start to end */
+	uint64_t *sent;         /* shared, atomic */
+	int *failed;            /* shared, atomic: any part's failure stops the others */
+	int error;              /* this part's afc_error_t, or -1 for a read error */
+	pthread_t thread;
+};
+
+static void *upload_part_run(void *arg)
+{
+	struct upload_part *p = arg;
+	unsigned char *buffer = malloc(UPLOAD_CHUNK);
+	uint64_t at = p->start, position = 0;   /* a fresh handle writes at 0 */
+	if (!buffer) {
+		p->error = -1;
+		goto done;
+	}
+	while (!__atomic_load_n(p->failed, __ATOMIC_RELAXED)) {
+		if (p->next)
+			at = __atomic_fetch_add(p->next, UPLOAD_CHUNK, __ATOMIC_RELAXED);
+		if (at >= p->end)
+			break;
+		if (position != at && afc_file_seek(p->afc, p->handle, (int64_t)at, SEEK_SET) != AFC_E_SUCCESS) {
+			p->error = AFC_E_UNKNOWN_ERROR;
+			goto done;
+		}
+		uint32_t want = (uint32_t)(p->end - at < UPLOAD_CHUNK ? p->end - at : UPLOAD_CHUNK);
+		ssize_t got = pread(p->fd, buffer, want, (off_t)at);
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got != (ssize_t)want) {
+			p->error = -1;
+			goto done;
+		}
+		uint32_t offset = 0;
+		while (offset < want) {
+			uint32_t written = 0;
+			afc_error_t e = afc_file_write(p->afc, p->handle, (const char *)buffer + offset, want - offset, &written);
+			if (e != AFC_E_SUCCESS || written == 0 || written > want - offset) {
+				p->error = e != AFC_E_SUCCESS ? e : AFC_E_UNKNOWN_ERROR;
+				goto done;
+			}
+			offset += written;
+		}
+		at += want;
+		position = at;
+		__atomic_add_fetch(p->sent, want, __ATOMIC_RELAXED);
+	}
+done:
+	if (p->error)
+		__atomic_store_n(p->failed, 1, __ATOMIC_RELAXED);
+	free(buffer);
+	return NULL;
+}
+
 static int action_install(struct session *s, const char *ipa, const char *bundle_id)
 {
 	int fd = open(ipa, O_RDONLY | O_CLOEXEC);
@@ -871,7 +1013,6 @@ static int action_install(struct session *s, const char *ipa, const char *bundle
 	int rc = 1;
 	uint64_t handle = 0;
 	int opened = 0;
-	char *buffer = NULL;
 	instproxy_client_t client = NULL;
 	plist_t apps = NULL;
 
@@ -898,51 +1039,95 @@ static int action_install(struct session *s, const char *ipa, const char *bundle
 		goto out;
 	opened = 1;
 
-	buffer = malloc(UPLOAD_CHUNK);
-	if (!buffer) {
-		emit_error("out of memory");
-		goto out;
-	}
-	uint64_t sent = 0;
-	int last_percent = -1;
-	for (;;) {
-		ssize_t got = read(fd, buffer, UPLOAD_CHUNK);
-		if (got < 0 && errno == EINTR)
-			continue;
-		if (got < 0) {
-			emit_error("Reading the IPA failed: %s", strerror(errno));
-			goto out;
+	{
+		/* Extra sessions are a speed-up only: one that doesn't start leaves the work to those that did. */
+		const char *env = getenv("LT_UPLOAD_AFC");
+		int want = env && atoi(env) > 0 ? atoi(env) : UPLOAD_SESSIONS;
+		if (want > 16)
+			want = 16;
+		uint64_t chunks = (total + UPLOAD_CHUNK - 1) / UPLOAD_CHUNK;
+		if ((uint64_t)want > chunks)
+			want = (int)chunks;
+		struct upload_part parts[16];
+		memset(parts, 0, sizeof(parts));
+		parts[0].afc = afc;
+		parts[0].handle = handle;
+		int n = 1;
+		while (n < want) {
+			lockdownd_service_descriptor_t extra_service = start_service_quiet(s, AFC_SERVICE_NAME);
+			if (!extra_service)
+				break;
+			afc_client_t extra = NULL;
+			afc_error_t e = afc_client_new(s->device, extra_service, &extra);
+			lockdownd_service_descriptor_free(extra_service);
+			if (e != AFC_E_SUCCESS)
+				break;
+			uint64_t h = 0;
+			if (afc_file_open(extra, remote, AFC_FOPEN_RW, &h) != AFC_E_SUCCESS) {
+				afc_client_free(extra);
+				break;
+			}
+			parts[n].afc = extra;
+			parts[n].handle = h;
+			n++;
 		}
-		if (got == 0)
-			break;
-		uint32_t offset = 0;
-		while (offset < (uint32_t)got) {
-			uint32_t written = 0;
-			uint32_t remaining = (uint32_t)got - offset;
-			if (afc_check(afc_file_write(afc, handle, buffer + offset, remaining, &written), "upload IPA") != 0)
-				goto out;
-			if (written == 0 || written > remaining) {
-				emit_error("The guest returned an invalid upload length.");
+		uint64_t part = ((total + (uint64_t)n - 1) / (uint64_t)n + UPLOAD_CHUNK - 1) / UPLOAD_CHUNK * UPLOAD_CHUNK;
+		const char *split = getenv("LT_UPLOAD_SPLIT");
+		int fixed = split && strcmp(split, "parts") == 0;
+		uint64_t sent = 0, next = 0;
+		int failed = 0, started = 0;
+		for (int i = 0; i < n; i++) {
+			parts[i].fd = fd;
+			if (fixed) {
+				parts[i].start = (uint64_t)i * part < total ? (uint64_t)i * part : total;
+				parts[i].end = (uint64_t)(i + 1) * part < total ? (uint64_t)(i + 1) * part : total;
+			} else {
+				parts[i].end = total;
+				parts[i].next = &next;
+			}
+			parts[i].sent = &sent;
+			parts[i].failed = &failed;
+			if (pthread_create(&parts[i].thread, NULL, upload_part_run, &parts[i]) != 0) {
+				__atomic_store_n(&failed, 1, __ATOMIC_RELAXED);
+				break;
+			}
+			started++;
+		}
+		int last_percent = -1;
+		for (;;) {
+			uint64_t now_sent = __atomic_load_n(&sent, __ATOMIC_RELAXED);
+			int percent = (int)(now_sent * 100 / total);
+			if (percent != last_percent) {
+				struct buf b = {0};
+				buf_printf(&b, "{\"phase\":\"upload\",\"percent\":%d}", percent);
+				emit(&b);
+				last_percent = percent;
+			}
+			if (now_sent >= total || __atomic_load_n(&failed, __ATOMIC_RELAXED))
+				break;
+			struct timespec ts = {0, 100 * 1000 * 1000};
+			nanosleep(&ts, NULL);
+		}
+		for (int i = 0; i < started; i++)
+			pthread_join(parts[i].thread, NULL);
+		for (int i = 1; i < n; i++) {
+			afc_file_close(parts[i].afc, parts[i].handle);
+			afc_client_free(parts[i].afc);
+		}
+		for (int i = 0; i < n; i++) {
+			if (parts[i].error == -1) {
+				emit_error("Reading the IPA failed.");
 				goto out;
 			}
-			offset += written;
-			sent += written;
+			if (parts[i].error) {
+				afc_check((afc_error_t)parts[i].error, "upload IPA");
+				goto out;
+			}
 		}
-		if (sent > total) {
-			emit_error("The IPA changed while it was being uploaded.");
+		if (failed || sent != total) {
+			emit_error("The IPA upload did not complete.");
 			goto out;
 		}
-		int percent = (int)(sent * 100 / total);
-		if (percent != last_percent) {
-			struct buf b = {0};
-			buf_printf(&b, "{\"phase\":\"upload\",\"percent\":%d}", percent);
-			emit(&b);
-			last_percent = percent;
-		}
-	}
-	if (sent != total) {
-		emit_error("The IPA changed while it was being uploaded.");
-		goto out;
 	}
 	opened = 0;
 	if (afc_check(afc_file_close(afc, handle), "close staging upload") != 0)
@@ -991,7 +1176,6 @@ out:
 		plist_free(apps);
 	if (client)
 		instproxy_client_free(client);
-	free(buffer);
 	if (opened)
 		afc_file_close(afc, handle);
 	afc_remove_path(afc, remote);
@@ -1365,7 +1549,8 @@ out:
 static void usage_error(const char *detail)
 {
 	emit_error("%s Usage: info|list|crashlog --socket PATH, install --socket PATH --ipa PATH --bundle-id ID, "
-		   "push|pull --socket PATH --local PATH --remote PATH [--service NAME], or syslog --socket PATH --seconds 1..600", detail);
+		   "uninstall --socket PATH --bundle-id ID, push|pull --socket PATH --local PATH --remote PATH [--service NAME], "
+		   "or syslog --socket PATH --seconds 1..600", detail);
 }
 
 int main(int argc, char **argv)
@@ -1411,10 +1596,12 @@ int main(int argc, char **argv)
 		*slot = argv[++i];
 	}
 	int is_install = strcmp(action, "install") == 0;
+	int is_uninstall = strcmp(action, "uninstall") == 0;
 	int is_syslog = strcmp(action, "syslog") == 0;
 	int is_push = strcmp(action, "push") == 0;
 	int is_pull = strcmp(action, "pull") == 0;
-	if (!is_install && !is_syslog && !is_push && !is_pull && strcmp(action, "info") != 0 && strcmp(action, "list") != 0 && strcmp(action, "crashlog") != 0) {
+	if (!is_install && !is_uninstall && !is_syslog && !is_push && !is_pull &&
+	    strcmp(action, "info") != 0 && strcmp(action, "list") != 0 && strcmp(action, "crashlog") != 0) {
 		usage_error("Unknown action.");
 		return 1;
 	}
@@ -1430,8 +1617,16 @@ int main(int argc, char **argv)
 		emit_error("The app's bundle identifier is required.");
 		return 1;
 	}
-	if (!is_install && (ipa || bundle_id)) {
-		usage_error("--ipa/--bundle-id apply to install only.");
+	if (is_uninstall && (ipa || !bundle_id || !*bundle_id)) {
+		usage_error("uninstall requires --bundle-id and takes no --ipa.");
+		return 1;
+	}
+	if (is_uninstall && !bundle_id_valid(bundle_id)) {
+		usage_error("Invalid bundle identifier.");
+		return 1;
+	}
+	if (!is_install && !is_uninstall && (ipa || bundle_id)) {
+		usage_error("--ipa/--bundle-id apply to install and uninstall only.");
 		return 1;
 	}
 	if ((is_push || is_pull) && (!local_path || !*local_path || !remote_path || !*remote_path)) {
@@ -1481,6 +1676,8 @@ int main(int argc, char **argv)
 	if (emit_target(&s) == 0) {
 		if (is_install) {
 			rc = action_install(&s, ipa, bundle_id);
+		} else if (is_uninstall) {
+			rc = action_uninstall(&s, bundle_id);
 		} else if (is_push) {
 			rc = action_push(&s, local_path, remote_path, service_name);
 		} else if (is_pull) {

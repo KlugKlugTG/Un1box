@@ -9,7 +9,7 @@ class FirmwareSupportTest {
     }
 
     @Test fun labelsFollowTheCompatibilityRuns() {
-        for (id in listOf("n72ap-7E18", "n18ap-8C148", "n81ap-10B500")) {
+        for (id in listOf("n72ap-7E18", "n18ap-8C148", "n81ap-10B500", "n90ap-10B329", "k48ap-9B206")) {
             assertEquals(id, Support.TESTED, firmware(id).support)
         }
         // Un1box's own runs on a phone: these work, but slower than the iPod touch 2G on iOS 3.1.3.

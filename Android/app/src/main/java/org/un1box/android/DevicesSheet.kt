@@ -76,12 +76,17 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(0.dp)) {
                     items(host.devices, key = { it.id }) { device ->
                         // A running device's record is marked in use, which is not a crash to recover from.
-                        DeviceRow(device, switchable = !host.active && !host.busy, editable = !(host.active && device.selected),
-                            needsRecovery = device.dirty && !(host.active && device.selected),
+                        val runningHere = host.active && device.selected
+                        DeviceRow(device, switchable = !host.active && !host.busy, editable = !runningHere,
+                            needsRecovery = device.dirty && !runningHere,
                             onSelect = { host.selectDevice(device.id); onDismiss() },
-                            onDetails = { host.openDetails(device) }, onRename = { renaming = device }, onDelete = { deleting = device })
+                            onDetails = { host.openDetails(device) }, onRename = { renaming = device }, onDelete = { deleting = device },
+                            exportable = !runningHere && !host.busy && host.transfer == null,
+                            onExport = { onDismiss(); host.exportDevice(device) })
                     }
                     item {
+                        var addMenu by remember { mutableStateOf(false) }
+                        val canImport = !host.busy && host.transfer == null
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)
                             .ios6Lacquer(RoundedCornerShape(10.dp), Ios6.GrayButtonTop, Ios6.GrayButtonBottom, Ios6.GrayButtonEdge)
                             .clickable(enabled = !host.busy && !host.active) { onDismiss(); host.addDevice() }
@@ -98,7 +103,15 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
                                 Text("From an IPSW, or a device image you have", style = MaterialTheme.typography.bodySmall,
                                     color = Ios6.Ink.copy(alpha = 0.66f))
                             }
-                            Ios6Chevron()
+                            Box {
+                                IconButton(onClick = { addMenu = true }, modifier = Modifier.testTag("add_device_more")) {
+                                    Icon(Icons.Filled.MoreVert, "More ways to add a device", tint = Ios6.Ink)
+                                }
+                                DropdownMenu(addMenu, { addMenu = false }) {
+                                    DropdownMenuItem(text = { Text("Import device") }, leadingIcon = { Icon(LtIcons.Download, null) }, enabled = canImport,
+                                        onClick = { addMenu = false; onDismiss(); host.importDevice() }, modifier = Modifier.testTag("import_device"))
+                                }
+                            }
                         }
                     }
                 }
@@ -120,7 +133,8 @@ internal fun DevicesSheet(host: GuestHost, onDismiss: () -> Unit) {
 /** One white iOS 6 table row for a device, with its selection mark and its options menu. */
 @Composable
 private fun DeviceRow(device: DeviceSummary, switchable: Boolean, editable: Boolean, needsRecovery: Boolean,
-                      onSelect: () -> Unit, onDetails: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+                      onSelect: () -> Unit, onDetails: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit,
+                      exportable: Boolean, onExport: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val dark = Ios6.isDark()
     val fill = when {
@@ -159,6 +173,8 @@ private fun DeviceRow(device: DeviceSummary, switchable: Boolean, editable: Bool
                     DropdownMenuItem(text = { Text("Details") }, leadingIcon = { Icon(LtIcons.Info, null) }, onClick = { menu = false; onDetails() },
                         modifier = Modifier.testTag("device_details_item"))
                     DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, onClick = { menu = false; onRename() })
+                    DropdownMenuItem(text = { Text("Export") }, leadingIcon = { Icon(LtIcons.Upload, null) }, enabled = exportable,
+                        onClick = { menu = false; onExport() }, modifier = Modifier.testTag("device_export_item"))
                     DropdownMenuItem(text = { Text("Delete") }, leadingIcon = { Icon(Icons.Filled.Delete, null) }, enabled = editable,
                         onClick = { menu = false; onDelete() })
                 }

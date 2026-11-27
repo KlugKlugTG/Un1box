@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PIN = 'e6ab90f02c7fa4d4a81696da7d1204be5c259bac'
+PIN = '1955aea6930119c34b968c0596dc3cd72d67e839'
 PATCHES = sorted((ROOT / 'ci/engine-patches').glob('*.patch'))
 
 

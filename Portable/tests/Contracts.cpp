@@ -5,10 +5,8 @@
 #include "../src/Base64.hpp"
 #include "../src/Elapsed.hpp"
 #include "../src/Lifecycle.hpp"
-#include "../../Linux/TouchScript.hpp"
-#include "../../Linux/ControlDelivery.hpp"
-#include "../../Linux/ReplayQueue.hpp"
 #include <zlib.h>
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <filesystem>
@@ -16,10 +14,6 @@
 #include <iostream>
 #include <unistd.h>
 #include <sys/stat.h>
-#ifdef __linux__
-#include <sys/socket.h>
-#include <cerrno>
-#endif
 namespace fs = std::filesystem;
 static void put(const fs::path &p, const std::string &s) {
     fs::create_directories(p.parent_path());
@@ -67,76 +61,6 @@ int main() {
         assert(std::string(error.message) == "invalid PCM output");
         assert(lt_runtime_pcm(nullptr, output.data(), 4096, &info, nullptr) == LT_INVALID);
     }
-    struct ReplayEntry {
-        int id;
-        bool replay;
-    };
-    // A cancellation while processing a replay must keep the next user
-    // screenshot/stop command. The current command is consumed before erase.
-    std::vector<ReplayEntry> scheduled{{1, true}, {2, true}, {3, false}, {4, true}, {5, false}};
-    size_t cursor = 1;
-    const auto current = scheduled[cursor++];
-    assert(current.id == 2);
-    assert(lt::discard_replay(scheduled, cursor) == 1);
-    assert(scheduled[cursor].id == 3 && scheduled[cursor + 1].id == 5);
-    assert(lt::discard_replay(scheduled, scheduled.size()) == 0);
-    assert(lt::discard_replay(scheduled, 0) == 2);
-    assert(scheduled.size() == 2 && scheduled[0].id == 3 && scheduled[1].id == 5);
-    lt::ControlDelivery delivery;
-    using ControlKind = lt::ControlDelivery::Kind;
-    unsigned calls = 0;
-    assert(delivery.send(ControlKind::input, [&] {
-        calls++;
-        return true;
-    })); // contact/button down queued
-    assert(!delivery.send(ControlKind::input, [&] {
-        calls++;
-        return false;
-    })); // release dropped by full socket
-    assert(delivery.needs_cancel());
-    assert(!delivery.send(ControlKind::input, [&] {
-        calls++;
-        return true;
-    }));
-    assert(calls == 2); // newer input never overtakes pending cancellation
-    delivery.retry_cancel([] { return false; });
-    assert(delivery.needs_cancel());
-    delivery.retry_cancel([] { return true; });
-    assert(!delivery.needs_cancel());
-    assert(delivery.send(ControlKind::input, [] { return true; }));
-    assert(!delivery.send(ControlKind::pause, [] { return false; }));
-    assert(delivery.needs_cancel());
-    assert(delivery.send(ControlKind::cancel, [] { return true; }));
-    assert(!delivery.needs_cancel());
-#ifdef __linux__
-    // Exercise a real bounded private socket reaching EAGAIN. This is transport
-    // regression evidence only; no engine or guest is involved.
-    int sockets[2];
-    assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, sockets) == 0);
-    int small_buffer = 4096;
-    assert(setsockopt(sockets[0], SOL_SOCKET, SO_SNDBUF, &small_buffer, sizeof(small_buffer)) == 0);
-    std::array<char, 1024> packet{};
-    while (send(sockets[0], packet.data(), packet.size(), MSG_NOSIGNAL) == ssize_t(packet.size())) {
-    }
-    assert(errno == EAGAIN || errno == EWOULDBLOCK);
-    lt::ControlDelivery bounded;
-    assert(!bounded.send(ControlKind::input, [&] {
-        return send(sockets[0], packet.data(), packet.size(), MSG_NOSIGNAL) == ssize_t(packet.size());
-    }));
-    assert(bounded.needs_cancel());
-    bounded.retry_cancel(
-        [&] { return send(sockets[0], packet.data(), packet.size(), MSG_NOSIGNAL) == ssize_t(packet.size()); });
-    assert(bounded.needs_cancel());
-    while (recv(sockets[1], packet.data(), packet.size(), 0) > 0) {
-    }
-    bounded.retry_cancel([&] { return send(sockets[0], "C", 1, MSG_NOSIGNAL) == 1; });
-    assert(!bounded.needs_cancel());
-    assert(bounded.send(ControlKind::input, [&] { return send(sockets[0], "I", 1, MSG_NOSIGNAL) == 1; }));
-    assert(recv(sockets[1], packet.data(), packet.size(), 0) == 1 && packet[0] == 'C');
-    assert(recv(sockets[1], packet.data(), packet.size(), 0) == 1 && packet[0] == 'I');
-    close(sockets[0]);
-    close(sockets[1]);
-#endif
     // A zero engine return is not a guest shutdown receipt. Finalization may
     // briefly retain dirty while the confirmed publisher is still cleaning up.
     assert(lt::terminal_issue(true, true, false, true, 0) == lt::TerminalIssue::unconfirmed_shutdown);
@@ -145,20 +69,6 @@ int main() {
     assert(lt::terminal_issue(true, true, true, true, 0) == lt::TerminalIssue::none);
     assert(lt::terminal_issue(true, false, true, false, 0) == lt::TerminalIssue::none);
     assert(lt::terminal_issue(true, false, false, true, 1) == lt::TerminalIssue::engine_exit);
-    std::istringstream pair("17 0 .3 .5 91 0 .7 .5");
-    auto batch = lt::parse_touch_contacts(pair, 2);
-    assert(batch.count == 2 && batch.contacts[0].id == 17 && batch.contacts[1].id == 91);
-    for (const auto &text : {"17 0 .3 .5 17 0 .7 .5", "17 0 .3 .5", "17 4 .3 .5 91 0 .7 .5", "17 0 1.1 .5 91 0 .7 .5",
-                             "17 0 .3 .5 91 0 .7 .5 extra"}) {
-        bool rejected = false;
-        try {
-            std::istringstream invalid(text);
-            lt::parse_touch_contacts(invalid, 2);
-        } catch (const std::exception &) {
-            rejected = true;
-        }
-        assert(rejected);
-    }
     // Stop is admitted after the loop timestamp is sampled. Unsigned subtraction
     // with that stale snapshot used to kill a real worker in the same iteration.
     const uint64_t loop_snapshot = 90000000000ull;
@@ -260,7 +170,8 @@ int main() {
     std::string source = (root / "base.itbase").string();
     config.source = source.c_str();
     assert(lt_import_archive(&config, &e) == LT_OK);
-    assert((fs::status(root / "base/nor.bin").permissions() & fs::perms::owner_write) == fs::perms::none);
+    // Imported files keep ordinary modes: the lock's hashes vouch for a base, not its permissions.
+    assert((fs::status(root / "base/nor.bin").permissions() & fs::perms::owner_write) != fs::perms::none);
     std::string state = (root / "state").string();
     lt_device_config dc{sizeof(dc), 1, dest.c_str(), state.c_str(), 0};
     lt_device *d = nullptr, *second = nullptr;
@@ -268,7 +179,7 @@ int main() {
     assert(lt_device_open(&dc, &second, &e) == LT_BUSY);
     put(root / "rom", "rom");
     std::string rom = (root / "rom").string();
-    lt_boot_config boot{sizeof(boot), 1, "iPod-Touch-2G", rom.c_str(), nullptr, nullptr, 0};
+    lt_boot_config boot{sizeof(boot), 1, "iPod-Touch-2G", rom.c_str(), nullptr, nullptr, 0, 0};
     int argc;
     const char *const *argv;
     assert(lt_device_boot_argv(d, &boot, &argc, &argv, &e) == LT_OK);
@@ -307,7 +218,7 @@ int main() {
         "},{\"name\":\"k48-ios4/bin/tool\",\"size\":4}]}";
     archive(root / "synthetic.itpack", packindex, manifest + "tool");
     std::string packpath = (root / "synthetic.itpack").string();
-    lt_boot_config n81boot{sizeof(n81boot), 1, "iPod-Touch-4G", nullptr, packpath.c_str(), nullptr, 0};
+    lt_boot_config n81boot{sizeof(n81boot), 1, "iPod-Touch-4G", nullptr, packpath.c_str(), nullptr, 0, 0};
     assert(lt_device_boot_argv(d, &n81boot, &argc, &argv, &e) == LT_OK);
     args = argv[2];
     assert(args.find("kboot=" + n81base + "/kboot.bin") != std::string::npos);
@@ -345,13 +256,55 @@ int main() {
     std::string n90state = (root / "n90state").string();
     lt_device_config n90dc{sizeof(n90dc), 1, n90base.c_str(), n90state.c_str(), 0};
     assert(lt_device_open(&n90dc, &d, &e) == LT_OK);
-    lt_boot_config n90boot{sizeof(n90boot), 1, "iPhone-4", nullptr, nullptr, nullptr, 0};
+    lt_boot_config n90boot{sizeof(n90boot), 1, "iPhone-4", nullptr, nullptr, nullptr, 0, 0};
     assert(lt_device_boot_argv(d, &n90boot, &argc, &argv, &e) == LT_OK);
     args = argv[2];
     assert(args.find("kboot=" + n90base + "/kboot.bin") != std::string::npos);
     assert(args.find("baseband=on") != std::string::npos && args.find("imei=012345678901234") != std::string::npos);
     assert(args.find("nor-rw=") == std::string::npos && args.find("bootrom=") == std::string::npos);
+    {
+        // The modem starts with the carrier defaults (no record: nothing saved), each -global one argv element.
+        std::vector<std::string> all(argv, argv + argc);
+        auto has = [&](const std::string &v) { return std::find(all.begin(), all.end(), v) != all.end(); };
+        assert(has("ios-baseband.carrier=Light Touch") && has("ios-baseband.mcc-mnc=00101"));
+        assert(has("ios-baseband.registered=on") && has("ios-baseband.sim-present=on"));
+        assert(has("ios-baseband.signal-dbm=-63") && has("ios-baseband.gps-fix=37.334900,-122.009000,0,0.00,-1.0,5"));
+    }
     lt_device_close(d);
+    // An iPhone 5 (n42ap) boots with slirp user-mode networking on wifi0/cell0 and its baseband IMEI.
+    std::string n42base = prepared("n42",
+        "{\"format\":1,\"board\":\"n42ap\",\"build\":\"10B329\",\"boot_strategy\":\"kboot\",\"machine\":"
+        "{\"imei\":\"990000862471854\"},\"outputs\":{\"nor\":null,\"nand\":{\"path\":\"nand\",\"listing_sha256\":\"" +
+            hash(listing) + "\",\"pages\":1},\"kboot\":{\"path\":\"kboot.bin\",\"sha256\":\"" + hash(iboot) + "\"}}}",
+        {{"kboot.bin", iboot}});
+    std::string n42state = (root / "n42state").string();
+    lt_device_config n42dc{sizeof(n42dc), 1, n42base.c_str(), n42state.c_str(), 0};
+    assert(lt_device_open(&n42dc, &d, &e) == LT_OK);
+    lt_boot_config n42boot{sizeof(n42boot), 1, "iPhone-5", nullptr, nullptr, nullptr, 0, 0};
+    assert(lt_device_boot_argv(d, &n42boot, &argc, &argv, &e) == LT_OK);
+    {
+        std::vector<std::string> all(argv, argv + argc);
+        auto has_pair = [&](const std::string &flag, const std::string &val) {
+            for (size_t i = 0; i + 1 < all.size(); i++)
+                if (all[i] == flag && all[i + 1] == val) return true;
+            return false;
+        };
+        assert(has_pair("-netdev", "user,id=wifi0,lan=off"));
+        assert(has_pair("-netdev", "user,id=cell0,lan=off"));
+        assert(has_pair("-global", "ios-baseband.imei=990000862471854"));
+    }
+    lt_device_close(d);
+    // The modem's rules.
+    assert(lt_board_has_modem("n90ap") && lt_board_has_modem("n88ap") && lt_board_has_modem("n42ap") &&
+           !lt_board_has_modem("n81ap"));
+    assert(lt_carrier_number_ok("+15555550100") && lt_carrier_number_ok("911") && !lt_carrier_number_ok("+"));
+    assert(!lt_carrier_number_ok("555-0100") && !lt_carrier_number_ok("123456789012345678901"));
+    uint32_t sms_limit = 0;
+    assert(lt_carrier_sms_length("Hello", &sms_limit) == 5 && sms_limit == 160);
+    assert(lt_carrier_sms_length("a{b}", &sms_limit) == 6 && sms_limit == 160);           // escapes count twice
+    assert(lt_carrier_sms_length("caf\xc3\xa9 \xe2\x80\x99", &sms_limit) == 6 && sms_limit == 70); // UCS-2
+    lt_carrier_sms_length("\xf0\x9f\x8e\xb5", &sms_limit);
+    assert(sms_limit == 0);
     std::string n45base = prepared("n45",
         "{\"format\":1,\"board\":\"n45ap\",\"build\":\"3A101a\",\"machine\":{\"wifi-mac\":\"\"},\"outputs\":{"
         "\"nor\":{\"path\":\"nor.bin\",\"sha256\":\"" + hash(nor) + "\"},\"iboot\":{\"path\":\"iBoot.bin\",\"sha256\":\"" +
@@ -360,7 +313,7 @@ int main() {
     std::string n45state = (root / "n45state").string();
     lt_device_config n45dc{sizeof(n45dc), 1, n45base.c_str(), n45state.c_str(), 0};
     assert(lt_device_open(&n45dc, &d, &e) == LT_OK);
-    lt_boot_config n45boot{sizeof(n45boot), 1, "iPod-Touch-1G", nullptr, nullptr, nullptr, 0};
+    lt_boot_config n45boot{sizeof(n45boot), 1, "iPod-Touch-1G", nullptr, nullptr, nullptr, 0, 0};
     assert(lt_device_boot_argv(d, &n45boot, &argc, &argv, &e) != LT_OK);  // no boot ROM
     n45boot.bootrom_path = rom.c_str();
     assert(lt_device_boot_argv(d, &n45boot, &argc, &argv, &e) == LT_OK);
@@ -477,11 +430,56 @@ int main() {
             break;
     }
     assert(std::string(renamed.display_name) == "Kai\xe2\x80\x99s iPod \xf0\x9f\x8e\xb5");
+    // Carrier settings: only for boards with a modem; checked, saved with the record and read at its boot.
+    lt_carrier carrier{};
+    carrier.size = sizeof carrier;
+    carrier.version = 1;
+    assert(lt_library_carrier(l, first.id, &carrier, &e) == LT_UNSUPPORTED);
+    {
+        lt_library_import_config phone{sizeof(phone), 1, n90base.c_str(), nullptr, "Phone", nullptr, nullptr, 0,
+                                       nullptr, nullptr};
+        lt_record_info phone_record{sizeof(phone_record), 1, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0, 0};
+        assert(lt_library_import(l, &phone, &phone_record, &e) == LT_OK);
+        assert(lt_library_carrier(l, phone_record.id, &carrier, &e) == LT_OK);
+        assert(std::string(carrier.carrier) == "Light Touch" && carrier.bars == 5);
+        snprintf(carrier.carrier, sizeof carrier.carrier, "Carrier, \"quoted\"");
+        assert(lt_carrier_check(&carrier, &e) == LT_INVALID);
+        assert(lt_library_set_carrier(l, phone_record.id, &carrier, &e) == LT_INVALID);
+        snprintf(carrier.carrier, sizeof carrier.carrier, "Fake, Inc.");
+        snprintf(carrier.mcc_mnc, sizeof carrier.mcc_mnc, "3104");
+        assert(lt_library_set_carrier(l, phone_record.id, &carrier, &e) == LT_INVALID);
+        snprintf(carrier.mcc_mnc, sizeof carrier.mcc_mnc, "310410");
+        carrier.bars = 6;
+        assert(lt_library_set_carrier(l, phone_record.id, &carrier, &e) == LT_INVALID);
+        carrier.bars = 2;
+        carrier.registered = 0;
+        snprintf(carrier.last_caller, sizeof carrier.last_caller, "+4420");
+        assert(lt_library_set_carrier(l, phone_record.id, &carrier, &e) == LT_OK);
+        lt_carrier back{};
+        back.size = sizeof back;
+        back.version = 1;
+        assert(lt_library_carrier(l, phone_record.id, &back, &e) == LT_OK);
+        assert(std::string(back.carrier) == "Fake, Inc." && std::string(back.mcc_mnc) == "310410" && back.bars == 2);
+        assert(!back.registered && back.sim_present && std::string(back.last_caller) == "+4420");
+        assert(lt_library_device_open(l, phone_record.id, 0, &d, &e) == LT_OK);
+        lt_boot_config phone_boot{sizeof(phone_boot), 1, "iPhone-4", nullptr, nullptr, nullptr, 0, 0};
+        assert(lt_device_boot_argv(d, &phone_boot, &argc, &argv, &e) == LT_OK);
+        std::vector<std::string> all(argv, argv + argc);
+        auto has = [&](const std::string &v) { return std::find(all.begin(), all.end(), v) != all.end(); };
+        assert(has("ios-baseband.carrier=Fake, Inc.") && has("ios-baseband.mcc-mnc=310410"));
+        assert(has("ios-baseband.registered=off") && has("ios-baseband.signal-dbm=-97"));
+        lt_device_close(d);
+        assert(lt_library_remove(l, phone_record.id, &e) == LT_OK);
+        assert(lt_library_count(l, &count, &e) == LT_OK && count == 2);
+    }
     assert(lt_library_device_open(l, second_record.id, 0, &d, &e) == LT_OK);
     assert(lt_library_remove(l, second_record.id, &e) == LT_BUSY);
     lt_device_close(d);
+    // A delete also clears trash an earlier one left behind.
+    put(fs::path(libroot) / "records/.record-trash-stale/record/record.json", "{}");
     assert(lt_library_remove(l, second_record.id, &e) == LT_OK);
     assert(!fs::exists(second_record.state_path));
+    assert(!fs::exists(fs::path(libroot) / "records/.record-trash-stale"));
     assert(lt_library_count(l, &count, &e) == LT_OK && count == 1);
     assert(lt_library_selected(l, &selected_record, &e) == LT_OK && std::string(selected_record.id) == first.id);
     assert(lt_library_remove(l, second_record.id, &e) == LT_INVALID);
