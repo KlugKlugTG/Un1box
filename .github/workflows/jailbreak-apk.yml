@@ -9,28 +9,26 @@ name: Jailbreak APK
 # from, and the run costs the same ten minutes either way -- what makes the result the jailbreak build is
 # the one input this passes.
 #
-# What that input changes (Android/app/build.gradle.kts, FirmwareService.kt, build-support/spawn-shim.c):
+# What that input changes (Android/app/build.gradle.kts, FirmwareService.kt, crates/lighttouch-firmware):
 #
 #   preparation   passes --jailbreak, so a prepared device comes up with afc2 (the whole file system
 #                 over USB), Cydia and Substrate, from the Legacy-iOS-Kit bootstrap the recipe pins by
-#                 address and SHA-1 (SystemEdits/Cydia.swift). The recipe patches the kernel's sandbox
-#                 check and adds amfi_get_out_of_my_way=1 to the boot arguments, as the jailbreaks of the
-#                 time did. A recipe that does not implement the option says so rather than preparing a
-#                 stock system in silence (N45's: "the jailbreak option needs iPhone OS 2.0 or later").
-#   jb-tar        ships as libjbTar.so, and the preloaded spawn shim points the Cydia step's "/usr/bin/tar"
-#                 at it: Android has no /usr/bin/tar, and toybox's has neither -k nor --exclude, so the
-#                 step otherwise fails on every phone. tests/jailbreak/run.py checks that tar against the
-#                 host's own on the archives it is pinned to, and checks the redirect through a real spawn.
+#                 address and SHA-1 (crates/lighttouch-firmware/src/cydia.rs) and extracts in-process. The
+#                 recipe patches the kernel's sandbox check and adds amfi_get_out_of_my_way=1 to the boot
+#                 arguments, as the jailbreaks of the time did. A recipe that does not implement the option
+#                 says so rather than preparing a stock system in silence.
+#   jb-bunzip2    ships as libjbBz2.so (build-support/jb-bunzip2.c) for decompressing BigBoss Packages.bz2
+#                 indexes on the phone (Android ships no bzip2 binary).
 #   its own app   the APK is org.un1box.android.jb, signed with this repository's jailbreak keystore, and
 #                 it calls itself "Un1box JB". It installs *beside* the normal Un1box rather than over it,
 #                 which is the point: one phone can keep a stock builder and a jailbreaking one. The price
 #                 is that the two do not share state -- devices are prepared again inside the new app.
 #   naming        the APK, the artifact and the release tag carry "jailbreak" / the "jb-" prefix, and the
-#                 version name reads "0.0.13-jailbreak", so a build can be told from the normal one by name
+#                 version name reads "0.0.15-jailbreak", so a build can be told from the normal one by name
 #                 alone.
 #
 # Everything else is the normal workflow's: release variant, ARM64 ANGLE provider, the serial-49 guest
-# itpacks, the reused firmwarekit, and the same build steps -- the jailbreak APK is signed with the
+# tools, the Rust firmwarekit built here, and the same build steps -- the jailbreak APK is signed with the
 # jailbreak keystore, which the workflow generates once and caches beside the normal one.
 on:
   workflow_dispatch:
@@ -42,15 +40,15 @@ on:
       engine_ref:
         description: Engine branch, tag or commit to build
         required: true
-        default: e6ab90f02c7fa4d4a81696da7d1204be5c259bac
+        default: 1955aea6930119c34b968c0596dc3cd72d67e839
       base_release_repository:
-        description: Release whose APK supplies firmwarekit, the USB bridge and the guest tools
+        description: Fallback release if guest-package lacks the full guest-tools set
         required: true
         default: blake-lucas/LightTouch
       base_release_tag:
-        description: Tag of that release
+        description: Fallback release tag
         required: true
-        default: v0.0.10
+        default: v0.0.15
       debuggable:
         description: Whether the APK is debuggable (the runtime then trusts debug-env settings)
         type: choice

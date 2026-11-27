@@ -1,8 +1,19 @@
+From 62fd6c93c77bd121e19ecc1b8e8b3df064ccc19a Mon Sep 17 00:00:00 2001
+From: Un1box <ci@un1box>
+Date: Fri, 27 Nov 2026 09:36:00 +0000
+Subject: [PATCH] engine: force IPv4-only slirp user networking when lan=off
+
+---
+ hw/arm/ipad1.c         | 2 +-
+ hw/arm/ipod_touch_1g.c | 2 +-
+ hw/arm/s5l8920.c       | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
 diff --git a/hw/arm/ipad1.c b/hw/arm/ipad1.c
-index 6c87fc6..3f648ee 100644
+index a93d19c488..8c002fbb51 100644
 --- a/hw/arm/ipad1.c
 +++ b/hw/arm/ipad1.c
-@@ -1540,7 +1540,7 @@ static void ipad1_init(MachineState *machine)
+@@ -1577,7 +1577,7 @@ static void ipad1_init(MachineState *machine)
              /* Wi-Fi is the iPad's network: with no backend given, NAT it, off
               * the Mac's LAN (lan=off) so macOS never asks for Local Network. */
              QemuOpts *o = qemu_opts_parse_noisily(qemu_find_opts("netdev"),
@@ -12,7 +23,7 @@ index 6c87fc6..3f648ee 100644
              if (o) {
                  netdev_add(o, &err);
 diff --git a/hw/arm/ipod_touch_1g.c b/hw/arm/ipod_touch_1g.c
-index 1fed037..88326d6 100644
+index 1fed0370b5..88326d672a 100644
 --- a/hw/arm/ipod_touch_1g.c
 +++ b/hw/arm/ipod_touch_1g.c
 @@ -897,7 +897,7 @@ static void n45_machine_init(MachineState *machine)
@@ -25,10 +36,10 @@ index 1fed037..88326d6 100644
              if (o) {
                  netdev_add(o, &err);
 diff --git a/hw/arm/s5l8920.c b/hw/arm/s5l8920.c
-index d6d914e..b43af40 100644
+index 95d0112a2c..652f472fd5 100644
 --- a/hw/arm/s5l8920.c
 +++ b/hw/arm/s5l8920.c
-@@ -842,7 +842,7 @@ static void s5l8920_init(MachineState *machine)
+@@ -856,7 +856,7 @@ static void s5l8920_init(MachineState *machine)
          sysbus_realize_and_unref(SYS_BUS_DEVICE(card), &error_fatal);
          if (s->wifi && !qemu_find_netdev("wifi0")) {
              /* no backend given: NAT it, off the Mac's LAN (lan=off) */

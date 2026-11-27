@@ -1,16 +1,4 @@
-"""The jailbreak build's five layers, and that they meet, checked as text.
-
-The behaviour is tests/jailbreak/run.py's: it builds the tar and the shim and runs them. What it cannot
-see is whether the APK would *use* them, which is four names and one flag spread over four files:
-
-  gradle     -Pjailbreak becomes BuildConfig.JAILBREAK, and stages build-support/jb-tar.c's output as
-             libjbTar.so -- and requires it, so a jailbreak build without the tool fails rather than
-             preparing a device that cannot install Cydia
-  service    the worker passes --jailbreak to firmwarekit when that flag is set, and names the staged
-             tar in the child's environment (FIRMWAREKIT_TAR), the way it names iBoot32Patcher
-  shim       /usr/bin/tar is redirected, and the tar it points at is run without the shim preloaded
-  workflows  the build the APK comes from compiles that source with the NDK and passes -Pjailbreak; the
-             jailbreak workflow asks for the jailbreak build and builds nothing else
+"""The jailbreak build's layers, and that they meet, checked as text.
 
 Each check raises with one sentence when it fails, and returns a short note when it passes.
 """
@@ -20,8 +8,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GRADLE = ROOT / "Android" / "app" / "build.gradle.kts"
 SERVICE = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "FirmwareService.kt"
-SHIM = ROOT / "Packages" / "FirmwareKit" / "build-support" / "spawn-shim.c"
-CYDA = ROOT / "Packages" / "FirmwareKit" / "Sources" / "FirmwareKit" / "SystemEdits" / "Cydia.swift"
+CYDIA_RS = ROOT / "crates" / "lighttouch-firmware" / "src" / "cydia.rs"
+CREATE_RS = ROOT / "crates" / "lighttouch-firmware" / "src" / "create.rs"
+SYSTEM_EDITS_RS = ROOT / "crates" / "lighttouch-firmware" / "src" / "system_edits.rs"
+N72_RECIPE_RS = ROOT / "crates" / "lighttouch-firmware" / "src" / "n72_recipe.rs"
+BZ2_C = ROOT / "build-support" / "jb-bunzip2.c"
 SHELL_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "Shell.kt"
 UIKIT_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "UiKit.kt"
 ACTIVITY_KT = ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "MainActivity.kt"
@@ -51,69 +42,68 @@ def gradle_carries_the_flag():
     require(re.search(r'buildConfigField\("boolean",\s*"JAILBREAK"', gradle) is not None,
             "the flag never reaches the app: there is no BuildConfig.JAILBREAK")
     require(re.search(r'if \(jailbreak\) applicationIdSuffix = "\.jb"', gradle) is not None,
-            "the jailbreak build shares the normal applicationId: a phone could not hold both, it would "
-            "have to replace one with the other")
-    require(re.search(r'resValue\("string", "app_name", if \(jailbreak\) "([^"]+)" else "([^"]+)"\)', gradle)
-            is not None,
-            "the jailbreak build has no name of its own: two Un1box icons would sit side by side")
+            "the jailbreak build shares the normal applicationId: a phone could not hold both")
     label = re.search(r'resValue\("string", "app_name", if \(jailbreak\) "([^"]+)" else "([^"]+)"\)', gradle)
+    require(label is not None,
+            "the jailbreak build has no name of its own: two Un1box icons would sit side by side")
     require(label.group(2) == "Un1box",
             f'the normal build is named "{label.group(2)}", not the product name')
-    require(re.search(r'\(if \(jailbreak\) listOf\("jb-tar"(, "jb-bunzip2")?\) else emptyList\(\)\)', gradle)
-            is not None,
-            "firmwareKitDir does not require jb-tar for a jailbreak build: Gradle would succeed with a "
-            "tar-less kit and the phone would fail instead")
+    require(re.search(r'if \(jailbreak\) listOf\("jb-bunzip2"\) else emptyList\(\)', gradle) is not None,
+            "firmwareKitDir does not require jb-bunzip2 for a jailbreak build")
     stage = gradle.split('tasks.register<Copy>("prepareFirmwareKit")', 1)
     require(len(stage) > 1, "the firmwarekit staging task is gone")
-    require(re.search(r'if \(jailbreak\) from\(kit\) \{ include\("jb-tar"\); rename \{ "libjbTar.so" \} \}',
-                      stage[1].split("\n    }", 1)[0]) is not None,
-            "the tar is not staged as libjbTar.so for the jailbreak build")
-    require('include("jb-tar")' not in gradle.split('tasks.register<Copy>("prepareFirmwareKit")', 1)[0],
-            "the tar is staged outside that task's jailbreak branch, so the normal APK would carry it too")
-    return "the flag reaches BuildConfig, gives it its own app id and name, and stages libjbTar.so"
+    task_body = stage[1].split("\n    }", 1)[0]
+    require(re.search(r'if \(jailbreak\) from\(kit\) \{ include\("jb-bunzip2"\); rename \{ "libjbBz2\.so" \} \}',
+                      task_body) is not None,
+            "jb-bunzip2 is not staged as libjbBz2.so for the jailbreak build")
+    require('include("jb-bunzip2")' not in stage[0],
+            "jb-bunzip2 is staged outside the jailbreak branch, so the normal APK would carry it too")
+    return "the flag reaches BuildConfig, gives it its own app id and name, and stages libjbBz2.so"
 
 
-def service_passes_the_flag_and_names_the_tar():
+def service_passes_the_flag():
     service = read(SERVICE)
     require('listOf("--jailbreak")' in service and "BuildConfig.JAILBREAK" in service,
             "the worker never passes --jailbreak: a jailbreak build would prepare stock systems")
+    require("jailbreak || BuildConfig.JAILBREAK" not in service,
+            "FirmwareService mixes a per-preparation jailbreak flag with BuildConfig.JAILBREAK")
+    prepare_kt = read(ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "PrepareScreen.kt")
+    require("prepare_jailbreak" not in prepare_kt,
+            "PrepareScreen offers a per-device Jailbreak toggle, conflicting with the two-APK BuildConfig.JAILBREAK model")
     create = service.split('run(libs, listOf("create"', 1)[1][:1200]
     require("--jailbreak" in create,
             "the flag is not in the create command's arguments, so firmwarekit never hears it")
-    require('put("FIRMWAREKIT_TAR"' in service and "libjbTar.so" in service,
-            "the worker does not name the staged tar: the shim would still find the copy beside itself, "
-            "but the override is how one build points at one file")
-    require('put("LD_PRELOAD"' in service and "libspawnshim.so" in service,
-            "the shim is not preloaded into firmwarekit, so neither the patcher nor the tar is redirected")
-    return "--jailbreak on create, FIRMWAREKIT_TAR named, shim preloaded"
+    return "--jailbreak reaches firmwarekit create only through BuildConfig.JAILBREAK"
 
 
-def shim_redirects_tar():
-    shim = read(SHIM)
-    require('#define TAR_PATH "/usr/bin/tar"' in shim and '#define TAR_REAL "libjbTar.so"' in shim,
-            "the shim does not know the tar's paths, so a spawn of /usr/bin/tar finds nothing")
-    redirect = shim.split("static const char *redirected(", 1)[1].split("\n}", 1)[0]
-    require("TAR_PATH" in redirect and "TAR_ENV" in redirect,
-            "redirected() has no branch for the tar: the recipe's \"/usr/bin/tar\" stays as it is")
-    require("shim_quiet" in shim and "/proc/self/exe" in shim,
-            "the shim does not recognise the tar it spawns, so the extracted members' own accesses would "
-            "fill the log a preparation failure is read from")
-    require("without_preload" in shim and "(preload dropped)" in shim,
-            "the tar inherits LD_PRELOAD, so the shim interposes inside it as well")
-    for wrapper in ("posix_spawn", "posix_spawnp", "execve"):
-        body = shim.split(f"int {wrapper}(", 1)[1].split("\n}", 1)[0]
-        require("without_preload" in body,
-                f"{wrapper}() does not drop LD_PRELOAD for the tar: which spawn firmwarekit uses would "
-                "decide whether the shim is in front of it")
-    return "/usr/bin/tar redirected, the tar spawned without the shim"
+def firmwarekit_extracts_cydia_in_process():
+    cydia = read(CYDIA_RS)
+    create = read(CREATE_RS)
+    system_edits = read(SYSTEM_EDITS_RS)
+    n72 = read(N72_RECIPE_RS)
+    require("pub fn install_jailbreak(" in cydia and "pub fn install_cydia(" in cydia,
+            "cydia.rs does not define install_jailbreak() / install_cydia()")
+    require('pub const EXCLUDED: &str = "private/var/Keychains";' in cydia,
+            "cydia.rs does not exclude private/var/Keychains")
+    require("pub const PATCYH:" in cydia,
+            "cydia.rs does not strip patcyh on pre-8.3 systems")
+    require("crate::cydia::bootstrap(" in create and 'recipe.option("jailbreak") == Some(true)' in create,
+            "create.rs does not fetch the Cydia bootstrap when --jailbreak is set")
+    require("cydia::install_jailbreak(" in system_edits and "root_modes.extend(jb.modes)" in system_edits,
+            "system_edits.rs does not install the jailbreak and its set-ID modes on the volume")
+    require("cydia::install_jailbreak(" in n72 and "modes = jb.modes" in n72,
+            "n72_recipe.rs does not install the jailbreak and its set-ID modes on the volume")
+    return "in-process tar extraction, Keychains excluded, bootstrap + system_edits + n72 wired"
 
 
 def workflows_build_the_jailbreak_apk_only():
     workflow = read(WORKFLOW)
     jailbreak = read(JAILBREAK_WORKFLOW)
-    require("build-support/jb-tar.c" in workflow,
-            "the APK workflow never builds the tar, so the staged libjbTar.so would not exist")
-    require("-Pjailbreak=\"$DECLARED_JAILBREAK\"" in workflow,
+    require("crates/lighttouch-firmware" in workflow and "ci/firmwarekit/android/firmwarekit" in workflow,
+            "the APK workflow does not build Rust firmwarekit")
+    require("build-support/jb-bunzip2.c" in workflow and "ci/firmwarekit/android/jb-bunzip2" in workflow,
+            "the APK workflow never builds jb-bunzip2, so the staged libjbBz2.so would not exist")
+    require('-Pjailbreak="$DECLARED_JAILBREAK"' in workflow,
             "the APK workflow does not pass the flag to Gradle")
     require("workflow_call:" in workflow and "jailbreak:" in workflow.split("workflow_call:", 1)[1][:2000],
             "the APK workflow cannot be called with a jailbreak input")
@@ -121,29 +111,26 @@ def workflows_build_the_jailbreak_apk_only():
             "the APK workflow does not run the jailbreak self-check")
     require("uses: ./.github/workflows/android-perf-apk.yml" in jailbreak,
             "the jailbreak workflow does not call the APK workflow")
-    require("jailbreak: \"true\"" in jailbreak,
+    require('jailbreak: "true"' in jailbreak,
             "the jailbreak workflow does not ask for the jailbreak build")
     require("assemble" not in jailbreak and "gradlew" not in jailbreak,
-            "the jailbreak workflow builds the APK itself as well as calling the build: there would be two "
-            "definitions of the same APK")
-    return "one build, called with jailbreak true, self-checked"
+            "the jailbreak workflow builds the APK itself as well as calling the build")
+    return "one build, Rust firmwarekit + jb-bunzip2, called with jailbreak true, self-checked"
 
 
 def the_archives_are_the_pinned_ones():
-    """The self-check can only compare the real bytes if the build fetches exactly what the recipe pins."""
-    cyda = read(CYDA)
+    """The self-check verifies the same pinned Legacy-iOS-Kit archives as cydia.rs."""
+    cydia = read(CYDIA_RS)
     workflow = read(WORKFLOW)
-    revision = re.search(r"Legacy-iOS-Kit/([0-9a-f]{40})/resources/jailbreak/", cyda)
-    require(revision is not None, "Cydia.swift no longer pins the Legacy-iOS-Kit revision the archives come from")
+    revision = re.search(r"Legacy-iOS-Kit/([0-9a-f]{40})/resources/jailbreak/", cydia)
+    require(revision is not None, "cydia.rs no longer pins the Legacy-iOS-Kit revision")
     require(revision.group(1) in workflow,
-            "the workflow fetches the jailbreak archives from a different revision than the recipe pins, so "
-            "the self-check would compare against bytes no preparation ever extracts")
-    pinned = re.findall(r'\(name: "([^"]+)", sha1: "([0-9a-f]{40})"\)', cyda)
-    require(len(pinned) >= 3, f"Cydia.swift names {len(pinned)} archives; the bootstrap, Substrate and HTTPatch are three")
+            "the workflow fetches the jailbreak archives from a different revision than cydia.rs pins")
+    pinned = re.findall(r'\("([^"]+)",\s*"([0-9a-f]{40})"\)', cydia)
+    require(len(pinned) >= 3, f"cydia.rs names {len(pinned)} archives; expected at least 3")
     for name, sha1 in pinned:
         require(name in workflow and sha1 in workflow,
-                f"the workflow does not fetch and verify {name} ({sha1[:12]}), so a failed download would "
-                "go unnoticed")
+                f"the workflow does not fetch and verify {name} ({sha1[:12]})")
     require("tests/jailbreak/archives" in workflow,
             "the workflow does not put the archives where tests/jailbreak/run.py looks for them")
     return f"{len(pinned)} archives at {revision.group(1)[:8]}, verified by the workflow"
@@ -161,31 +148,24 @@ def the_jailbreak_apk_is_signed_with_its_own_key():
     check = workflow.split("Check the APK and write provenance", 1)
     require(len(check) > 1, "the APK check step is gone")
     require("LT_JB_SIGNER_SHA256" in check[1].split("- name:", 1)[0],
-            "the APK check compares the jailbreak APK against the normal key, so a correctly signed "
-            "jailbreak build would be rejected")
+            "the APK check compares the jailbreak APK against the normal key")
     keystore = workflow.split("Cache the signing key", 1)[1].split("- name:", 1)[0]
     jailbreak_cache = workflow.split("Cache the jailbreak signing key", 1)
-    require(len(jailbreak_cache) > 1,
-            "the jailbreak keystore has no cache entry of its own: adding it to the debug key's entry "
-            "would rewrite that entry without debug.keystore, and every normal build after would sign "
-            "with a new key")
+    require(len(jailbreak_cache) > 1, "the jailbreak keystore has no cache entry of its own")
     require("ci/jailbreak.keystore" in jailbreak_cache[1].split("- name:", 1)[0],
             "the jailbreak cache entry does not cache the jailbreak keystore")
     require("ci/jailbreak.keystore" not in keystore,
-            "the jailbreak keystore is cached in the debug key's entry, which would drop debug.keystore "
-            "from that cache when this run saves it")
+            "the jailbreak keystore is cached in the debug key's entry")
     return "its own keystore, cached in its own entry, and the check expects its digest"
 
 
 def the_tab_is_a_destination_of_its_own():
-    """The button the user asked for: a fourth place in the bar, and a screen behind it."""
+    """A fourth destination in the bar, and a screen behind it."""
     require("JAILBREAK" in read(SHELL_KT),
             "Shell.kt has no JAILBREAK destination: the tab has nowhere to go")
     nav = read(UIKIT_KT)
     body = nav.split("internal fun LtNavBar", 1)
     require(len(body) > 1, "UiKit.kt has no LtNavBar: there is no bar to put a tab in")
-    # The list's element type is the bar's business (a Triple before the iOS 6 pass, a pair with a
-    # tab item now); what has to stay is the destination and the label the user reads.
     body = body[1].split("\n}", 1)[0]
     require("Screen.JAILBREAK" in body and '"Jailbreak"' in body,
             "the navigation bar does not offer the Jailbreak tab")
@@ -202,19 +182,15 @@ def the_store_browses_on_the_phone():
     require("GZIPInputStream" in store and "HttpURLConnection" in store,
             "the tab does not fetch an index itself: it would have to ask the guest's 2010 stack")
     require("dists/stable/main/binary-iphoneos-arm" in store and "dists/ios/main/binary-iphoneos-arm" in store,
-            "the sources are not probed at Cydia's own layout, so a repository root would never resolve")
-    # The pinned bootstrap's /usr/libexec/cydia/startup is the authority:
-    #   debs=(/var/root/Media/Cydia/AutoInstall/*.deb) ... dpkg -i "${debs[@]}"
+            "the sources are not probed at Cydia's own layout")
     require("/private/var/root/Media/Cydia/AutoInstall" in store,
-            "the packages are not staged where the guest's own Cydia startup script installs from "
-            "(/var/root/Media/Cydia/AutoInstall), so dpkg would never see them")
+            "the packages are not staged in /private/var/root/Media/Cydia/AutoInstall")
     require("stagedPath" in store and "replace" not in store.split("fun stagedPath", 1)[1][:400].replace("it in", ""),
-            "the staged name is not sanitised: a file name from an index could leave the folder")
+            "the staged name is not sanitised")
     require("parseIndex" in store and "lastKey" in store,
-            "the control file's folded fields are not unfolded, so descriptions and versions would be wrong")
+            "the control file's folded fields are not unfolded")
     require("Packages.bz2" in store and "bunzip2" in store,
-            "the tab does not try a .bz2 index through the app's own decompressor, and BigBoss serves "
-            "nothing else (its 9 973 packages come from Packages.bz2)")
+            "the tab does not try a .bz2 index through the app's own decompressor")
     return "index and package fetched by the phone, staged in AutoInstall"
 
 
@@ -226,22 +202,18 @@ def the_bz2_indexes_have_a_decompressor():
     gradle = read(GRADLE)
     require('include("jb-bunzip2")' in gradle and "libjbBz2.so" in gradle,
             "the decompressor is not staged into the APK")
-    tool = ROOT / "Packages" / "FirmwareKit" / "build-support" / "jb-bunzip2.c"
-    source = read(tool)
+    source = read(BZ2_C)
     require("int main(int argc, char **argv)" in source and "in.bz2" in source,
             "the decompressor has no command line of its own")
-    for step in ("the header and the block magic", "the Huffman tables", "the run-length pass"):
-        pass
     require("run-length" in source or "RLE" in source or "repeat count" in source,
-            "the decompressor does not expand the run-length pass, which is what the block holds")
+            "the decompressor does not expand the run-length pass")
     require("unRLE" not in source and "bzip2-1.0.8" not in source,
-            "the decompressor vendored upstream bzip2 after all: it is meant to be this project's own")
+            "the decompressor vendored upstream bzip2")
     require("JailbreakBunzip2" in read(STORE_KT) and "libjbBz2.so" in read(STORE_KT),
             "the store has no way to run the tool")
     screen = read(SCREEN_KT)
     require('Text("Add Source")' in screen and "OutlinedTextField(adding" in screen,
-            "the Sources list has no field to type a source into: adding one would open a notice with "
-            "nothing to type in, which is what the first device run showed")
+            "the Sources list has no field to type a source into")
     require("repositoryIcons(" in screen and "firstIcon(" in read(STORE_KT),
             "a source's icon is looked for in one guessed place again")
     return "built here, checked, staged, and run by the store"
@@ -250,10 +222,10 @@ def the_bz2_indexes_have_a_decompressor():
 def the_helper_can_put_a_file_into_the_guest():
     """The one thing the guest cannot do for itself: receive the file."""
     helper = read(HELPER_C)
-    require("static int action_push" in helper, "the app-service helper has no push: nothing can stage a .deb")
+    require("static int action_push" in helper, "the app-service helper has no push")
     parser = helper.split("int main(", 1)[1]
     require('"--local"' in parser and '"--remote"' in parser,
-            "the helper takes no --local/--remote, so push cannot be called")
+            "the helper takes no --local/--remote")
     push = helper.split("static int action_push", 1)[1].split("\nstatic ", 1)[0]
     require("remote[0] != '/'" in push, "push accepts a relative guest path")
     require("if (n == 2 && at[0] == '.' && at[1] == '.')" in push,
@@ -261,87 +233,76 @@ def the_helper_can_put_a_file_into_the_guest():
     require("afc_file_write" in push and "afc_file_open" in push,
             "push does not write over AFC")
     require("com.apple.afc2" in push,
-            "push does not try afc2 first: a jailbroken device's whole file system is behind it")
+            "push does not try afc2 first")
     require("fun push(" in read(GUESTAPPS_KT) and '"push"' in read(GUESTAPPS_KT),
-            "GuestApps has no push, so the screen cannot reach the helper")
+            "GuestApps has no push")
     installer = read(STORE_KT)
     require("apps.push(" in installer and "GuestApps(context)" in installer,
-            "the installer does not use the helper: a download would never reach the guest")
+            "the installer does not use the helper")
     return "push over AFC (afc2 first), path-checked, wired to the screen"
 
 
 def the_tab_may_speak_cleartext():
-    """Cydia's repositories are http:// and Android refuses cleartext without this: the tab showed
-    "Cleartext HTTP traffic to apt.saurik.com not permitted" instead of any package."""
     manifest = read(ROOT / "Android" / "app" / "src" / "main" / "AndroidManifest.xml")
     require('android:usesCleartextTraffic="true"' in manifest,
             "the manifest forbids cleartext, and every repository these systems have is http://")
     store = read(STORE_KT)
     require("Packages.gz" in store and '"Packages"' in store,
-            "the tab does not try a plain index: the live repositories serve Packages (and .bz2), not .gz")
+            "the tab does not try a plain index")
     require("notAnIndex" in store and "not an index" in store,
             "a repository that answers with a web page is not reported as such")
     return "cleartext allowed, plain index tried, a web page reported as one"
 
 
 def the_apk_carries_this_build_s_helper():
-    """The helper in the base release predates push/pull: the APK's Install would answer "Unknown
-    argument" and stage nothing, which is exactly what the first device run showed."""
     workflow = read(WORKFLOW)
     require("Android/packaging/build-mobile-android.py" in workflow,
-            "the workflow reuses the base release's app-service helper, which has no push/pull: the "
-            "Jailbreak tab's Install cannot work with it")
+            "the workflow does not build the app-service helper")
     require("mobile-services-built" in workflow and "push|pull" in workflow,
-            "the helper built here is not checked for the actions the tab needs (strings on the "
-            "binary is what a host can ask an Android one)")
+            "the helper built here is not checked for push/pull")
     require("ci/mobile-services/arm64-v8a" in workflow,
             "the built helper is not put where -PmobileServicesArm64 stages the APK from")
     helper = read(HELPER_C)
     for action in ('"push"', '"pull"'):
         require(f"strcmp(action, {action})" in helper, f"the helper has no {action} action")
-    require('"private/var/lib/dpkg/status"' in read(STORE_KT) or "private/var/lib/dpkg/status" in read(STORE_KT),
-            "the tab does not read dpkg's status, so nothing can be marked as installed")
+    require("private/var/lib/dpkg/status" in read(STORE_KT),
+            "the tab does not read dpkg's status")
     require("fun pull(" in read(GUESTAPPS_KT) and "fun push(" in read(GUESTAPPS_KT),
-            "GuestApps has no push and pull pair, so the helper's file transfer is unreachable")
+            "GuestApps has no push and pull pair")
     return "built here, checked for push/pull, staged into the APK"
 
 
 def the_catalogues_cover_the_tab():
-    """The app draws English sources and translates them; a missing entry is an English word on a
-    Chinese or Russian screen."""
     for catalogue in ("I18nRu.kt", "I18nZh.kt"):
         text = read(ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / catalogue)
         for string in ("Jailbreak", "Sources", "Install", "Search", "Restart the device"):
             require(f'put("{string}"' in text, f"{catalogue} has no translation for \"{string}\"")
-    # The screen is titled by the list it shows (Cydia's own headers), so "Jailbreak" itself is the
-    # navigation bar's label; what the screen passes to Text is these.
     screen = read(SCREEN_KT)
     for english in ("Cydia", "Sources", "Changes", "Installed", "Search", "Install", "Restart the device",
                     "Add Source", "Information"):
-        require(f'"{english}"' in screen, f"the screen does not use the string \"{english}\" the catalogues translate")
+        require(f'"{english}"' in screen, f"the screen does not use the string \"{english}\"")
     return "both catalogues carry the tab's strings"
 
 
 def a_local_deb_can_be_staged():
-    """Repositories die; the .deb files they served survive on people's phones."""
-    screen = read(ROOT / "Android/app/src/main/java/org/un1box/android/JailbreakScreen.kt")
-    store = read(ROOT / "Android/app/src/main/java/org/un1box/android/JailbreakStore.kt")
+    screen = read(SCREEN_KT)
+    store = read(STORE_KT)
     require("OpenMultipleDocuments" in screen,
-            "the tab cannot pick a .deb from the phone: a dead repository leaves no other way in")
+            "the tab cannot pick a .deb from the phone")
     require('testTag("install_local_deb")' in screen,
-            "the local-package button has no tag, so nothing can press it in a check")
+            "the local-package button has no tag")
     require("copyDebToCache(" in screen and "copyTo(it)" in screen,
             "the picked document is never copied to a file the guest can be given")
     require("fun installLocal(" in store,
-            "the installer has no local-file path: only a repository package can be staged")
+            "the installer has no local-file path")
     require("autoInstallDir" in store and "GuestApps(context).push(" in store,
-            "a local package does not go through AutoInstall, where Cydia's startup job installs it")
+            "a local package does not go through AutoInstall")
 
 
 CHECKS = [
-    ("gradle: -Pjailbreak reaches BuildConfig and stages the tar", gradle_carries_the_flag),
-    ("service: the worker passes --jailbreak and names the tar", service_passes_the_flag_and_names_the_tar),
-    ("shim: /usr/bin/tar is redirected and the tar is spawned clean", shim_redirects_tar),
+    ("gradle: -Pjailbreak reaches BuildConfig and stages libjbBz2.so", gradle_carries_the_flag),
+    ("service: the worker passes --jailbreak to create", service_passes_the_flag),
+    ("firmwarekit: cydia.rs extracts the bootstrap in-process", firmwarekit_extracts_cydia_in_process),
     ("workflows: the jailbreak APK comes from the one build, self-checked",
      workflows_build_the_jailbreak_apk_only),
     ("workflows: the jailbreak application has its own signing key",

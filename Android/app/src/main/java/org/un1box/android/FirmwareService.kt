@@ -5,15 +5,14 @@ import android.content.Intent
 import android.os.*
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * One preparation per process, independent of a running QEMU worker: firmwarekit (Packages/FirmwareKit, the
- * preparer every Un1box port shares) builds the device from its IPSW, with its build-time boots through
- * lighttouch-oneshot and the APK's engine, into a device folder that the device worker moves into its library.
- * Both ship as executables in nativeLibraryDir (libfirmwarekit.so, liblighttouch_oneshot.so), and so does
- * iBoot32Patcher (libiBoot32Patcher.so), which the iPad 1 recipe runs through firmwarekit.
+ * One preparation per process, independent of a running QEMU worker: firmwarekit (crates/lighttouch-firmware, the
+ * preparer every Un1box port shares) builds the device from its IPSW, with its build-time boots in-process via
+ * libqemu-arm.so, into a device folder that the device worker moves into its library.
  */
 class FirmwareService : Service() {
     private val consumed = AtomicBoolean(false)
@@ -28,20 +27,26 @@ class FirmwareService : Service() {
     /** Each finished step's name and seconds, a line each ("name\tseconds"), for the finished screen's details. */
     @Volatile private var timings = ""
     @Volatile private var process: java.lang.Process? = null
+    /** The IPSW isn't the version's own and the user chose "Use anyway": firmwarekit's `--unchecked-ipsw`. */
+    @Volatile private var unchecked = false
+    /** This preparation's log (docs/LOGS.md): firmwarekit's stderr, its one-shot boots and their serial logs. */
+    private var log: Logs.Writer? = null
 
     private val binder = object : IFirmware.Stub() {
         override fun supports(firmwareId: String): Boolean =
             File(applicationInfo.nativeLibraryDir, "libfirmwarekit.so").canExecute() &&
                 FirmwareCatalog.load(this@FirmwareService).any { it.id == firmwareId }
-        override fun start(firmwareId: String, ipswPath: String, trustedToolsRoot: String, bootromPath: String): Bundle {
+        override fun start(firmwareId: String, ipswPath: String, trustedToolsRoot: String, bootromPath: String,
+                           uncheckedIpsw: Boolean): Bundle {
             check(consumed.compareAndSet(false, true)) { "A fresh firmware worker is required" }
-            foreground()
+            foreground(PREPARING)
             currentFirmwareId = firmwareId
             state = "preparing"; stage = "Starting"
             val parent = File(filesDir, "prepared").apply { mkdirs() }
             val job = java.lang.Long.toHexString(SystemClock.uptimeMillis())
             destination = File(parent, "job-$job").absolutePath
             note("preparing")
+            unchecked = uncheckedIpsw
             Thread({ prepare(firmwareId, ipswPath, File(trustedToolsRoot), bootromPath) }, "firmwarekit").start()
             return status()
         }
@@ -76,78 +81,58 @@ class FirmwareService : Service() {
         val libs = File(applicationInfo.nativeLibraryDir)
         val cache = File(cacheDir, "firmwarekit")
         val out = File(destination)
+        AppLog.attach(this, "firmware")
+        val logs = Logs.dir(this)
+        Logs.newGeneration(logs, Logs.PREPARE.name)
+        val log = Logs.Writer(logs, Logs.PREPARE).also { this.log = it }
+        fun say(line: String) = log.write("[log] $line\n".toByteArray())
+        say("Un1box ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_COMMIT}) preparing $firmwareId from ${File(ipsw).name}" +
+            (if (BuildConfig.JAILBREAK) ", jailbroken" else "") + (if (bootrom.isNotEmpty()) ", with a boot ROM" else "") +
+            (if (unchecked) ", used anyway (not the version's own IPSW)" else "") +
+            " on ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}")
+        AppLog.i("Preparation of $firmwareId started" + if (BuildConfig.JAILBREAK) " (jailbreak)" else "")
+        val started = SystemClock.elapsedRealtime()
         try {
             val catalog = File(filesDir, "firmware-catalog.json")
             assets.open("firmware-catalog.json").use { input -> catalog.outputStream().use { input.copyTo(it) } }
             run(libs, listOf("create", "--catalog", catalog.path, "--id", firmwareId, "--ipsw", ipsw, "--out", out.path,
-                "--helper", File(libs, "liblighttouch_oneshot.so").path, "--guest-tools", tools.path, "--cache", cache.path,
+                "--guest-tools", tools.path, "--cache", cache.path,
                 "--language", Locale.getDefault().toLanguageTag(),
                 // iOS 5 and later start at the Home screen, not Setup Assistant (ignored before 5, which has none)
                 "--skip-setup") +
                 // the iPod touch 2G's keybag boot (iOS 4) runs its SecureROM, which no IPSW carries
                 (if (bootrom.isNotEmpty()) listOf("--bootrom", bootrom) else emptyList()) +
-                // This build prepares every device jailbroken (afc2, Cydia and Substrate). The recipes that
-                // support it are the ones that go through SystemEdits.buildK48 -- the iPad, the iPod touches and
-                // the iPhone 4 -- and N72; N45's 1.x refuses the option itself, in words, rather than silently
-                // preparing a stock system.
+                // the user chose "Use anyway" for an IPSW that isn't this version's own
+                (if (unchecked) listOf("--unchecked-ipsw") else emptyList()) +
+                // This build prepares every device jailbroken (afc2, Cydia and Substrate, from the bootstrap firmwarekit
+                // downloads beside its cache). The recipes that don't support it refuse the option themselves (1.x, iPod touch 2G).
                 (if (BuildConfig.JAILBREAK) listOf("--jailbreak") else emptyList()))
             // create's own lease and boot logs; the device is the rest
-            File(out, "work").let { writable(it); it.deleteRecursively() }
+            keepWorkLogs(out, log)
+            writable(File(out, "work"))
+            File(out, "work").deleteRecursively()
+            say("prepared in ${(SystemClock.elapsedRealtime() - started) / 1000} s")
+            AppLog.i("Preparation of $firmwareId finished in ${(SystemClock.elapsedRealtime() - started) / 1000} s")
             done = total
             state = "complete"
             note("complete")
-            foreground("Your device is prepared. Open Un1box to add it.")
+            foreground(PREPARED)
         } catch (e: Exception) {
-            if (cancelling) state = "cancelled" else { failure = listOf(e.message ?: "Firmware preparation failed", diagnosis(libs)).joinToString("\n"); state = "failed" }
-            writable(out); out.deleteRecursively()
+            if (cancelling) state = "cancelled" else { failure = e.message ?: "Firmware preparation failed"; state = "failed" }
+            if (!cancelling) foreground(FAILED)
+            keepWorkLogs(out, log)
+            say(if (cancelling) "cancelled" else "failed after ${(SystemClock.elapsedRealtime() - started) / 1000} s: $failure")
+            if (cancelling) AppLog.i("Preparation of $firmwareId cancelled") else AppLog.w("Preparation of $firmwareId failed: $failure")
+            writable(out)
+            out.deleteRecursively()
             if (cancelling) PreparationNote.clear(this) else note("failed")
         } finally {
             process = null
+            this.log = null
             if (awake.isHeld) awake.release()
             // Decrypted firmware is only worth keeping for another build of the same IPSW; it is large.
             cache.deleteRecursively()
         }
-    }
-
-    /**
-     * What the preparation needed from this build and what the app could see of it, appended to a failure so a
-     * report names the link that broke: the patcher and env(1) beside firmwarekit, and whether this process can
-     * run the patcher at all. The app spawns it the way firmwarekit does, but through Java, which does not depend
-     * on Foundation's idea of where a bare name lives. The patcher prints its usage and exits, so this is cheap.
-     */
-    private fun diagnosis(libs: File): String {
-        val patcher = File(libs, "libiBoot32Patcher.so")
-        val shim = File(libs, "libspawnshim.so")
-        val spawn = try {
-            val child = ProcessBuilder(patcher.path).redirectErrorStream(true).start()
-            child.inputStream.readBytes()
-            child.waitFor()
-            "ran (exit ${child.exitValue()})"
-        } catch (error: Exception) {
-            "failed: ${error.message ?: error.javaClass.simpleName}"
-        }
-        return "tools: iBoot32Patcher ${if (patcher.canExecute()) "present" else "missing"}, " +
-            "spawn shim ${if (shim.isFile) "present" else "missing"}; app ran the patcher: $spawn" + shimLog()
-    }
-
-    /** The spawn shim's log, which names the path firmwarekit actually tried; empty when it wrote none. */
-    private fun shimLog(): String {
-        val log = File(filesDir, "spawn-shim.log")
-        if (!log.isFile) return ""
-        val lines = log.readLines().takeLast(40)
-        return if (lines.isEmpty()) "" else "\nspawn shim:\n" + lines.joinToString("\n")
-    }
-
-    /**
-     * Where firmwarekit is started, which is what decides how its bare "env" resolves: bionic's posix_spawn
-     * searches no PATH, so that name is looked up in the working directory alone. /system/bin holds toybox's env
-     * and is the first choice; the APK's own copy of env(1) sits beside firmwarekit in nativeLibraryDir, so a
-     * device where that directory cannot be entered still has one for the second attempt to find.
-     */
-    private fun start(builder: ProcessBuilder, libs: File): java.lang.Process = try {
-        builder.directory(File("/system/bin")).start()
-    } catch (error: java.io.IOException) {
-        builder.directory(libs).start()
     }
 
     /**
@@ -156,32 +141,32 @@ class FirmwareService : Service() {
      */
     private fun run(libs: File, args: List<String>) {
         val builder = ProcessBuilder(listOf(File(libs, "libfirmwarekit.so").path) + args)
-            .redirectError(File(cacheDir, "firmwarekit.log").apply { parentFile?.mkdirs() })
         builder.environment().apply {
             put("LTM_QEMU_DYLIB", File(libs, "libqemu-arm.so").path)
             put("LD_LIBRARY_PATH", libs.path)
             put("HOME", filesDir.path); put("TMPDIR", cacheDir.path)
-            put("PATH", libs.path + ":/system/bin:/system/xbin")
-            // The iPad 1 recipe launches the patcher through a bare "env", which Android cannot resolve. The shim
-            // runs the patcher in env's place and records the access and spawn calls it sees, so a failure says
-            // which path was wanted instead of only that something was missing.
-            File(libs, "libspawnshim.so").takeIf { it.isFile }?.let {
-                put("LD_PRELOAD", it.path)
-                put("SPAWN_SHIM_LOG", File(filesDir, "spawn-shim.log").path)
+            // Debug builds: files/debug-env's KEY=VALUE lines reach the preparation's boots too, as they reach the
+            // running engine (EngineService), e.g. LT_ONESHOT_CRASH=30 for the crash-report test (crashlog.rs).
+            if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                File(filesDir, "debug-env").takeIf { it.exists() }?.readLines()?.forEach { line ->
+                    val (key, value) = line.split('=', limit = 2).takeIf { it.size == 2 } ?: return@forEach
+                    put(key.trim(), value.trim())
+                }
             }
-            // firmwarekit's k48 (iPad 1) recipe shells out to iBoot32Patcher. On macOS it sits next to the
-            // app's executable; here it is one of the executables in nativeLibraryDir, which firmwarekit does
-            // not look in by name, so it is named explicitly. K48IBoot.patcher reads this override after the two
-            // directories it derives, so a build without the tool keeps firmwarekit's own "iBoot32Patcher ...
-            // not runnable" error rather than being pointed at nothing.
-            File(libs, "libiBoot32Patcher.so").takeIf { it.canExecute() }?.let { put("FIRMWAREKIT_IBOOT_PATCHER", it.path) }
-            // The jailbreak build's tar, which the shim runs where firmwarekit asked for /usr/bin/tar (absent
-            // here, and toybox's has neither -k nor --exclude). A normal build has no such file: it never asks
-            // for tar, and the shim leaves the path alone.
-            File(libs, "libjbTar.so").takeIf { it.canExecute() }?.let { put("FIRMWAREKIT_TAR", it.path) }
         }
         check(!cancelling) { "Cancelled" }
-        val child = start(builder, libs).also { process = it }
+        val child = builder.start().also { process = it }
+        // stderr through a pipe into the capped log: the pipe outlives a crashing firmwarekit, so its last lines arrive.
+        // The pipe can be closed under this read (cancel's destroy(), or the runtime's cleanup as firmwarekit exits;
+        // "read interrupted by close() on another thread"): that ends the copy, not the preparation process.
+        val copier = Thread({
+            val buffer = ByteArray(16 * 1024)
+            try {
+                child.errorStream.use { input ->
+                    while (true) { val n = input.read(buffer); if (n < 0) break; log?.write(buffer, 0, n) }
+                }
+            } catch (_: IOException) {}
+        }, "firmwarekit-log").apply { start() }
         var weights = listOf<Long>(); var step = 0
         var message = ""
         var stepName = ""; var stepStarted = 0L
@@ -203,34 +188,63 @@ class FirmwareService : Service() {
             }
         }
         val exit = child.waitFor()
+        copier.join(5000)
         endStep()
         check(!cancelling) { "Cancelled" }
-        check(exit == 0) { message.ifEmpty { "firmwarekit ${args.first()} failed (exit $exit)" } }
+        check(exit == 0) {
+            message.ifEmpty {
+                // firmwarekit words its own failures (an IPSW used anyway's too); this one stopped without any.
+                val stopped = "firmwarekit ${args.first()} stopped (exit $exit)"
+                if (unchecked) "Un1box couldn't prepare this IPSW, so it may not support it. ($stopped)" else stopped
+            }
+        }
+    }
+
+    /**
+     * The one-shot boots' serial logs (work/keybag.log, seal.log, …), which go with the job folder: the end of each
+     * into the preparation log, where a failed preparation keeps them.
+     */
+    private fun keepWorkLogs(out: File, log: Logs.Writer) {
+        val work = File(out, "work").takeIf { it.isDirectory } ?: return
+        work.walkTopDown().maxDepth(3).filter { it.isFile && it.name.endsWith(".log") }.sortedBy { it.lastModified() }.forEach { file ->
+            val skip = (file.length() - 256 * 1024).coerceAtLeast(0L)
+            log.write("\n----- [log] ${file.relativeTo(out).path} (${file.length()} bytes${if (skip > 0) ", the last 256 KiB" else ""}) -----\n".toByteArray())
+            runCatching { java.io.RandomAccessFile(file, "r").use { f -> f.seek(skip); val b = ByteArray((f.length() - skip).toInt()); f.readFully(b); log.write(b) } }
+        }
     }
 
     private fun note(phase: String) = PreparationNote.write(this, JSONObject().put("state", phase).put("pid", Process.myPid())
         .put("firmwareId", currentFirmwareId).put("destination", destination).put("timings", timings).put("error", failure))
 
-    /** firmwarekit leaves its outputs read-only; delete needs the folders writable again. */
+    /** firmwarekit leaves some outputs read-only; delete needs the folders writable again. */
     private fun writable(root: File) { if (root.exists()) root.walkTopDown().forEach { it.setWritable(true, true) } }
 
     override fun onBind(intent: Intent): IBinder = binder
+    // A fresh worker replacing one that ended (Un1box stays bound) must not inherit its foreground notification.
+    override fun onCreate() { super.onCreate(); stopForeground(STOP_FOREGROUND_REMOVE) }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        foreground(if (state == "complete") "Your device is prepared. Open Un1box to add it." else "Preparing a device; return to view progress or cancel")
+        foreground(when (state) { "complete" -> PREPARED; "failed" -> FAILED; else -> PREPARING })
         return START_NOT_STICKY
     }
-    private fun foreground(text: String = "Preparing a device; return to view progress or cancel") {
+    /** The ongoing notification while this worker has a preparation: under way, or its result until Un1box takes it. */
+    private fun foreground(text: Pair<String, String>) {
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("firmware", "Firmware preparation", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel("firmware", "Device setup", NotificationManager.IMPORTANCE_LOW))
         val launch = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         startForeground(2, Notification.Builder(this, "firmware").setSmallIcon(android.R.drawable.ic_menu_upload)
-            .setContentTitle("Un1box preparation").setContentText(text)
+            .setContentTitle(text.first).setContentText(text.second)
             .setContentIntent(launch).setOngoing(true).build())
+    }
+
+    private companion object {
+        val PREPARING = "Preparing a device" to "Tap to see its progress."
+        val PREPARED = "Your device is ready" to "Open Un1box to add it."
+        val FAILED = "Couldn't prepare the device" to "Open Un1box to see why."
     }
 }
 
 /**
- * The worker's own record of its run, so a Un1box that Android closed or restarted while preparation ran in the
+ * The worker's own record of its run, so an Un1box that Android closed or restarted while preparation ran in the
  * background finds it again: still preparing (the worker's pid), complete (its output, waiting to be added), or
  * failed (why). The app clears it once it has shown or added the result.
  */

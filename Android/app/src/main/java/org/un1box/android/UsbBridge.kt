@@ -20,20 +20,25 @@ internal class UsbBridge(private val context: Context) {
     private var process: java.lang.Process? = null
     @Volatile var muxSocket: String? = null; private set
 
-    /** Null once the bridge is up; otherwise why not. The guest boots either way, without a cable if this failed. */
-    fun start(recordId: String): String? {
+    /**
+     * Null once the bridge is up; otherwise why not. The guest boots either way, without a cable if this failed.
+     * [appPairs]: the daemon leaves pairing to the app service (-p): the iPhone 5 (iOS 10) never sends the
+     * notification the daemon's own pairing waits for once Trust is tapped, so only a client's Pair completes there.
+     */
+    fun start(recordId: String, appPairs: Boolean = false, pairingSeed: File? = null): String? {
         if (!daemonBinary.canExecute()) return "Guest app services are not included in this build."
         retireStale()
         val directory = File(runRoot, Process.myPid().toString())
         val pairing = File(context.filesDir, "usb-pairing/" + recordId.filter { it.isLetterOrDigit() })
         val logs = File(context.filesDir, "service-logs")
         for (dir in listOf(runRoot, directory, pairing, logs)) { dir.mkdirs(); Os.chmod(dir.absolutePath, 0x1c0) } // 0700
+        pairingSeed?.let { seedPairing(pairing, it) }
         // One log per bridge start, never removed before (185 on one phone): keep the newest few.
         logs.listFiles { f -> f.name.startsWith("usbmuxd-") }?.sortedByDescending { it.lastModified() }?.drop(7)?.forEach { it.delete() }
         val mux = File(directory, "mux.sock"); val qemu = File(directory, "qemu.sock")
         mux.delete(); qemu.delete()
-        val builder = ProcessBuilder(daemonBinary.absolutePath, "-f", "-S", mux.absolutePath, "-C", pairing.absolutePath,
-            "-P", File(directory, "daemon.pid").absolutePath)
+        val builder = ProcessBuilder(listOf(daemonBinary.absolutePath, "-f", "-S", mux.absolutePath, "-C", pairing.absolutePath,
+            "-P", File(directory, "daemon.pid").absolutePath) + (if (appPairs) listOf("-p") else emptyList()))
             .redirectErrorStream(true).redirectOutput(File(logs, "usbmuxd-${Process.myPid()}.log"))
         builder.environment().apply {
             put("USBMUXD_QEMU_ADDR", qemu.absolutePath)
@@ -54,6 +59,24 @@ internal class UsbBridge(private val context: Context) {
         }
         stop()
         return "Guest USB bridge did not create its sockets within 5 seconds."
+    }
+
+    /**
+     * The pairing a preparation made (the iPhone 5's base/pairing: <UDID>.plist and SystemConfiguration.plist), so
+     * the guest trusts the app from its first start. Each file only where the record's pairing folder has none, so
+     * a pairing made later stays. Same as the desktop's bridge.rs seed_pairing.
+     */
+    private fun seedPairing(pairing: File, seed: File) {
+        for (file in seed.listFiles().orEmpty()) {
+            val target = File(pairing, file.name)
+            if (!file.isFile || !file.name.endsWith(".plist") || target.exists()) continue
+            val partial = File(pairing, ".${file.name}.seed")
+            runCatching {
+                file.copyTo(partial, overwrite = true)
+                Os.chmod(partial.absolutePath, 0x180) // 0600
+                if (!partial.renameTo(target)) partial.delete()
+            }.onFailure { partial.delete() }
+        }
     }
 
     private fun privateSocket(file: File): Boolean = try {

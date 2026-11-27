@@ -8,6 +8,7 @@ import android.provider.MediaStore
 import org.json.JSONObject
 import android.os.*
 import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
 import android.view.KeyEvent
 import android.view.WindowInsets as PlatformInsets
 import android.view.WindowInsetsController
@@ -40,13 +41,21 @@ import java.util.concurrent.Executors
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     private var engine by mutableStateOf<IEngine?>(null)
-    override var status by mutableStateOf("stopped")
-        private set
+    private var statusState by mutableStateOf("stopped")
+    // Each change of the guest's state, and each error and notice the user sees, goes into the app log (docs/LOGS.md).
+    override var status: String
+        get() = statusState
+        private set(value) {
+            if (value != statusState) AppLog.i("Device ${selected?.let { "\"${it.name}\" (${it.subtitle})" } ?: "(none)"}: $statusState -> $value")
+            statusState = value
+        }
     private var detail by mutableStateOf("")
     override var displayAsleep by mutableStateOf(false)
         private set
-    override var error by mutableStateOf("")
-        private set
+    private var errorState by mutableStateOf("")
+    override var error: String
+        get() = errorState
+        private set(value) { if (value.isNotEmpty() && value != errorState) AppLog.w("Shown error: $value"); errorState = value }
     private val workerEvidenceDelivery = SessionDeliveryGate()
     private var workerPid by mutableIntStateOf(0)
     override var sessionOwned by mutableStateOf(false)
@@ -60,7 +69,10 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     override var busy by mutableStateOf(false)
         private set
     /** A passing message (screenshot saved, device renamed), shown as a snackbar. */
-    private var notice by mutableStateOf("")
+    private var noticeState by mutableStateOf("")
+    private var notice: String
+        get() = noticeState
+        set(value) { if (value.isNotEmpty()) AppLog.i("Notice: $value"); noticeState = value }
     override var profileRecording by mutableStateOf(false)
         private set
     override var profileAutomatic by mutableStateOf(false)
@@ -83,6 +95,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     // Android asks once, when the switch goes on; a denial leaves the switch off and says why.
     private val microphonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         settings.microphone = granted
+        applySettings()
         if (!granted) error = "Without the microphone permission the emulated device has no input."
     }
     // The same for the camera: asked once, when its switch goes on.
@@ -105,6 +118,42 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
             notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+    override var logsBusy by mutableStateOf(false)
+        private set
+    private var pendingLogs: File? = null
+    private val saveLogs = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        // The zip waiting in the cache: this activity's, or one a recreated activity finds there.
+        val file = pendingLogs ?: File(cacheDir, "log-exports").listFiles { f -> f.name.endsWith(".zip") }?.maxByOrNull { it.lastModified() }
+        pendingLogs = null
+        if (uri == null) { logsBusy = false; file?.delete(); return@registerForActivityResult }
+        if (file == null || !file.isFile) {
+            runCatching { DocumentsContract.deleteDocument(contentResolver, uri) }
+            logsBusy = false; error = "Couldn't save the logs: Un1box was closed while the save dialog was open. Try Export logs again."
+            return@registerForActivityResult
+        }
+        Thread({
+            try {
+                (contentResolver.openOutputStream(uri) ?: error("the file couldn't be opened")).use { out -> file.inputStream().use { it.copyTo(out) } }
+                handler.post { logsBusy = false; notice = "Logs saved" }
+            } catch (e: Exception) { handler.post { logsBusy = false; error = "Couldn't save the logs: ${e.message}" } }
+            finally { file.delete() }
+        }, "save-logs").start()
+    }
+    override fun exportLogs() {
+        if (logsBusy) return
+        logsBusy = true
+        val socket = muxSocket
+        val inputs = LogExport.Inputs(devices, status) { socket.takeIf { it.isNotEmpty() }?.let { GuestApps(applicationContext).lastCrash(it, 8) } }
+        Thread({
+            try {
+                val zip = LogExport.build(applicationContext, inputs)
+                handler.post { pendingLogs = zip; saveLogs.launch(zip.name) }
+            } catch (e: Exception) {
+                AppLog.e("Log export failed", e)
+                handler.post { logsBusy = false; error = "Couldn't collect the logs: ${e.message}" }
+            }
+        }, "export-logs").start()
+    }
     private val localIpa = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) store.installLocal(uri) }
     // board-build -> (product type, iOS version), from the bundled firmware catalog.
     @Volatile private var firmwareTargets: Map<String, StoreTarget> = emptyMap()
@@ -116,9 +165,11 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     override val devices: List<DeviceSummary> get() { catalogVersion; return records.map { DeviceSummary.of(it, firmwareTargets) } }
     override val selected: DeviceSummary? get() = devices.firstOrNull { it.selected }
     override val settings by lazy { AppSettings(this) }
+    // Refusals show as a notice: the status poll replaces the error banner while the device runs.
+    override val carrier by lazy { CarrierController({ engine }, handler) { notice = it } }
     private val monitor = PerformanceMonitor { engine }
     override val perf: PerfSnapshot get() = monitor.snapshot
-    override val storeInstalling get() = store.installing
+    override val storeInstalling get() = store.committed
     // Save & Stop needs the engine to serialize live GL state on EGL hosts (docs/TODO.md).
     override val canSaveState = false
     /** HOME or FULLSCREEN: what is under any full-page overlay. */
@@ -205,6 +256,8 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             workerEvidenceDelivery.advance()
             engine = IEngine.Stub.asInterface(binder)
+            val held = engine
+            installer.storageSync = { hold -> runCatching { held?.holdStorageSync(hold) } }
             refreshDevices()
             applySettings()
             binder.linkToDeath({ handler.post { if (engine?.asBinder() == binder) workerExited() } }, 0)
@@ -231,6 +284,8 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     private val pollThread = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
         Thread(task, "status-poll").apply { isDaemon = true }
     }
+    /** The current device has a modem and runs: the poll reads the modem's state. */
+    @Volatile private var carrierLive = false
     private val poll = object : Runnable {
         override fun run() {
             if (!active || pollInFlight) return
@@ -244,12 +299,15 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                 var firmwareFailure: String? = null
                 try { engineState = observedEngine?.status() } catch (e: RemoteException) { engineFailure = e.message ?: "Worker exited" }
                 try { firmwareState = observedFirmware?.status() } catch (e: RemoteException) { firmwareFailure = e.message ?: "Firmware worker exited" }
+                carrier.poll(observedEngine, carrierLive)
                 handler.post {
                     pollInFlight = false
                     if (!active) return@post
                     if (engine?.asBinder() == observedEngine?.asBinder()) {
                         engineState?.let { b ->
                             status = b.getString("state") ?: "Unknown"
+                            carrier.follow(selected)
+                            carrierLive = status in listOf("running", "paused") && selected?.cellular == true
                             detail = b.getString("detail") ?: ""
                             displayAsleep = b.getBundle("observations")?.let {
                                 it.getBoolean("runtimeDiagnosticsAvailable") && it.getLong("engineReady") != 0L && it.getLong("displaySleeping") != 0L
@@ -317,6 +375,8 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     private val pickGuestToolsFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) copyAsset(uri, "guest.itpack") }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLog.start(applicationContext)
+        Thread({ Housekeeping.run(applicationContext) }, "housekeeping").start()
         // The UI language is picked before anything draws: the phone's, unless Settings chose one.
         I18n.onSystemLanguage(resources.configuration.locales[0]?.toLanguageTag())
         I18n.choose(settings.language)
@@ -334,7 +394,9 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         // activity/process was running. Never request another application's trace.
         Thread({ WorkerExitEvidence.capture(applicationContext, 0) }, "previous-worker-exit").start()
         val imports = getSharedPreferences("preparation-imports", MODE_PRIVATE)
-        imports.getString("ipsw", "")?.takeIf { File(it).isFile }?.let { prep.ipswPath = it; prep.ipswFor = imports.getString("ipswFor", "") ?: "" }
+        imports.getString("ipsw", "")?.takeIf { File(it).isFile }?.let {
+            prep.ipswPath = it; prep.ipswFor = imports.getString("ipswFor", "") ?: ""; prep.ipswUnchecked = imports.getBoolean("ipswUnchecked", false)
+        }
         prep.firmwareId = imports.getString("firmwareId", "") ?: ""
         preparedImported = imports.getString("preparedImported", "") ?: ""
         retainedPreparedOutput = imports.getString("pendingPrepared", "") ?: ""
@@ -352,6 +414,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
             } catch (_: Exception) { /* The Store falls back to the running guest's own report. */ }
         }, "store-targets").start()
         bindWorker()
+        benchIntent(intent)
         setContent {
             val guestInFront = overlay == null && !devicesOpen && !licensesOpen && !preparationOpen && status == "running"
             LaunchedEffect(guestInFront) { preferSixtyHertz(guestInFront) }
@@ -411,8 +474,11 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                             onPickFolder = { pickFolder.launch(null) }, onPickSystem = { pickSystem.launch(arrayOf("application/octet-stream", "*/*")) },
                             onPickRom = { pickRom.launch(arrayOf("application/octet-stream", "*/*")) },
                             onCreate = ::createDevice, onPrepare = { openPreparation() },
-                            onFinish = { start -> overlay = null; if (start) startGuest() }, onCancel = { overlay = null })
+                            onFinish = { start -> overlay = null; if (start) startGuest() }, onCancel = { overlay = null },
+                            onSaveLogs = ::exportLogs, savingLogs = logsBusy, onImport = ::importDevice)
                         Screen.SETTINGS -> SettingsScreen(this@MainActivity) { overlay = null }
+                        Screen.CARRIER -> CarrierScreen(this@MainActivity) { overlay = null }
+                        Screen.SCREEN_SCALING -> ScreenScalingScreen(this@MainActivity) { overlay = null }
                         Screen.DETAILS -> detailsDevice?.let { DeviceDetails(it) { overlay = null; openDevices() } }
                         Screen.STORE -> StoreScreen(store, running = status == "running" && muxSocket.isNotEmpty(),
                             onPickLocal = { localIpa.launch(arrayOf("application/octet-stream", "*/*")) }) { overlay = null }
@@ -432,11 +498,34 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(bottom = 96.dp))
                 }
                 if (devicesOpen) DevicesSheet(this@MainActivity) { devicesOpen = false }
+                transfer?.let { TransferDialog(it, ::cancelTransfer) }
                 if (licensesOpen) LicenseDialog { licensesOpen = false }
                 }
             }
         }
     }
+
+    // Benchmark control over ADB (tools/bench), debuggable builds only.
+    private val bench by lazy {
+        BenchControl(object : BenchControl.Host {
+            override val engine get() = this@MainActivity.engine
+            override val status get() = this@MainActivity.status
+            override val displayAsleep get() = this@MainActivity.displayAsleep
+            override fun select(id: String) = selectDevice(id)
+            override fun start() {
+                // the guest on screen: a first-run or settings page over it would stop its presentation
+                overlay = null; devicesOpen = false; licensesOpen = false; preparationOpen = false
+                startGuest()
+            }
+            override fun stop() = stopGuest()
+            override fun scaling(method: ScreenScaling, multiple: Int) { settings.scaling = method; settings.integerScale = multiple; applySettings() }
+            override fun fullscreen(on: Boolean) = navigate(if (on) Screen.FULLSCREEN else Screen.HOME)
+        }, File(filesDir, "bench"))
+    }
+    private fun benchIntent(intent: Intent?) {
+        if (intent?.action == BenchControl.ACTION && applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) bench.handle(intent)
+    }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); benchIntent(intent) }
 
     // GuestHost: the screens' requests.
     /** The message the user dismissed: the worker goes on reporting it each poll, and it stays hidden until it changes. */
@@ -445,6 +534,17 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     override fun start() = startGuest()
     override fun recover() = startGuest(coldRecovery = true)
     override fun stop() = stopGuest()
+    override fun forceStop() {
+        val worker = engine ?: return
+        val pid = workerPid
+        engineExpectedExit = true; status = "stopping"; stopSensors()
+        Thread({
+            // The worker disposes itself; one too stuck to answer is ended from here (same uid).
+            try { worker.forceStop() } catch (_: RemoteException) { }
+            Thread.sleep(3000)
+            if (pid != 0 && worker.asBinder().isBinderAlive) Process.killProcess(pid)
+        }, "guest-force-stop").start()
+    }
     override fun saveAndStop() = stopGuest()
     override fun setPaused(paused: Boolean) {
         val worker = engine ?: return
@@ -478,6 +578,122 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
     // A full page like Settings, so it sits inside the window's insets; Back returns to the devices list.
     override fun openDetails(device: DeviceSummary) { detailsDevice = device; devicesOpen = false; overlay = Screen.DETAILS }
     override fun addDevice() = openPreparation()
+
+    // Device transfer: export to a document the user names, import one they pick; both stream through the worker.
+    override var transfer: TransferState?
+        get() = Transfers.current
+        private set(value) { Transfers.current = value }
+    /** The device whose export waits for its document (kept across an activity recreated behind the picker). */
+    private val transferPrefs get() = getSharedPreferences("device-transfer", MODE_PRIVATE)
+    private val exportDocument = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val id = transferPrefs.getString("export", null); transferPrefs.edit().remove("export").apply()
+        val device = devices.firstOrNull { it.id == id }
+        if (uri != null && device != null) exportDeviceTo(device, uri)
+        else if (uri != null) runCatching { DocumentsContract.deleteDocument(contentResolver, uri) }
+    }
+    private val importDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) importDeviceFrom(uri) }
+    override fun exportDevice(device: DeviceSummary) {
+        if (transfer != null || busy) return
+        // (MainActivity's own `active` is the activity's, not the session's.)
+        if (device.selected && status in listOf("running", "paused", "starting", "stopping")) { error = "Stop ${device.name} before exporting it"; return }
+        transferPrefs.edit().putString("export", device.id).apply()
+        exportDocument.launch(TransferState.fileName(device.name))
+    }
+    override fun importDevice() {
+        if (transfer != null || busy) return
+        // Providers label a .zip application/zip, or by its other names, or not at all.
+        importDocument.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/x-zip", "application/octet-stream"))
+    }
+    override fun cancelTransfer() {
+        val state = transfer ?: return
+        state.cancelling = true
+        val worker = engine
+        Thread({ try { worker?.cancelTransfer() } catch (_: RemoteException) { } }, "transfer-cancel").start()
+    }
+    /** Follows the worker's progress into [state] (and the notification) until the returned function runs. */
+    private fun watchTransfer(worker: IEngine, state: TransferState): () -> Unit {
+        val running = java.util.concurrent.atomic.AtomicBoolean(true)
+        Thread({
+            while (running.get()) {
+                val p = try { worker.importProgress() } catch (_: Exception) { null }
+                if (p != null && running.get()) {
+                    val phase = p.getString("phase") ?: ""; val done = p.getLong("done"); val total = p.getLong("total")
+                    handler.post {
+                        if (!running.get() || phase.isEmpty()) return@post
+                        state.phase = phase; state.done = done; state.total = total
+                        state.fraction = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else -1f
+                        DownloadService.update(applicationContext, state.title, state.fraction.takeIf { it >= 0f })
+                    }
+                }
+                Thread.sleep(250)
+            }
+        }, "transfer-progress").start()
+        return { running.set(false) }
+    }
+    private fun exportDeviceTo(device: DeviceSummary, uri: Uri) {
+        val worker = engine ?: run { error = "The device worker isn't running; try again"; runCatching { DocumentsContract.deleteDocument(contentResolver, uri) }; return }
+        val state = TransferState("Exporting ${device.name}", exporting = true)
+        transfer = state
+        DownloadService.hold(applicationContext, state.title)
+        val started = SystemClock.elapsedRealtime()
+        Thread({
+            val stopWatching = watchTransfer(worker, state)
+            val result = try {
+                (contentResolver.openFileDescriptor(uri, "w") ?: error("the file couldn't be opened")).let { out ->
+                    worker.exportDevice(device.id, out, "Un1box ${BuildConfig.VERSION_NAME} (Android)").also { runCatching { out.close() } }
+                }
+            } catch (e: Exception) { e.message ?: "the device worker stopped" } finally { stopWatching() }
+            val seconds = (SystemClock.elapsedRealtime() - started) / 1000.0
+            val bytes = if (result.isEmpty()) DocumentFile.fromSingleUri(this, uri)?.length() ?: 0L else 0L
+            if (result.isEmpty()) AppLog.i("Exported \"${device.name}\" (${device.board} ${device.build}): $bytes bytes in ${"%.1f".format(seconds)} s")
+            else { AppLog.w("Export of \"${device.name}\" ended: $result"); runCatching { DocumentsContract.deleteDocument(contentResolver, uri) } }
+            handler.post {
+                DownloadService.release(applicationContext); transfer = null
+                when {
+                    result.isEmpty() -> notice = "Exported ${device.name} (${TransferState.size(bytes)})"
+                    result == "cancelled" -> notice = "Export cancelled"
+                    else -> error = "Couldn't export ${device.name}: $result"
+                }
+            }
+        }, "device-export").start()
+    }
+    private fun importDeviceFrom(uri: Uri) {
+        val worker = engine ?: run { error = "The device worker isn't running; try again"; return }
+        val state = TransferState("Importing ${displayName(uri).removeSuffix(".zip").removeSuffix(".lighttouch")}", exporting = false)
+        transfer = state
+        DownloadService.hold(applicationContext, state.title)
+        val started = SystemClock.elapsedRealtime()
+        Thread({
+            val stopWatching = watchTransfer(worker, state)
+            var name = ""; var selected = false
+            val result = try {
+                val outcome = (contentResolver.openFileDescriptor(uri, "r") ?: error("the file couldn't be opened")).let { input ->
+                    worker.importDeviceFile(input).also { runCatching { input.close() } }
+                }
+                name = outcome.getString("name") ?: ""
+                val id = outcome.getString("id") ?: ""
+                (outcome.getString("error") ?: "").also { failure ->
+                    // A new device becomes the selected one unless another is running.
+                    if (failure.isEmpty()) selected = status !in listOf("running", "paused", "starting", "stopping") && worker.select(id).isEmpty()
+                }
+            } catch (e: Exception) { e.message ?: "the device worker stopped" } finally { stopWatching() }
+            val seconds = (SystemClock.elapsedRealtime() - started) / 1000.0
+            if (result.isEmpty()) AppLog.i("Imported \"$name\" in ${"%.1f".format(seconds)} s") else AppLog.w("Import ended: $result")
+            handler.post {
+                DownloadService.release(applicationContext); transfer = null
+                when {
+                    result.isEmpty() -> {
+                        if (overlay == Screen.SETUP) overlay = null
+                        notice = if (selected || status !in listOf("running", "paused", "starting", "stopping")) "$name is ready"
+                            else "Added $name; stop the running device to switch to it"
+                    }
+                    result == "cancelled" -> notice = "Import cancelled"
+                    else -> error = "Couldn't import the device: $result"
+                }
+                refreshDevices()
+            }
+        }, "device-import").start()
+    }
     override fun openLicenses() { licensesOpen = true }
 
     override fun openPreparation() {
@@ -518,13 +734,17 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
             return
         }
         settings.microphone = on
-        notice = if (on) "This phone's microphone feeds the device from the next start" else "The device gets no microphone input from the next start"
+        applySettings()
+        notice = if (on) "This phone's microphone feeds the device" else "The device gets no microphone input"
     }
+    override fun enableMicrophone() = useMicrophone(true)
     override fun applySettings() {
-        if (!settings.tilt) stopSensors() else if (status == "running") startSensors()
+        if (!settings.tilt) stopSensors(release = true) else if (status == "running") startSensors()
         val worker = engine ?: return
         val scale = settings.scaling.native; val detailed = settings.detailedTiming
-        Thread({ try { worker.setPresentScale(scale); worker.setDetailedTiming(detailed) } catch (_: RemoteException) { } }, "apply-settings").start()
+        val vibration = settings.vibration
+        val microphone = settings.microphone && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        Thread({ try { worker.setPresentScale(scale); worker.setDetailedTiming(detailed); worker.setMicrophone(microphone); worker.setVibration(vibration) } catch (_: RemoteException) { } }, "apply-settings").start()
     }
     override fun selectDevice(id: String) {
         busy = true
@@ -791,14 +1011,14 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         if (prep.romFor == rom && prep.romPath.isNotEmpty() && File(prep.romPath).isFile) return
         prep.romPath = ""; prep.romFor = null; prep.romLabel = ""
         val candidates = records.filter { Bootrom.forBoard(it.getString("board") ?: "") == rom && it.getBoolean("bootromAvailable") }
-            .map { File(filesDir, "library/records/${it.getString("id")}/assets/bootrom.bin") to "Reusing the one from ${it.getString("name")}" } +
-            listOf(File(filesDir, "bootrom.bin") to "Reusing the saved one")
+            .map { File(filesDir, "library/records/${it.getString("id")}/assets/bootrom.bin") to "reused" } +
+            listOf(File(filesDir, "bootrom.bin") to "reused")
         Thread({
             val found = candidates.firstOrNull { (file, _) -> file.isFile && file.length() <= (1L shl 20) && rom.matches(file.readBytes()) }
             if (found != null) handler.post {
                 if (prep.firmware?.let { Bootrom.forBoard(it.board) } == rom && prep.romFor == null) {
                     prep.romPath = found.first.absolutePath; prep.romFor = rom
-                    prep.romLabel = "${found.second} (${rom.label}). It is the same for every iOS version."
+                    prep.romLabel = "${rom.label} · ${found.second}"
                 }
             }
         }, "find-bootrom").start()
@@ -808,11 +1028,13 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         val board = prep.firmware?.board
         LaunchedEffect(board, records) { board?.let { findBootrom(it) } }
         PrepareScreen(prep, busy, preparationActive(),
-            onDownload = ::downloadIpsw, onChooseIpsw = { stockIpsw.launch(arrayOf("application/octet-stream", "*/*")) },
-            onChooseRom = { prepRom.launch(arrayOf("application/octet-stream", "*/*")) }, onDownloadRom = ::downloadBootrom, onPrepare = ::beginPreparation,
+            onChooseIpsw = { stockIpsw.launch(arrayOf("application/octet-stream", "*/*")) },
+            onChooseRom = { prepRom.launch(arrayOf("application/octet-stream", "*/*")) }, onPrepare = ::prepareDevice,
             onChoosePrepared = { preparedCopy.launch(null) },
+            onUseIpswAnyway = ::useIpswAnyway, onSwitchIpsw = ::switchToIpswFirmware, onCancelIpswCheck = ::discardPendingIpsw,
             onCancel = { firmware?.cancel(); prep.preparation = prep.preparation?.apply { putString("state", "cancelling") } },
-            onRetryImport = { prep.preparation?.let { importPreparedOutput(it) } }, onAdvanced = ::openDeviceFiles, onClose = ::closePreparation)
+            onRetryImport = { prep.preparation?.let { importPreparedOutput(it) } }, onAdvanced = ::openDeviceFiles, onClose = ::closePreparation,
+            onSaveLogs = ::exportLogs, savingLogs = logsBusy, onImport = { closePreparation(); importDevice() })
     }
     /** The advanced path from the device list: add device files the user already has (the setup wizard's import). */
     private fun openDeviceFiles() {
@@ -827,6 +1049,31 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         setup.reset(firstRun = false); setup.step = SetupStep.FILES; overlay = Screen.SETUP
         scanFolder(uri) { createDevice() }
     }
+    /**
+     * Prepare device: downloads what is missing (the boot ROM, the IPSW), then prepares, without another tap. The
+     * download service is held from the tap until preparation's own service has started, so the hand-over works with
+     * Un1box in the background (a foreground service may start another).
+     */
+    private fun prepareDevice() {
+        if (preparationActive() || busy || prep.autoPrepare || IpswDownload.running || prep.romChecking) return
+        val chosen = prep.firmware ?: return
+        if (prep.ipswReady && prep.romReady) { beginPreparation(); return }
+        prep.autoPrepare = true
+        DownloadService.hold(applicationContext, "Getting iOS ${chosen.label} ready")
+        if (!prep.romReady) downloadBootrom()
+        if (!prep.ipswReady) downloadIpsw()
+        continueAutoPrepare()
+    }
+    /** After each download: prepare once both files are there; give up (the card shows why) when one failed. */
+    private fun continueAutoPrepare() {
+        if (!prep.autoPrepare) return
+        val release = { handler.postDelayed({ DownloadService.release(applicationContext) }, 10_000) }
+        if (prep.ipswReady && prep.romReady) {
+            prep.autoPrepare = false; beginPreparation(); release()
+        } else if ((!prep.ipswReady && !IpswDownload.running) || (!prep.romReady && !prep.romChecking)) {
+            prep.autoPrepare = false; release()
+        }
+    }
     private fun beginPreparation() {
         if (preparationActive() || busy) return
         val chosen = prep.firmware ?: return
@@ -840,12 +1087,13 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         val selectedRom = if (needsBootrom(chosen.board)) prep.romPath else ""
         prep.importError = ""
         prep.preparation = Bundle().apply { putString("state", "starting"); putString("firmwareId", chosen.id) }
-        startForegroundService(Intent(this, FirmwareService::class.java))
+        // Refused when Un1box is in the background without a foreground service; preparation still runs.
+        runCatching { startForegroundService(Intent(this, FirmwareService::class.java)) }
         Thread({
             try {
                 // firmwarekit bakes the APK's own guest helpers and packages into the system.
                 val tools = GuestTools.firmwareTools(this)
-                val state = worker.start(chosen.id, selectedIpsw, tools.absolutePath, selectedRom)
+                val state = worker.start(chosen.id, selectedIpsw, tools.absolutePath, selectedRom, prep.ipswUnchecked)
                 handler.post { prep.preparation = state }
             } catch (e: Exception) { handler.post { prep.preparation = Bundle().apply { putString("state", "failed"); putString("error", e.message ?: "Cannot start preparation"); putBoolean("consumed", true) } } }
         }, "prepare-start").start()
@@ -917,6 +1165,8 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                     }
                 }
             } catch (e: Exception) { e.message ?: "Device worker exited during import" }
+            if (result.isEmpty()) AppLog.i("Added \"$name\" ($board $build) in ${(SystemClock.elapsedRealtime() - started) / 1000} s")
+            else AppLog.w("Adding the prepared $board $build failed: $result")
             if (result.isEmpty()) {
                 // The device holds its own copy now; the prepared output and the IPSW only take space.
                 File(destination).walkTopDown().forEach { it.setWritable(true, true) }
@@ -940,45 +1190,122 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
             }
         }, "prepared-device-import").start()
     }
-    private fun rememberIpsw(path: String, firmwareId: String) {
-        prep.ipswPath = path; prep.ipswFor = firmwareId; prep.ipswError = ""
-        getSharedPreferences("preparation-imports", MODE_PRIVATE).edit().putString("ipsw", path).putString("ipswFor", firmwareId).putString("firmwareId", firmwareId).apply()
+    private fun rememberIpsw(path: String, firmwareId: String, unchecked: Boolean = false) {
+        // A copy used anyway is only good for this choice; one replacing it goes.
+        if (prep.ipswUnchecked && prep.ipswPath != path && prep.ipswPath.startsWith(filesDir.absolutePath)) File(prep.ipswPath).delete()
+        prep.ipswPath = path; prep.ipswFor = firmwareId; prep.ipswUnchecked = unchecked; prep.ipswError = ""
+        getSharedPreferences("preparation-imports", MODE_PRIVATE).edit().putString("ipsw", path).putString("ipswFor", firmwareId)
+            .putBoolean("ipswUnchecked", unchecked).putString("firmwareId", firmwareId).apply()
     }
     private fun downloadIpsw() {
         val chosen = prep.firmware ?: return
         prep.ipswError = ""
-        IpswDownload.start(this, chosen) { file, _ -> handler.post { if (file != null) rememberIpsw(file.absolutePath, chosen.id) } }
+        IpswDownload.start(this, chosen) { file, _ -> handler.post { if (file != null) rememberIpsw(file.absolutePath, chosen.id); continueAutoPrepare() } }
     }
-    /** Copies a chosen IPSW in, checking its SHA-1 against the chosen version's on the way. */
+    /**
+     * Copies a chosen IPSW in, hashing it on the way. Apple's file for the chosen version is ready at once; anything
+     * else is asked about (firmwarekit identify, the desktop's check too) and waits beside it as `.copy` while the
+     * card says what it is: used anyway, switched to the version it is, or refused.
+     */
     private fun importStockIpsw(uri: Uri) {
         val chosen = prep.firmware ?: return
         if (preparationActive() || busy) return
+        discardPendingIpsw()
         busy = true; prep.ipswError = ""; prep.ipswChecking = "Copying ${displayName(uri)}"
         DownloadService.hold(applicationContext, "Copying iOS ${chosen.label}")
         Thread({
-            val target = File(IpswDownload.directory(this).apply { mkdirs() }, chosen.fileName)
-            val partial = File(target.path + ".copy")
+            val partial = File(IpswDownload.directory(this).apply { mkdirs() }, chosen.fileName + ".copy")
             try {
                 val digest = java.security.MessageDigest.getInstance("SHA-1")
-                val total = DocumentFile.fromSingleUri(this, uri)?.length() ?: 0L
-                require(chosen.bytes <= 0 || total <= 0 || total == chosen.bytes) { "That file is not the iOS ${chosen.label} IPSW for the ${shortProductName(chosen.productType)}" }
-                contentResolver.openInputStream(uri)?.use { input -> partial.outputStream().use { output ->
-                    val buffer = ByteArray(1 shl 20); var done = 0L
-                    while (true) {
-                        val n = input.read(buffer); if (n < 0) break
-                        output.write(buffer, 0, n); digest.update(buffer, 0, n); done += n
-                        if (total > 0) handler.post { prep.ipswChecking = "Copying and checking… ${done * 100 / total}%" }
+                val total = runCatching { DocumentFile.fromSingleUri(this, uri)?.length() }.getOrNull() ?: 0L
+                contentResolver.openInputStream(uri)?.use { input ->
+                    // A zip starts with "PK\3\4": anything else isn't an IPSW, so it isn't copied.
+                    val head = ByteArray(4); var got = 0
+                    while (got < 4) { val n = input.read(head, got, 4 - got); if (n < 0) break; got += n }
+                    if (got == 0) throw IpswRefused("That file is empty.")
+                    if (got < 4 || head[0] != 0x50.toByte() || head[1] != 0x4b.toByte() || head[2] != 3.toByte() || head[3] != 4.toByte())
+                        throw IpswRefused("That file isn't an IPSW.")
+                    partial.outputStream().use { output ->
+                        output.write(head); digest.update(head); var done = 4L
+                        val buffer = ByteArray(1 shl 20)
+                        while (true) {
+                            val n = input.read(buffer); if (n < 0) break
+                            output.write(buffer, 0, n); digest.update(buffer, 0, n); done += n
+                            if (total > 0) handler.post { prep.ipswChecking = "Copying and checking… ${done * 100 / total}%" }
+                        }
                     }
-                } } ?: error("Cannot read the IPSW")
+                } ?: throw IpswRefused("Un1box can't read that file.")
                 val sha1 = digest.digest().joinToString("") { "%02x".format(it) }
-                require(chosen.sha1.isEmpty() || sha1 == chosen.sha1) { "That file is not the iOS ${chosen.label} IPSW for the ${shortProductName(chosen.productType)}" }
-                check(partial.renameTo(target)) { "Could not save the IPSW" }
-                handler.post { rememberIpsw(target.absolutePath, chosen.id); prep.ipswChecking = ""; busy = false }
+                if (chosen.sha1.isNotEmpty() && sha1 == chosen.sha1) {
+                    val target = File(partial.parentFile, chosen.fileName)
+                    check(partial.renameTo(target)) { "Could not save the IPSW" }
+                    handler.post { rememberIpsw(target.absolutePath, chosen.id); prep.ipswChecking = ""; busy = false }
+                } else {
+                    handler.post { prep.ipswChecking = "Checking what it is…" }
+                    val check = identifyIpsw(partial, chosen, sha1)
+                    handler.post { settleIpswCheck(check); prep.ipswChecking = ""; busy = false }
+                }
             } catch (e: Exception) {
                 partial.delete()
                 handler.post { prep.ipswError = e.message ?: "Could not use that IPSW"; prep.ipswChecking = ""; busy = false }
             } finally { DownloadService.release(applicationContext) }
         }, "stock-ipsw-import").start()
+    }
+    private class IpswRefused(message: String) : Exception(message)
+    /** firmwarekit identify's verdict on [file] against [chosen] (ipsw_check.rs); a refusal when it can't answer. */
+    private fun identifyIpsw(file: File, chosen: CatalogFirmware, sha1: String): IpswCheck {
+        val refused = IpswCheck("not_ipsw", false, "That file is not the iOS ${chosen.label} IPSW for the ${shortProductName(chosen.productType)}",
+            "", "", file.absolutePath, sha1, chosen.id)
+        return try {
+            val tool = File(applicationInfo.nativeLibraryDir, "libfirmwarekit.so")
+            val child = ProcessBuilder(tool.path, "identify", "--id", chosen.id, "--sha1", sha1, "--ipsw", file.path)
+                .redirectErrorStream(true).start()
+            val lines = child.inputStream.bufferedReader().readLines()
+            if (!child.waitFor(60, TimeUnit.SECONDS)) { child.destroy(); return refused }
+            val json = lines.lastOrNull { it.startsWith("{") }?.let { JSONObject(it) } ?: return refused
+            IpswCheck(json.optString("verdict"), json.optBoolean("bypass"), json.optString("message").ifEmpty { refused.message },
+                json.optString("firmware"), json.optString("switch_label"), file.absolutePath, sha1, chosen.id)
+        } catch (e: Exception) { AppLog.w("IPSW check failed: ${e.message}"); refused }
+    }
+    /** Apple's file is ready; a decision waits on the card; anything else is refused (and its copy goes). */
+    private fun settleIpswCheck(check: IpswCheck) {
+        val file = File(check.path)
+        when {
+            check.verdict == "match" -> {
+                val firmware = prep.catalog.firstOrNull { it.id == check.firmwareId } ?: return
+                val target = File(file.parentFile, firmware.fileName)
+                if (file.renameTo(target)) rememberIpsw(target.absolutePath, firmware.id) else { file.delete(); prep.ipswError = "Could not save the IPSW" }
+            }
+            check.bypass || check.switchTo.isNotEmpty() -> prep.ipswCheck = check
+            else -> { file.delete(); prep.ipswError = check.message }
+        }
+    }
+    /** "Use anyway": the copy is this version's IPSW, unchecked; firmwarekit is told so (--unchecked-ipsw). */
+    private fun useIpswAnyway() {
+        val check = prep.ipswCheck ?: return
+        val firmware = prep.catalog.firstOrNull { it.id == check.firmwareId } ?: return
+        val target = File(File(check.path).parentFile, firmware.fileName.removeSuffix(".ipsw") + "-unchecked.ipsw")
+        prep.ipswCheck = null
+        if (File(check.path).renameTo(target)) rememberIpsw(target.absolutePath, firmware.id, unchecked = true)
+        else { File(check.path).delete(); prep.ipswError = "Could not save the IPSW" }
+    }
+    /** The file is another version the catalog lists: choose that one, then check the file against it. */
+    private fun switchToIpswFirmware() {
+        val check = prep.ipswCheck ?: return
+        val other = prep.catalog.firstOrNull { it.id == check.switchTo } ?: return
+        prep.ipswCheck = null
+        prep.productType = other.productType; prep.firmwareId = other.id
+        if (other.sha1.isNotEmpty() && other.sha1 == check.sha1) { settleIpswCheck(check.copy(verdict = "match", firmwareId = other.id)); return }
+        busy = true; prep.ipswChecking = "Checking what it is…"
+        Thread({
+            val again = identifyIpsw(File(check.path), other, check.sha1)
+            handler.post { settleIpswCheck(again); prep.ipswChecking = ""; busy = false }
+        }, "stock-ipsw-recheck").start()
+    }
+    /** Cancel (or a new choice): the copy waiting for an answer goes. */
+    private fun discardPendingIpsw() {
+        prep.ipswCheck?.let { File(it.path).delete() }
+        prep.ipswCheck = null
     }
     private fun downloadBootrom() {
         val rom = prep.bootrom ?: return
@@ -987,8 +1314,8 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
             try {
                 val target = File(filesDir, "prepare-bootrom-${rom.name.lowercase()}.bin")
                 rom.fetch(target)
-                handler.post { prep.romPath = target.absolutePath; prep.romFor = rom; prep.romLabel = "Downloaded · ${rom.label}"; prep.romChecking = false }
-            } catch (e: Exception) { handler.post { prep.romError = "Could not download the boot file: ${e.message}"; prep.romChecking = false } }
+                handler.post { prep.romPath = target.absolutePath; prep.romFor = rom; prep.romLabel = "${rom.label} · downloaded"; prep.romChecking = false; continueAutoPrepare() }
+            } catch (e: Exception) { handler.post { prep.romError = "Could not download the boot file: ${e.message}"; prep.romChecking = false; continueAutoPrepare() } }
         }, "bootrom-download").start()
     }
     private fun importPrepRom(uri: Uri) {
@@ -1000,8 +1327,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                 require(target.length() in 1..(1L shl 20)) { "That file is not a boot ROM" }
                 // The chip's mask ROM: every good dump is these bytes, and the device boots it.
                 require(rom.matches(target.readBytes())) { "That file is not the ${rom.label} boot ROM" }
-                val name = displayName(uri)
-                handler.post { prep.romPath = target.absolutePath; prep.romFor = rom; prep.romLabel = "$name · ${rom.label}" }
+                handler.post { prep.romPath = target.absolutePath; prep.romFor = rom; prep.romLabel = "${rom.label} · your file" }
             } catch (e: Exception) { handler.post { prep.romError = e.message ?: "Could not use that boot file" } }
         }, "prepare-bootrom").start()
     }
@@ -1047,6 +1373,13 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         if (unexpected) error = "The emulator stopped unexpectedly. The device's data is kept; press Start to run it again."
         Thread({
             WorkerExitEvidence.capture(applicationContext, exitedPid)
+            // Say why, in the banner itself: a native crash leaves no other trace the screen can show.
+            val diagnosis = if (unexpected) WorkerExitDiagnosis.summarize(applicationContext, filesDir) else ""
+            if (diagnosis.isNotEmpty()) handler.post {
+                workerEvidenceDelivery.deliver(evidenceGeneration) {
+                    error = "The emulator stopped unexpectedly: $diagnosis\nThe device's data is kept; press Start to run it again."
+                }
+            }
             val terminal = try {
                 val file = File(filesDir, "worker-shutdown-$exitedPid.json")
                 file.takeIf { it.exists() }?.readText()?.let { JSONObject(it) }?.takeIf { it.optInt("workerPid") == exitedPid }
@@ -1096,8 +1429,9 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
                 // Newer guest tools in this build of Un1box reach existing devices here; a failure leaves the old ones.
                 try { GuestTools.newerFor(this, request.recordId)?.let { tools ->
                     val result = worker.setGuestPackage(request.recordId, tools.absolutePath)
-                    android.util.Log.i("Un1box", if (result.isEmpty()) "Guest tools updated for ${request.recordId}" else "Guest tools not updated: $result")
-                } } catch (failure: Exception) { android.util.Log.w("Un1box", "Guest tools not updated", failure) }
+                    if (result.isEmpty()) AppLog.i("Guest tools updated for ${request.recordId.take(8)} to ${tools.name}") else AppLog.w("Guest tools not updated: $result")
+                } } catch (failure: Exception) { AppLog.e("Guest tools not updated", failure) }
+                AppLog.i("Starting ${request.recordId.take(8)}" + if (request.coldRecovery) " (recovering retained state)" else "")
                 val b = if (request.coldRecovery) worker.recoverStart(request.recordId) else worker.start(request.recordId)
                 handler.post { if (engine?.asBinder() == worker.asBinder()) error = b.getString("error") ?: "" }
             }
@@ -1248,7 +1582,13 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         if (record.getBoolean("gyro")) sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let { sensors.registerListener(this, it, 10_000, thread) }
         listening = true
     }
-    private fun stopSensors() { sensors.unregisterListener(this); listening = false; motionWorker = null }
+    private fun stopSensors(release: Boolean = false) {
+        sensors.unregisterListener(this)
+        val worker = motionWorker
+        if (release && listening && worker != null && ownsDisplay())
+            Handler(sensorThread.looper).post { try { worker.cancelInput() } catch (_: RemoteException) { } }
+        listening = false; motionWorker = null
+    }
     override fun onSensorChanged(event: SensorEvent) {
         val kind = if (event.sensor.type == Sensor.TYPE_GYROSCOPE) 2 else 1
         try { motionWorker?.motion(kind, event.timestamp, event.values.copyOf(3), displayRotation) } catch (_: RemoteException) { }
@@ -1278,7 +1618,7 @@ class MainActivity : ComponentActivity(), SensorEventListener, GuestHost {
         if (muxSocket.isNotEmpty()) store.refreshGuest()
     }
     override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) = Unit
-    override fun onStart() { super.onStart(); active = true; installer.visible = true; DisplayOwners.active.started(this); displayView?.keepScreenOn = status in listOf("starting", "running", "stopping"); handler.post(poll) }
+    override fun onStart() { super.onStart(); active = true; installer.visible = true; DownloadService.clearFinished(this); DisplayOwners.active.started(this); displayView?.keepScreenOn = status in listOf("starting", "running", "stopping"); handler.post(poll) }
     override fun onResume() {
         super.onResume(); displayResumed = true
         displayOwnerTicket = DisplayOwners.active.resumed(this, hasWindowFocus())

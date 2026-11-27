@@ -20,27 +20,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "ci" / "engine-patches"
 
-def patch_with(marker):
-    """The patch that carries a feature: the engine rework is applied in more than one file now."""
-    for candidate in sorted(PATCHES.glob("*.patch")):
-        if marker in candidate.read_text(errors="ignore"):
-            return candidate
-    raise AssertionError("no patch in ci/engine-patches carries " + marker)
-
-MIC_PATCH = patch_with("host-mic")
-BOARDS_PATCH = patch_with("host-mic")
-S5L8920_PATCH = patch_with("The phone's microphone reaches this port")
-
-# The capture port's read of the ring has been shipped in two shapes: the plain call, while the
-# microphone was a patch of its own, and -- since the port grew the A4-only property -- that same
-# call behind the property. The series is one patch now, so both checks below look for the call site
-# itself rather than for one spelling of it.
-MIC_CALL = "if (host_mic_read_frame(s->rx_frame))"
-GATED_MIC_CALL = "if (s->host_mic && host_mic_read_frame(s->rx_frame))"
-API_DEFINE = re.compile(r"^([+-])#define QEMU_IOS_API_VERSION \(\(2u << 16\) \| (\d+)u\)", re.M)
+MIC_CALLS = (
+    "if (host_mic_read_frame(s->rx_frame))",
+    "if (s->host_mic && host_mic_read_frame(s->rx_frame))",
+    "} else if (s->host_mic && host_mic_read_frame(stereo))",
+)
+API_DEFINE = re.compile(r"#define QEMU_IOS_API_VERSION \(\(2u << 16\) \| (\d+)u\)")
 
 ENGINE_SYMBOLS = ("qemu_ios_microphone_write", "qemu_ios_microphone_flush", "qemu_ios_microphone_state")
 PORTABLE_SYMBOLS = ("lt_runtime_mic_write", "lt_runtime_mic_info", "lt_runtime_mic_flush")
+
+ENGINE_TREE: Path | None = None
+
+
+def set_engine(path):
+    global ENGINE_TREE
+    ENGINE_TREE = Path(path) if path is not None else None
+
+
+def patch_with(marker):
+    """The patch carrying a feature, or None once upstreamed into the pinned engine."""
+    for candidate in sorted(PATCHES.glob("*.patch")):
+        if marker in candidate.read_text(errors="ignore"):
+            return candidate
+    return None
 
 
 def read(relative):
@@ -50,31 +53,24 @@ def read(relative):
     return path.read_text(errors="ignore")
 
 
+def read_engine(relative):
+    if ENGINE_TREE is None:
+        return None
+    path = ENGINE_TREE / relative
+    if not path.is_file():
+        raise AssertionError(f"engine/{relative} is missing")
+    return path.read_text(errors="ignore")
+
+
 def added_lines(patch):
     """The lines a patch adds, as one body of text."""
-    return "\n".join(line[1:] for line in read(patch).splitlines() if line.startswith("+"))
-
-
-def require(condition, message):
-    if not condition:
-        raise AssertionError(message)
-
-
-# --- the engine side, from the patch that ships it -------------------------
-
-def engine_patch_adds_the_source():
-    body = added_lines(MIC_PATCH)
-    require("uint32_t host_mic_push(" in body, "the patch no longer adds hw/arm/host-mic.c")
-    require("#include \"qemu/bswap.h\"" in body,
-            "host-mic.c must include qemu/bswap.h: stw_le_p() is not in osdep.h, and clang makes an "
-            "implicit declaration an error")
-    require("'host-mic.c'" in body, "hw/arm/meson.build does not build host-mic.c")
+    return "\n".join(line[1:] for line in patch.read_text(errors="ignore").splitlines() if line.startswith("+"))
 
 
 def file_body(patch, relative):
     """A patch's view of one file: the context and added lines, in order."""
     lines, inside = [], False
-    for line in read(patch).splitlines():
+    for line in patch.read_text(errors="ignore").splitlines():
         if line.startswith("diff --git "):
             inside = line.endswith(" b/" + relative)
             continue
@@ -83,17 +79,48 @@ def file_body(patch, relative):
     return "\n".join(lines)
 
 
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
 def mic_call_offset(body):
-    """Where the capture port asks the frontend's microphone, in either shape, or -1."""
-    found = [index for index in (body.find(MIC_CALL), body.find(GATED_MIC_CALL)) if index >= 0]
+    """Where the capture port asks the frontend's microphone, or -1."""
+    found = [index for index in (body.find(call) for call in MIC_CALLS) if index >= 0]
     return min(found) if found else -1
 
 
-def engine_patch_asks_the_microphone_first():
+# --- the engine side, from the pinned engine or a patch that ships it -----
+
+def engine_adds_the_source():
+    patch = patch_with("uint32_t host_mic_push(")
+    if patch is not None:
+        body = added_lines(patch)
+        meson = body
+    elif ENGINE_TREE is not None:
+        body = read_engine("hw/arm/host-mic.c")
+        meson = read_engine("hw/arm/meson.build")
+    else:
+        return "skipped: no engine checkout"
+    require("uint32_t host_mic_push(" in body, "the engine does not define host_mic_push() in hw/arm/host-mic.c")
+    require('#include "qemu/bswap.h"' in body,
+            "host-mic.c must include qemu/bswap.h: stw_le_p() is not in osdep.h, and clang makes an "
+            "implicit declaration an error")
+    require("'host-mic.c'" in meson, "hw/arm/meson.build does not build host-mic.c")
+
+
+def engine_asks_the_microphone_first():
     """The ordering that made the first device build record silence."""
-    body = file_body(MIC_PATCH, "hw/arm/s5l8930_i2s.c")
-    mic = mic_call_offset(body)
-    voice = body.find("if (s->in_level >= 4)")
+    patch = patch_with("uint32_t host_mic_push(")
+    if patch is not None:
+        body = file_body(patch, "hw/arm/s5l8930_i2s.c")
+    elif ENGINE_TREE is not None:
+        body = read_engine("hw/arm/s5l8930_i2s.c")
+    else:
+        return "skipped: no engine checkout"
+    fn = body.split("static void i2s_next_frame", 1)[-1]
+    mic = mic_call_offset(fn)
+    voice = fn.find("if (s->in_level >= 4)")
     require(mic >= 0, "i2s_next_frame() no longer consults the frontend's microphone")
     require(voice >= 0, "i2s_next_frame() no longer reads the port's own voice ring")
     require(mic < voice,
@@ -101,61 +128,78 @@ def engine_patch_asks_the_microphone_first():
             "driver=none opens a silent one, so a fallback behind it never runs")
 
 
-def engine_patch_exports_the_api():
-    body = added_lines(MIC_PATCH)
+def engine_exports_the_api():
+    patch = patch_with("uint32_t host_mic_push(")
+    if patch is not None:
+        src = added_lines(patch)
+        hdr = src
+    elif ENGINE_TREE is not None:
+        src = read_engine("contrib/macos-app/qemu-macos-extras.c")
+        hdr = read_engine("contrib/macos-app/qemu-macos-extras.h")
+    else:
+        return "skipped: no engine checkout"
     for symbol in ENGINE_SYMBOLS:
-        require(re.search(r"\b" + symbol + r"\s*\(", body), f"the patch does not define {symbol}()")
-    bumps = API_DEFINE.findall(read(MIC_PATCH))
-    raised = [int(minor) for sign, minor in bumps if sign == "+"]
-    lowered = [int(minor) for sign, minor in bumps if sign == "-"]
-    require(raised and lowered,
-            "the patch does not touch QEMU_IOS_API_VERSION, so an app cannot tell this engine "
-            "from one without the microphone")
-    require(max(raised) > min(lowered),
-            f"QEMU_IOS_API_VERSION is not raised: {min(lowered)} -> {max(raised)}")
-    require(max(raised) >= 4,
+        require(re.search(r"\b" + symbol + r"\s*\(", src), f"the engine does not define {symbol}()")
+    versions = [int(m) for m in API_DEFINE.findall(hdr)]
+    require(versions and max(versions) >= 4,
             "the microphone arrived in API 2.4, and an engine below it exports no "
             "qemu_ios_microphone_* entry points")
 
 
-def engine_patch_flushes_on_stop():
-    body = added_lines(MIC_PATCH)
+def engine_flushes_on_stop():
+    patch = patch_with("uint32_t host_mic_push(")
+    if patch is not None:
+        body = added_lines(patch)
+    elif ENGINE_TREE is not None:
+        body = read_engine("hw/arm/s5l8930_i2s.c")
+    else:
+        return "skipped: no engine checkout"
     require("host_mic_flush();" in body, "a stopped capture does not flush the ring")
 
 
-def engine_patch_gives_the_microphone_to_every_board_that_has_one():
+def engine_gives_the_microphone_to_every_board_that_has_one():
     """The A4 boards ship the property; the S5L8920 gets it with the FIFO window that feeds it."""
-    body = added_lines(BOARDS_PATCH)
-    require('DEFINE_PROP_BOOL("host-mic"' in body,
+    patch = patch_with("uint32_t host_mic_push(")
+    s5l8920_patch = patch_with("The phone's microphone reaches this port")
+    if patch is not None:
+        i2s = added_lines(patch)
+        board = file_body(patch, "hw/arm/ipad1.c")
+        s5l8920 = added_lines(s5l8920_patch) if s5l8920_patch else i2s
+        fifo = s5l8920
+    elif ENGINE_TREE is not None:
+        i2s = read_engine("hw/arm/s5l8930_i2s.c")
+        board = read_engine("hw/arm/ipad1.c")
+        s5l8920 = read_engine("hw/arm/s5l8920.c")
+        fifo = i2s
+    else:
+        return "skipped: no engine checkout"
+
+    require('DEFINE_PROP_BOOL("host-mic"' in i2s,
             "the port has no host-mic property, so every board sharing the model asks the frontend's "
             "ring -- including the iPhone 3GS and the iPod touch 2G, which record silence")
-    require("if (s->host_mic && host_mic_read_frame(s->rx_frame))" in body,
+    require("if (s->host_mic && host_mic_read_frame(" in i2s,
             "i2s_next_frame() reads the ring on a board that has no microphone")
-    require("if (!s->tone_hz && s->host_mic)" in body,
+    require("if (!s->tone_hz && s->host_mic)" in i2s,
             "i2s_set_in_rate() resamples for a board that has no microphone")
-    require("if (s->host_mic) {" in body, "a stopped capture flushes the ring on every board")
-    board = file_body(BOARDS_PATCH, "hw/arm/ipad1.c")
+    require("if (s->host_mic) {" in i2s, "a stopped capture flushes the ring on every board")
     require('qdev_prop_set_bit(dev, "host-mic", i == 0);' in board,
             "the A4 board file does not set host-mic, so the iPad, the iPhone 4 and the iPod touch 4G "
             "would record silence too")
-    s5l8920 = added_lines(S5L8920_PATCH)
     require('qdev_prop_set_bit(dev, "host-mic", true);' in s5l8920,
             "the S5L8920 board does not set host-mic, so the iPhone 3GS and the iPod touch 3G would "
             "still record silence")
-    require("if (offset == I2S_RXFIFO)" in s5l8920,
-            "the S5L8920's FIFO window still answers 0 for the RX FIFO: the capture chain would copy "
+    require("if (offset == I2S_RXFIFO)" in fifo,
+            "the I2S FIFO window still answers 0 for the RX FIFO: the capture chain would copy "
             "silence out of it")
-    require('"s5l8930.i2s-fifo", 0x400' in s5l8920,
+    require('"s5l8930.i2s-fifo", 0x400' in fifo,
             "the FIFO window is four bytes wide, so the RX FIFO's +0x38 is not mapped")
     require('qdev_prop_set_uint8(dev, "port", 1);' in s5l8920,
             "the 3GS has no i2s1/Voice port, and iOS builds its input route from both ports: Voice "
             "Memos says \"Connect a microphone\"")
     require('"paced-ports", 2' in s5l8920,
             "the CDMA paces one I2S window, so a chain on the Voice port is not paced")
-    require('S5L8920_I2S0_BASE + 0x1000' in s5l8920 and 'S5L8920_I2S0_FIFO + 0x1000' in s5l8920,
+    require("S5L8920_I2S0_BASE + 0x1000" in s5l8920 and "S5L8920_I2S0_FIFO + 0x1000" in s5l8920,
             "the Voice port is not mapped at the 3GS's second port window")
-    require('qdev_prop_set_bit(dev, "host-mic", true);' in s5l8920,
-            "the Voice port has no input route to the phone's microphone")
 
 
 # --- portable ---------------------------------------------------------------
@@ -182,7 +226,13 @@ def portable_resolves_exactly_the_exported_names():
 
 def portable_pushes_from_the_capture_port():
     """One caller reads the ring, and it is the capture port."""
-    body = added_lines(MIC_PATCH)
+    patch = patch_with("uint32_t host_mic_push(")
+    if patch is not None:
+        body = added_lines(patch)
+    elif ENGINE_TREE is not None:
+        body = read_engine("hw/arm/s5l8930_i2s.c")
+    else:
+        return "skipped: no engine checkout"
     require(mic_call_offset(body) >= 0,
             "the capture port no longer reads the microphone into its frame")
     calls = []
@@ -190,16 +240,16 @@ def portable_pushes_from_the_capture_port():
         if "host_mic_read_frame(" not in line:
             continue
         text = line.strip()
-        if text.startswith(("*", "//", MIC_CALL, GATED_MIC_CALL)):
+        if text.startswith(("*", "//")) or any(text.startswith(c) for c in MIC_CALLS):
             continue
         if text.startswith(("bool host_mic_read_frame", "void host_mic_read_frame")):
-            continue  # its own definition or declaration
+            continue
         calls.append(text)
     require(not calls, f"host_mic_read_frame() has unexpected call sites: {calls}")
     site = [text for text in body.splitlines()
-            if text.strip().startswith((MIC_CALL, GATED_MIC_CALL))]
+            if any(text.strip().startswith(c) for c in MIC_CALLS)]
     require(len(site) == 1,
-            f"the capture port is the ring's one reader, and the patch has {len(site)}: "
+            f"the capture port is the ring's one reader, and the engine has {len(site)}: "
             f"{[text.strip() for text in site]}")
 
 
@@ -275,7 +325,7 @@ def patch_stack(patch_dir, engine):
         if archive.returncode:
             raise AssertionError(f"git archive failed in {engine}")
         subprocess.run(["tar", "-x", "-C", str(tree)], input=archive.stdout, check=True)
-        already = "host_mic_read_frame" in (tree / "hw/arm/s5l8930_i2s.c").read_text(errors="ignore")
+        already = (tree / "hw/arm/gles-host.c").is_file() and "glGenVertexArraysEXT" in (tree / "hw/arm/gles-host.c").read_text(errors="ignore")
         if not already:
             for patch in sorted(Path(patch_dir).glob("*.patch")):
                 applied = subprocess.run(["git", "apply", str(patch)], cwd=tree, capture_output=True, text=True)
@@ -294,17 +344,17 @@ def patch_stack(patch_dir, engine):
         stamp = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=tree,
                                capture_output=True, text=True).stdout.strip()
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)  # a .git tree does not always delete cleanly
+        shutil.rmtree(scratch, ignore_errors=True)
     return f"from {revision}: {len(list(Path(patch_dir).glob('*.patch')))} patches, clean at {stamp}"
 
 
 CHECKS = [
-    ("engine patch: the device code, its header and its build entry", engine_patch_adds_the_source),
-    ("engine patch: the microphone is asked before the silent voice", engine_patch_asks_the_microphone_first),
-    ("engine patch: the three entry points and the API bump", engine_patch_exports_the_api),
-    ("engine patch: a stopped capture flushes the ring", engine_patch_flushes_on_stop),
-    ("engine patch: every board with a microphone sets host-mic",
-     engine_patch_gives_the_microphone_to_every_board_that_has_one),
+    ("engine: the device code, its header and its build entry", engine_adds_the_source),
+    ("engine: the microphone is asked before the silent voice", engine_asks_the_microphone_first),
+    ("engine: the three entry points and the API bump", engine_exports_the_api),
+    ("engine: a stopped capture flushes the ring", engine_flushes_on_stop),
+    ("engine: every board with a microphone sets host-mic",
+     engine_gives_the_microphone_to_every_board_that_has_one),
     ("portable: the API is declared and typed", portable_declares_the_api),
     ("portable: the engine's entry points are resolved, and optional", portable_resolves_exactly_the_exported_names),
     ("portable: one caller reads the ring, the capture port", portable_pushes_from_the_capture_port),

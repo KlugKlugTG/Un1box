@@ -29,7 +29,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-enum class Screen { LOADING, SETUP, HOME, FULLSCREEN, SETTINGS, STORE, JAILBREAK, HITCH, DETAILS }
+enum class Screen { LOADING, SETUP, HOME, FULLSCREEN, SETTINGS, CARRIER, SCREEN_SCALING, STORE, JAILBREAK, HITCH, DETAILS }
 
 /** What the screens read from and ask of the activity, which owns the worker and its lifecycle. */
 interface GuestHost {
@@ -41,6 +41,9 @@ interface GuestHost {
     val selected: DeviceSummary?
     val error: String
     val settings: AppSettings
+    val carrier: CarrierController
+    val transfer: TransferState?
+    val logsBusy: Boolean
     val perf: PerfSnapshot
     val profileRecording: Boolean
     val profileAutomatic: Boolean
@@ -53,6 +56,7 @@ interface GuestHost {
     fun start()
     fun recover()
     fun stop()
+    fun forceStop()
     fun saveAndStop()
     fun setPaused(paused: Boolean)
     fun button(id: Int, down: Boolean)
@@ -70,8 +74,12 @@ interface GuestHost {
     fun selectDevice(id: String)
     fun renameDevice(id: String, name: String)
     fun deleteDevice(id: String)
+    fun exportDevice(device: DeviceSummary)
+    fun importDevice()
+    fun cancelTransfer()
     fun addDevice()
     fun toggleProfile()
+    fun exportLogs()
     /** True while the engine copies a presented frame on a worker (its default). */
     val presentAsync: Boolean
     fun usePresentAsync(on: Boolean)
@@ -89,6 +97,7 @@ interface GuestHost {
     /** True while this phone's microphone feeds the emulated device's capture port; read at guest start. */
     val microphone: Boolean
     fun useMicrophone(on: Boolean)
+    fun enableMicrophone()
     fun pickGuestTools()
     fun openLicenses()
     fun openPreparation()

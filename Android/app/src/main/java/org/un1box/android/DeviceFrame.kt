@@ -22,6 +22,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 
 /** Hardware button ids shared with the runtime (QEMU_IOS_BUTTON_*). */
@@ -51,6 +52,10 @@ internal data class DeviceSkin(
             Color(0xFF0B0B0C), listOf(Color(0xFFD9D9DC), Color(0xFF9A9AA0), Color(0xFFC7C7CC)))
         val iphone = DeviceSkin(62.1f, 115.5f, 9f, 6.1f, 20.3f, 49.9f, 74.8f, 105.6f, 10.5f,
             Color(0xFF0B0B0C), listOf(Color(0xFFC7C7CC), Color(0xFF6E6E73), Color(0xFFAEAEB2)))
+        // iPhone 5: 123.8 x 58.6 mm, a 4" 640x1136 panel at 326 ppi (49.9 x 88.5 mm), black glass, slate rim.
+        val iphone5 = DeviceSkin(58.6f, 123.8f, 8.5f, 4.35f, 17.65f, 49.9f, 88.5f, 115f, 10.9f,
+            Color(0xFF0B0B0C), listOf(Color(0xFF5A5A5E), Color(0xFF2C2C2E), Color(0xFF48484A)),
+            power = 38f to 11.5f, volumeUp = 22f to 7.5f, volumeDown = 32f to 7.5f)
         // iPad (first generation): 242.8 x 189.7 mm, 9.7" 4:3 panel (197.1 x 147.8 mm) centred in the glass, a wide
         // aluminium rim, Sleep/Wake at the top right and the volume rocker on the right edge below the side switch.
         val ipad = DeviceSkin(189.7f, 242.8f, 13f, 20.95f, 22.85f, 147.8f, 197.1f, 231.4f, 11.5f,
@@ -59,6 +64,7 @@ internal data class DeviceSkin(
         fun forBoard(board: String?): DeviceSkin = when {
             board == null -> ipodTouch2
             board.startsWith("n81") -> ipodTouch4
+            board.startsWith("n42") -> iphone5
             board.startsWith("k48") -> ipad
             board.startsWith("m68") || board.startsWith("n82") || board.startsWith("n88") || board.startsWith("n90") -> iphone
             else -> ipodTouch2
@@ -73,45 +79,78 @@ internal data class DeviceSkin(
  */
 @Composable
 internal fun DeviceFrame(skin: DeviceSkin, enabled: Boolean, button: (Int, Boolean) -> Unit, screen: @Composable (Modifier) -> Unit,
-                         modifier: Modifier = Modifier, haptics: Boolean = true) {
+                         modifier: Modifier = Modifier, haptics: Boolean = true, pixels: IntSize? = null, multiple: Int = 0,
+                         realPxPerMm: Float? = null) {
+    // Not clipped: the device page lets the drawn device run under its dock and off the screen's edges.
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-        // Leave room around the body for the protruding side buttons.
-        val margin = 3f
-        val scale = minOf(maxWidth.value / (skin.width + 2 * margin), maxHeight.value / (skin.height + 2 * margin))
-        fun mm(value: Float): Dp = (value * scale).dp
-        // Sleep/Wake on the top edge, right of centre; volume on the upper left side. Each is
-        // (left, top, width, height) in mm of the outer box, drawn under the body's edge.
-        val side = skin.height * 0.065f
-        val power = skin.power ?: (skin.width * 0.62f to skin.width * 0.2f)
-        val up = skin.volumeUp ?: (skin.height * 0.13f to side)
-        val down = skin.volumeDown ?: (skin.height * 0.21f to side)
-        val volumeX = if (skin.volumeRight) margin + skin.width - 0.7f else margin - 1.3f
-        val buttons = listOf(
-            Triple(GuestButton.POWER, "Sleep/Wake", floatArrayOf(margin + power.first, margin - 1.4f, power.second, 2f)),
-            Triple(GuestButton.VOLUME_UP, "Volume up", floatArrayOf(volumeX, margin + up.first, 2f, up.second)),
-            Triple(GuestButton.VOLUME_DOWN, "Volume down", floatArrayOf(volumeX, margin + down.first, 2f, down.second)))
+        val density = LocalDensity.current.density
+        // The room, for the Screen scaling preview's prediction of this view.
+        val room = IntSize((maxWidth.value * density).toInt(), (maxHeight.value * density).toInt())
+        SideEffect { DeviceViewRoom.size = room }
+        // Pixel perfect (pixels given): a whole multiple of the screen's pixels, the screen exactly that many physical
+        // pixels (the drawn millimetres are a hair off the panel's aspect). Real size: the phone's measured density.
+        val fit = deviceViewFit(skin, pixels ?: IntSize(320, 480), maxWidth.value, maxHeight.value, density,
+            if (pixels != null) ScreenScaling.PIXEL_PERFECT else ScreenScaling.SMOOTH, multiple, realPxPerMm)
+        val whole = fit.whole
+        val scale = fit.scale
+        val screenSize = if (whole > 0) with(LocalDensity.current) { (whole * pixels!!.width).toDp() to (whole * pixels.height).toDp() } else null
         val feedback = LocalHapticFeedback.current
         val haptic = { if (haptics) feedback.performHapticFeedback(HapticFeedbackType.LongPress) }
-        Box(Modifier.size(mm(skin.width + 2 * margin), mm(skin.height + 2 * margin))) {
-            for ((_, _, r) in buttons)
-                Box(Modifier.offset(mm(r[0]), mm(r[1])).size(mm(r[2]), mm(r[3])).background(Brush.linearGradient(skin.rim), RoundedCornerShape(mm(0.8f))))
-            val body = RoundedCornerShape(mm(skin.corner))
-            Box(Modifier.offset(mm(margin), mm(margin)).size(mm(skin.width), mm(skin.height))
-                .shadow(mm(4f), body, ambientColor = Color.Black, spotColor = Color.Black)
-                .background(Brush.linearGradient(skin.rim), body).padding(mm(skin.rimWidth))
-                .background(skin.face, RoundedCornerShape(mm(skin.corner - skin.rimWidth)))) {
-                screen(Modifier.offset(mm(skin.screenLeft - skin.rimWidth), mm(skin.screenTop - skin.rimWidth)).size(mm(skin.screenWidth), mm(skin.screenHeight)))
-                HomeButton(Modifier.offset(mm(skin.width / 2 - skin.homeDiameter / 2 - skin.rimWidth), mm(skin.homeCenterY - skin.homeDiameter / 2 - skin.rimWidth))
-                    .size(mm(skin.homeDiameter)), enabled, button, haptic)
-            }
-            // A drawn side button is a few millimetres; its touch target is at least 48dp, centred on it.
-            for ((id, label, r) in buttons) {
-                val w = maxOf(mm(r[2]), 48.dp); val h = maxOf(mm(r[3]), 48.dp)
-                Box(Modifier.offset(mm(r[0] + r[2] / 2) - w / 2, mm(r[1] + r[3] / 2) - h / 2).size(w, h)
-                    .semantics { contentDescription = label; role = Role.Button }
-                    .testTag("device_" + label.lowercase().replace(Regex("[^a-z]+"), "_"))
-                    .held(enabled, id, button, haptic))
-            }
+        // When only the screen fits, the device is drawn around it centred on the screen and cut off at the edges.
+        val crop = if (fit.cropped) Modifier.wrapContentSize(unbounded = true).then(centredOnScreen(skin, scale)) else Modifier
+        DeviceBody(skin, scale, screenSize, crop, controls = true, enabled = enabled, button = button, haptic = haptic, screen = screen)
+    }
+}
+
+/** The offset that puts the drawn device's screen, rather than its body, in the middle of its room. */
+internal fun centredOnScreen(skin: DeviceSkin, scale: Float): Modifier {
+    val m = DEVICE_MARGIN
+    return Modifier.offset(((skin.width + 2 * m) / 2 - (m + skin.screenLeft + skin.screenWidth / 2)).times(scale).dp,
+        ((skin.height + 2 * m) / 2 - (m + skin.screenTop + skin.screenHeight / 2)).times(scale).dp)
+}
+
+/**
+ * The drawn device at [scale] dp per millimetre, its side buttons in the margin around it, [screen] in its glass
+ * ([screenSize] when the screen must be an exact size, else the panel's millimetres). With [controls] the buttons are
+ * real (DeviceFrame); without, it's only a picture (the Screen scaling preview).
+ */
+@Composable
+internal fun DeviceBody(skin: DeviceSkin, scale: Float, screenSize: Pair<Dp, Dp>?, modifier: Modifier, controls: Boolean,
+                        enabled: Boolean = false, button: (Int, Boolean) -> Unit = { _, _ -> }, haptic: () -> Unit = {},
+                        screen: @Composable (Modifier) -> Unit) {
+    val margin = DEVICE_MARGIN
+    fun mm(value: Float): Dp = (value * scale).dp
+    // Sleep/Wake on the top edge, right of centre; volume on the upper left side. Each is
+    // (left, top, width, height) in mm of the outer box, drawn under the body's edge.
+    val side = skin.height * 0.065f
+    val power = skin.power ?: (skin.width * 0.62f to skin.width * 0.2f)
+    val up = skin.volumeUp ?: (skin.height * 0.13f to side)
+    val down = skin.volumeDown ?: (skin.height * 0.21f to side)
+    val volumeX = if (skin.volumeRight) margin + skin.width - 0.7f else margin - 1.3f
+    val buttons = listOf(
+        Triple(GuestButton.POWER, "Sleep/Wake", floatArrayOf(margin + power.first, margin - 1.4f, power.second, 2f)),
+        Triple(GuestButton.VOLUME_UP, "Volume up", floatArrayOf(volumeX, margin + up.first, 2f, up.second)),
+        Triple(GuestButton.VOLUME_DOWN, "Volume down", floatArrayOf(volumeX, margin + down.first, 2f, down.second)))
+    Box(modifier.requiredSize(mm(skin.width + 2 * margin), mm(skin.height + 2 * margin))) {
+        for ((_, _, r) in buttons)
+            Box(Modifier.offset(mm(r[0]), mm(r[1])).size(mm(r[2]), mm(r[3])).background(Brush.linearGradient(skin.rim), RoundedCornerShape(mm(0.8f))))
+        val body = RoundedCornerShape(mm(skin.corner))
+        Box(Modifier.offset(mm(margin), mm(margin)).size(mm(skin.width), mm(skin.height))
+            .shadow(mm(4f), body, ambientColor = Color.Black, spotColor = Color.Black)
+            .background(Brush.linearGradient(skin.rim), body).padding(mm(skin.rimWidth))
+            .background(skin.face, RoundedCornerShape(mm(skin.corner - skin.rimWidth)))) {
+            screen(Modifier.offset(mm(skin.screenLeft - skin.rimWidth), mm(skin.screenTop - skin.rimWidth))
+                .size(screenSize?.first ?: mm(skin.screenWidth), screenSize?.second ?: mm(skin.screenHeight)))
+            HomeButton(Modifier.offset(mm(skin.width / 2 - skin.homeDiameter / 2 - skin.rimWidth), mm(skin.homeCenterY - skin.homeDiameter / 2 - skin.rimWidth))
+                .size(mm(skin.homeDiameter)), controls, enabled, button, haptic)
+        }
+        // A drawn side button is a few millimetres; its touch target is at least 48dp, centred on it.
+        if (controls) for ((id, label, r) in buttons) {
+            val w = maxOf(mm(r[2]), 48.dp); val h = maxOf(mm(r[3]), 48.dp)
+            Box(Modifier.offset(mm(r[0] + r[2] / 2) - w / 2, mm(r[1] + r[3] / 2) - h / 2).size(w, h)
+                .semantics { contentDescription = label; role = Role.Button }
+                .testTag("device_" + label.lowercase().replace(Regex("[^a-z]+"), "_"))
+                .held(enabled, id, button, haptic))
         }
     }
 }
@@ -126,12 +165,13 @@ internal fun Modifier.held(enabled: Boolean, id: Int, button: (Int, Boolean) -> 
     }
 
 @Composable
-private fun HomeButton(modifier: Modifier, enabled: Boolean, button: (Int, Boolean) -> Unit, haptic: () -> Unit) {
+private fun HomeButton(modifier: Modifier, controls: Boolean, enabled: Boolean, button: (Int, Boolean) -> Unit, haptic: () -> Unit) {
     val ring = with(LocalDensity.current) { 1.dp }
-    Box(modifier.semantics { contentDescription = "Home"; role = Role.Button }.testTag("device_home")
+    val control = if (controls) Modifier.semantics { contentDescription = "Home"; role = Role.Button }.testTag("device_home")
+        .held(enabled, GuestButton.HOME, button, haptic) else Modifier
+    Box(modifier.then(control)
         .background(Brush.radialGradient(listOf(Color(0xFF1C1C1E), Color(0xFF050505))), CircleShape)
-        .border(ring, Color(0xFF3A3A3C), CircleShape)
-        .held(enabled, GuestButton.HOME, button, haptic),
+        .border(ring, Color(0xFF3A3A3C), CircleShape),
         contentAlignment = Alignment.Center) {
         BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Box(Modifier.size(maxWidth * 0.34f).border(ring, Color(0xFF8E8E93), RoundedCornerShape(maxWidth * 0.08f)))

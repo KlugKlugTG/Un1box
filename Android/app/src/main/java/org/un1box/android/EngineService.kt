@@ -14,6 +14,12 @@ class EngineService : Service() {
     @Volatile private var error = ""
     @Volatile private var userPaused = false
     @Volatile private var focusPaused = false
+    /** The running device's name, for the notification; set by start. */
+    @Volatile private var deviceName = ""
+    /** The record this worker's session runs (one per worker), for carrier changes made while it runs. */
+    @Volatile private var sessionRecord = ""
+    /** startForeground has run in this worker, so the notification may be updated. */
+    @Volatile private var foregrounded = false
     private val started = WorkerStartAdmission()
     private val failureRecorded = AtomicBoolean(false)
     private val stopping = AtomicBoolean(false)
@@ -33,12 +39,14 @@ class EngineService : Service() {
     @Volatile private var cameraOn = false
     @Volatile private var cameraError = ""
     private var camera: CameraCapture? = null
-    /** The Settings switch: this phone's microphone into the guest, read at the next guest start. */
+    /** The Settings switch: this phone's microphone into the guest, read at the next guest start and live-updated by MainActivity. */
     @Volatile private var microphoneWanted = false
     @Volatile private var microphoneOn = false
     @Volatile private var microphoneError = ""
-    private var microphoneThread: Thread? = null
-    private var recorder: AudioRecord? = null
+    /** Settings > Vibration (on unless turned off). */
+    @Volatile private var vibration = true
+    /** The app installer holds the engine's periodic storage sync (IEngine.holdStorageSync); one hold at most. */
+    private var storageSyncHeld = false
     private val buttonDownAdmissions = java.util.concurrent.atomic.AtomicLongArray(2)
     private val buttonUpAdmissions = java.util.concurrent.atomic.AtomicLongArray(2)
     private val buttonRejections = java.util.concurrent.atomic.AtomicLong(0)
@@ -63,6 +71,25 @@ class EngineService : Service() {
     private val binder = object : IEngine.Stub() {
         override fun rename(recordId: String, name: String): String = Native.rename(File(filesDir, "library").absolutePath, recordId, name)
         override fun remove(recordId: String): String = Native.remove(File(filesDir, "library").absolutePath, recordId)
+        override fun carrier(recordId: String): Bundle = Native.carrierGet(File(filesDir, "library").absolutePath, recordId).let { v ->
+            Bundle().apply {
+                putString("error", v[0]); putString("carrier", v[1]); putString("mccMnc", v[2])
+                putBoolean("registered", v[3] == "1"); putBoolean("simPresent", v[4] == "1"); putInt("bars", v[5].toIntOrNull() ?: 5)
+                putDouble("latitude", v[6].toDoubleOrNull() ?: 0.0); putDouble("longitude", v[7].toDoubleOrNull() ?: 0.0)
+                putString("lastCaller", v[8]); putString("lastSender", v[9])
+            }
+        }
+        override fun setCarrier(recordId: String, settings: Bundle): String {
+            val flag = { key: String -> if (settings.getBoolean(key)) "1" else "0" }
+            val error = Native.carrierSet(File(filesDir, "library").absolutePath, recordId, arrayOf(
+                settings.getString("carrier") ?: "", settings.getString("mccMnc") ?: "", flag("registered"), flag("simPresent"),
+                settings.getInt("bars").toString(), settings.getDouble("latitude").toString(), settings.getDouble("longitude").toString(),
+                settings.getString("lastCaller") ?: "", settings.getString("lastSender") ?: ""))
+            // A running device takes what changed at once (or once its engine is ready).
+            return if (error.isEmpty() && recordId == sessionRecord && started.isConsumed() && !stopping.get()) Native.reloadCarrier() else error
+        }
+        override fun modem(action: String, value: String): String = Native.modem(action, value)
+        override fun modemStatus(): String = Native.modemStatus()
         override fun importDevice(source: String, displayName: String, rom: String, guest: String, sha256: String): String =
             Native.importBase(source, File(filesDir, "library").absolutePath, displayName, rom, guest, sha256)
         override fun importProgress(): Bundle = Native.importProgress().let { p ->
@@ -72,12 +99,18 @@ class EngineService : Service() {
             putLongArray("frames", Native.frameTimeline(sinceSequence))
             putLong("nowNs", System.nanoTime())
             putLongArray("cpu", cpuSampler.sample())
+            putLongArray("storage", Native.storageStats())
             profileTail.follow(if (detailedTiming && profileCapture.automatic) profileCapture.currentEvents() else null)
             profileTail.summary()?.let { putBundle("detailed", it) }
             if (detailedTiming && detailedTimingError.isNotEmpty()) putString("detailedError", detailedTimingError)
         }
         override fun setPresentScale(mode: Int) = Native.setPresentScale(mode)
         override fun setPresentVisible(visible: Boolean) = Native.setPresentVisible(visible)
+        override fun setMicrophone(enabled: Boolean) { microphoneWanted = enabled }
+        override fun setVibration(enabled: Boolean) { vibration = enabled }
+        override fun holdStorageSync(hold: Boolean) {
+            synchronized(this) { if (hold != storageSyncHeld) { storageSyncHeld = hold; Native.holdStorageSync(hold) } }
+        }
         override fun setDetailedTiming(enabled: Boolean) {
             detailedTiming = enabled; detailedTimingError = ""
             if (!enabled && profileCapture.automatic) profileCapture.finish("detailed-timing-off")
@@ -141,6 +174,13 @@ class EngineService : Service() {
             val result = Native.debugQmpSnapshot()
             return Bundle().apply { putString("error", result[0]); putString("path", result[1]) }
         }
+        override fun exportDevice(recordId: String, destination: ParcelFileDescriptor, app: String): String =
+            destination.use { Native.exportDevice(File(filesDir, "library").absolutePath, recordId, it.fd, app) }
+        override fun importDeviceFile(input: ParcelFileDescriptor): Bundle =
+            input.use { Native.importDevice(File(filesDir, "library").absolutePath, it.fd) }.let { r ->
+                Bundle().apply { putString("error", r[0]); putString("id", r[1]); putString("name", r[2]) }
+            }
+        override fun cancelTransfer() = Native.cancelTransfer()
         override fun importBase(source: String, displayName: String): String = Native.importBase(source, File(filesDir, "library").absolutePath,
             displayName, File(filesDir, "bootrom.bin").absolutePath, File(filesDir, "guest.itpack").absolutePath)
         override fun importPrepared(source: String, displayName: String, rom: String): String = Native.importBase(source, File(filesDir, "library").absolutePath, displayName, rom, "")
@@ -153,29 +193,43 @@ class EngineService : Service() {
                 putBoolean("selected", row[4] == "1"); putBoolean("dirty", row[5] == "1")
                 putBoolean("bootromAvailable", row.getOrElse(9) { "0" } == "1"); putBoolean("guestPackageAvailable", row.getOrElse(10) { "0" } == "1")
                 putString("contacts", row[6]); putBoolean("gyro", row[7] == "1"); putBoolean("acceleration", row[8] == "1")
+                putBoolean("cellular", row.getOrElse(11) { "0" } == "1")
             }
         }.toTypedArray()
         override fun select(recordId: String): String = Native.select(File(filesDir, "library").absolutePath, recordId)
         override fun start(recordId: String): Bundle = startRecord(recordId, coldRecovery = false)
         override fun recoverStart(recordId: String): Bundle = startRecord(recordId, coldRecovery = true)
-        private fun startRecord(recordId: String, coldRecovery: Boolean): Bundle {
+        /** A Java failure here used to kill the worker with nothing written; now it says what it was. */
+        private fun startRecord(recordId: String, coldRecovery: Boolean): Bundle = try {
+            startRecordOrThrow(recordId, coldRecovery)
+        } catch (failure: Throwable) {
+            val message = ("The emulator couldn't start: " + (failure.message ?: failure.javaClass.simpleName)).take(4096)
+            error = message
+            persistStopError(message)
+            Bundle().apply { putString("state", "failed"); putString("error", message) }
+        }
+        private fun startRecordOrThrow(recordId: String, coldRecovery: Boolean): Bundle {
             if (stopping.get()) return Bundle().apply {
                 putString("state", "stopping"); putString("error", "This worker is disposing; recovery and Start require a fresh worker.")
             }
             if (!started.tryConsume()) return status().apply {
                 putString("error", "Start and recovery require a fresh unused guest worker. Stop this worker first.")
             }
-            foreground()
             val libraryRoot = File(filesDir, "library").absolutePath
+            sessionRecord = recordId
+            val row = Native.records(libraryRoot).firstOrNull { it[0] == recordId }
+            deviceName = row?.getOrNull(1) ?: ""
+            foreground()
             // Before the engine starts: its USB controller dials the bridge when the guest brings the port up.
-            usbError = usbThread.submit<String?> { usb.start(recordId) }.get() ?: ""
+            usbError = usbThread.submit<String?> { usb.start(recordId, appPairs = row?.getOrNull(2) == "n42ap",
+                pairingSeed = File(libraryRoot, "records/$recordId/base/pairing").takeIf { it.isDirectory }) }.get() ?: ""
             val reduceAppSwitchPauses = getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
                 .getBoolean("reduceAppSwitchPauses", true)
             val flushCodeCacheOnApp = if (reduceAppSwitchPauses) "off" else "on"
             android.system.Os.setenv("LT_FLUSH_ON_APP", flushCodeCacheOnApp, true)
             android.system.Os.setenv("LT_FLUSH_SETTLE", flushCodeCacheOnApp, true)
             // Perf work on debug builds (create these with run-as): files/debug-vcpu-accounting logs the
-            // vCPU's run/halt/BQL split every 5 s to the record's state/engine-PID.log; files/debug-env
+            // vCPU's run/halt/BQL split every 5 s to files/logs/engine.log (LT_LOG_UNCAPPED=1 keeps it whole); files/debug-env
             // holds KEY=VALUE engine environment lines, e.g. QEMU_PERFMAP_DIR=<files>/perfmap for JIT
             // symbols or IT_GLES_PROF=1 (see docs/PERFORMANCE.md).
             if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
@@ -189,6 +243,7 @@ class EngineService : Service() {
             val headphones = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("headphones", true)
             microphoneWanted = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("microphone", false)
             microphoneError = ""
+            vibration = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("vibration", true)
             // The ISP is the engine's camera machine property, off by default: off, the board unmatches the
             // device tree's isp node and the guest has no camera at all. IT_CAMERA is the engine's switch for a
             // session the app starts, and it has to be set before the machine is created, which is what the
@@ -205,11 +260,14 @@ class EngineService : Service() {
                 startCamera()
                 if (!userPaused && !stopping.get()) startAudioOutput()
             }
+            AppLog.i("Engine ${if (coldRecovery) "recovery" else "start"} of ${recordId.take(8)}: " + error.ifEmpty { "started" } +
+                " (graphics ${Native.status().getOrNull(5) ?: "?"}, USB ${usbError.ifEmpty { "ok" }}, app pauses $flushCodeCacheOnApp, headphones $headphones)")
             val response = status()
             if (error.isNotEmpty()) Handler(mainLooper).postDelayed({
                 persistStopError(error)
                 persistObservations("start-failed")
                 alive.set(false)
+                foregrounded = false
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 Process.killProcess(Process.myPid())
@@ -277,6 +335,7 @@ class EngineService : Service() {
             if (result == "Display ownership retired") return@run
             if (result.isNotEmpty()) { error = result; return@run }
             stopAudioOutput()
+            updateNotification()
         } }
         override fun pause(paused: Boolean) { lifecycleAdmission.run {
             // A background callback can race the stop button. Shutdown already
@@ -291,11 +350,17 @@ class EngineService : Service() {
             synchronized(audioGuard) { if (paused) audioObservations.pauses++ else audioObservations.resumes++ }
             if (paused) stopAudioOutput() else startAudioOutput()
             if (paused) stopCamera() else startCamera()
+            updateNotification()
         } }
         override fun stop() {
             if (!stopping.compareAndSet(false, true)) return
+            updateNotification()
             profileCapture.finish("guest-stop")
             shutdownWatchdog.request()
+        }
+        override fun forceStop() {
+            stopping.set(true)
+            shutdownWatchdog.force()
         }
         override fun button(button: Int, down: Boolean) {
             val result = Native.button(button, down)
@@ -428,6 +493,7 @@ class EngineService : Service() {
         try { File(filesDir, "worker-stop-error.txt").writeText(message) } catch (_: java.io.IOException) { /* Legacy private diagnostic only, not another worker's live status. */ }
     }
     private fun shutdownMessage(receipt: ShutdownReceipt): String = when {
+            receipt.reason == "user-forced" -> "Force stopped before iOS finished shutting down. The next start checks the device's storage first."
             receipt.reason == "deadline-unconfirmed" -> "Guest shutdown was not confirmed within ${BuildConfig.SHUTDOWN_GRACE_MS / 1000} seconds; worker disposed and writable state retained. ${receipt.progress.error}"
             receipt.terminalState == "failed" -> "Guest worker reported failure; writable state retained: ${receipt.progress.error}"
             !receipt.cleanConfirmed -> "Native terminal shutdown was not explicitly confirmed clean; writable state and diagnostics retained. ${receipt.progress.error}"
@@ -480,6 +546,10 @@ class EngineService : Service() {
     override fun onBind(intent: Intent): IBinder = binder
     override fun onCreate() {
         super.onCreate()
+        AppLog.attach(applicationContext, "engine")
+        // A worker that ended its device is replaced by a fresh one while Un1box stays bound, and Android carries
+        // the old one's foreground state over: its "running" notification stayed up with nothing running.
+        stopForeground(STOP_FOREGROUND_REMOVE)
         detailedTimingThread.scheduleWithFixedDelay({
             try {
                 if (detailedTiming && detailedTimingError.isEmpty() && !stopping.get())
@@ -567,6 +637,8 @@ class EngineService : Service() {
             }
             synchronized(audioGuard) { audio?.release(); audio = null }
         }, "guest-audio").start()
+        Thread({ microphoneLoop() }, "microphone").start()
+        Thread(::vibratorLoop, "guest-vibrator").start()
     }
     private fun pauseAudio() = synchronized(audioGuard) {
         audioGuard.pause()
@@ -649,7 +721,6 @@ class EngineService : Service() {
      */
     private fun startAudioOutput() { lifecycleAdmission.run {
         if (userPaused || stopping.get()) return@run
-        startMicrophone()
         if (audioOn) { playAudio(); return@run }
         synchronized(audioGuard) {
             // Resume the retained track before the audio thread sees it on.
@@ -659,67 +730,134 @@ class EngineService : Service() {
             audioOn = true
         }
     } }
-    private fun stopAudioOutput() { lifecycleAdmission.run { audioOn = false; stopMicrophone() } }
+    private fun stopAudioOutput() { lifecycleAdmission.run { audioOn = false } }
     /**
-     * This phone's microphone into the guest's capture port. Started and stopped with the guest's audio, so a
-     * paused or backgrounded guest does not hold the recorder, and released by the reading thread itself so a
-     * blocked read cannot outlive it. Blocks of 1024 mono frames (23 ms at 44.1 kHz): the JNI side duplicates
-     * each into the stereo frame the port reads, and the engine resamples to the port's own rate.
+     * The guest's vibration motor on this phone's: a vibration starts when the motor does and is cancelled when it
+     * stops. Each one is a one-shot of at most [VIBRATION_CAP_MS], so a motor left running (a stuck guest, a lost
+     * cancel) can't buzz the phone without end; past the cap it waits for the motor to stop and start again. Polled
+     * every 20 ms while the motor has run in the last 2 s (the guest's buzzes run 200 ms and up), every 100 ms
+     * otherwise (an iPod's motor never runs); a start counted between two polls (the motor's pulses moved but it is
+     * off again) still gives a short buzz. Nothing while the guest is paused or stopping, or the setting is off.
+     * Media usage, so the phone's ring and notification vibration settings and silent mode don't mute it.
      */
-    private fun startMicrophone() {
-        if (microphoneOn || !microphoneWanted || stopping.get() || !alive.get()) return
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            microphoneError = "Microphone off: Un1box has no microphone permission. Turn the switch off and on again to grant it."
-            return
-        }
-        val rate = 44100
-        val minimum = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (minimum <= 0) {
-            microphoneError = "Microphone unavailable: this phone refused 44.1 kHz mono capture."
-            return
-        }
-        val record = try {
-            AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.MIC).setAudioFormat(
-                AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate)
-                    .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
-            ).setBufferSizeInBytes(maxOf(minimum, 8192)).build()
-        } catch (failure: Exception) {
-            microphoneError = "Microphone unavailable: ${failure.message ?: "unknown error"}"
-            return
-        }
-        if (record.state != AudioRecord.STATE_INITIALIZED) {
-            record.release(); microphoneError = "Microphone unavailable: the recorder did not initialize"; return
-        }
-        try { record.startRecording() } catch (failure: Exception) {
-            record.release(); microphoneError = "Microphone unavailable: ${failure.message ?: "unknown error"}"; return
-        }
-        recorder = record; microphoneOn = true; microphoneError = ""
-        microphoneThread = Thread({
-            val samples = ShortArray(1024)
-            try {
-                while (microphoneOn && alive.get() && !stopping.get()) {
-                    val read = record.read(samples, 0, samples.size)
-                    if (read < 0) { if (microphoneOn) microphoneError = "Microphone read failed ($read)"; break }
-                    if (read == 0) continue
-                    val taken = Native.microphone(samples, read)
-                    // Negative: the engine refused the block outright. Zero is a dropped one (the guest is not
-                    // recording, or is behind), which is what a bounded ring does and not an error.
-                    if (taken < 0) { if (microphoneOn) microphoneError = "The engine could not take the microphone (${-taken})"; break }
+    private fun vibratorLoop() {
+        val phone = if (Build.VERSION.SDK_INT >= 31) getSystemService(VibratorManager::class.java)?.defaultVibrator
+            else @Suppress("DEPRECATION") getSystemService(Vibrator::class.java)
+        if (phone == null || !phone.hasVibrator()) { AppLog.i("Vibration: this phone has no vibrator"); return }
+        fun buzz(ms: Long) = try {
+            val effect = VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE)
+            if (Build.VERSION.SDK_INT >= 33) phone.vibrate(effect, VibrationAttributes.createForUsage(VibrationAttributes.USAGE_MEDIA))
+            else @Suppress("DEPRECATION") phone.vibrate(effect, AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).build())
+            true
+        } catch (failure: RuntimeException) { AppLog.w("Vibration failed: ${failure.message}"); false }
+        var buzzing = false; var seen = -1L; var buzzes = 0L; var loggedAt = 0L; var activeAt = 0L
+        try {
+            while (alive.get()) {
+                val motor = Native.vibrator()
+                val allowed = vibration && !userPaused && !focusPaused && !stopping.get()
+                if (motor.size < 2) {
+                    if (buzzing) { phone.cancel(); buzzing = false }
+                    Thread.sleep(500)
+                    continue
                 }
-            } catch (_: Exception) {
-                // The recorder is released below; the guest then hears silence until the next start.
-            } finally {
-                runCatching { record.stop() }
-                record.release()
-                Native.microphoneFlush()
-                synchronized(this) { if (recorder === record) { recorder = null; microphoneOn = false } }
+                val on = motor[0] != 0L; val pulses = motor[1]
+                val started = seen >= 0 && pulses != seen
+                seen = pulses
+                when {
+                    !allowed -> if (buzzing) { phone.cancel(); buzzing = false }
+                    on && (!buzzing || started) -> buzzing = buzz(VIBRATION_CAP_MS)
+                    !on && buzzing -> { phone.cancel(); buzzing = false }
+                    !on && started -> buzz(VIBRATION_MISSED_MS)
+                    else -> {}
+                }
+                val now = SystemClock.elapsedRealtime()
+                if (on || started) activeAt = now
+                if (allowed && started) {
+                    buzzes++
+                    if (now - loggedAt >= 5000) { loggedAt = now; AppLog.i("Vibration: the guest's motor started (buzz $buzzes, motor pulses $pulses)") }
+                }
+                Thread.sleep(if (now - activeAt < 2000) 20 else 100)
             }
-        }, "microphone").apply { start() }
+        } finally {
+            if (buzzing) phone.cancel()
+        }
     }
-    /** Idempotent: the reading thread sees microphoneOn and finishes on its own, then releases the recorder. */
-    private fun stopMicrophone() {
-        microphoneOn = false
-        recorder?.let { runCatching { it.stop() } }
+    /**
+     * This phone's microphone into the guest's capture port, only while the setting is on, the guest is not
+     * paused/stopping, and the guest itself is recording (`Native.micCapturing()`), so the phone's microphone is
+     * not opened for a guest that is not listening. Mono 44.1 kHz from the phone; `Native.microphone` duplicates
+     * each block into stereo and the engine resamples to the port's own rate.
+     */
+    private fun microphoneLoop() {
+        val rate = 44100
+        val samples = ShortArray(1024)
+        var record: AudioRecord? = null
+        var checkedAt = 0L; var wanted = false
+        try {
+            while (alive.get()) {
+                val now = SystemClock.elapsedRealtime()
+                if (now - checkedAt >= 250) {
+                    checkedAt = now
+                    val permitted = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (microphoneWanted && !permitted && microphoneError.isEmpty()) {
+                        microphoneError = "Microphone off: Un1box has no microphone permission. Turn the switch off and on again to grant it."
+                    }
+                    wanted = microphoneWanted && !stopping.get() && !userPaused && !focusPaused &&
+                        Native.micCapturing() && permitted
+                }
+                if (!wanted) {
+                    record?.let {
+                        runCatching { it.stop() }
+                        it.release(); record = null; microphoneOn = false
+                        val (_, portRate, _, pushed, dropped) = Native.micInfo().toList() + List(5) { 0L }
+                        Native.microphoneFlush()
+                        AppLog.i("Microphone closed: $pushed frames pushed, $dropped dropped, guest port at $portRate Hz")
+                    }
+                    Thread.sleep(250)
+                    continue
+                }
+                val active = record ?: try {
+                    val minimum = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                    if (minimum <= 0) {
+                        microphoneError = "Microphone unavailable: this phone refused 44.1 kHz mono capture."
+                        microphoneWanted = false; continue
+                    }
+                    @Suppress("MissingPermission")
+                    AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.MIC).setAudioFormat(
+                        AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate)
+                            .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
+                    ).setBufferSizeInBytes(maxOf(minimum, 8192)).build().also {
+                        if (it.state != AudioRecord.STATE_INITIALIZED) {
+                            it.release(); microphoneError = "Microphone unavailable: the recorder did not initialize"
+                            microphoneWanted = false; return@also
+                        }
+                        it.startRecording(); record = it; microphoneOn = true; microphoneError = ""
+                        AppLog.i("Microphone open: the guest is recording")
+                    }
+                } catch (failure: Exception) {
+                    microphoneError = "Microphone unavailable: ${failure.message ?: "unknown error"}"
+                    microphoneWanted = false; continue
+                }
+                if (record == null) { Thread.sleep(250); continue }
+                val read = active.read(samples, 0, samples.size)
+                if (read < 0) {
+                    microphoneError = "Microphone read failed ($read)"
+                    runCatching { active.stop() }; active.release(); record = null; microphoneOn = false
+                    Native.microphoneFlush()
+                    Thread.sleep(100); continue
+                }
+                if (read == 0) { Thread.sleep(10); continue }
+                val taken = Native.microphone(samples, read)
+                if (taken < 0) {
+                    microphoneError = "The engine could not take the microphone (${-taken})"
+                    runCatching { active.stop() }; active.release(); record = null; microphoneOn = false
+                    Native.microphoneFlush()
+                }
+            }
+        } finally {
+            record?.let { runCatching { it.stop() }; it.release(); Native.microphoneFlush() }
+            microphoneOn = false
+        }
     }
     /**
      * This phone's back camera into the emulated device. The guest's ISP takes the newest frame whenever it draws
@@ -750,7 +888,7 @@ class EngineService : Service() {
      */
     private fun microphoneSummary(): String {
         if (!microphoneWanted) return "Microphone off"
-        if (!microphoneOn) return microphoneError.ifEmpty { "Microphone not started yet" }
+        if (!microphoneOn) return microphoneError.ifEmpty { "Waiting for an iOS app to record" }
         val info = Native.microphoneInfo()
         val ring = if (info.size >= 6 && info[0].toInt() == 0) {
             val capturing = if (info[3] == 1L) "guest capturing" else "guest not capturing"
@@ -788,13 +926,33 @@ class EngineService : Service() {
         val problem = cameraError.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""
         return "phone: $opened frames · $where · $report$problem"
     }
+    /** The ongoing notification while a device is on in this worker (Android requires one to keep it running). */
     private fun foreground() {
+        startForeground(1, notification())
+        foregrounded = true
+    }
+    /** The notification follows the device: running, paused (Un1box left), or shutting down. */
+    private fun updateNotification() {
+        if (foregrounded) getSystemService(NotificationManager::class.java).notify(1, notification())
+    }
+    private fun notification(): Notification {
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("guest", "Running guest", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel("guest", "Running device", NotificationManager.IMPORTANCE_LOW))
         val launch = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        startForeground(1, Notification.Builder(this, "guest").setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("Un1box guest").setContentText("Tap to return; Stop ends this worker").setContentIntent(launch).setOngoing(true).build())
+        val text = when {
+            stopping.get() -> "Shutting down"
+            userPaused -> "Paused while you're away. Tap to go back to it."
+            !started.isConsumed() -> "Starting"
+            else -> "Running. Tap to go back to it."
+        }
+        return Notification.Builder(this, "guest").setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle(deviceName.ifEmpty { "Un1box" }).setContentText(text).setContentIntent(launch).setOngoing(true).build()
     }
     override fun onDestroy() { detailedTimingThread.shutdownNow(); usb.stop(); performanceSampler.close(); alive.set(false); Native.cancelInput(); stopAudioOutput(); stopCamera(); super.onDestroy() }
 
 }
+
+/** The longest one vibration runs while the guest's motor stays on. */
+private const val VIBRATION_CAP_MS = 5000L
+/** A buzz that began and ended between two polls. */
+private const val VIBRATION_MISSED_MS = 100L

@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <dirent.h>
+#include <filesystem>
 #include "frame_pacer.h"
 #include "display_priority.h"
 #include <optional>
@@ -127,10 +128,13 @@ void timeline_presented(uint64_t sequence,uint64_t now,uint64_t work) {
     if(slot.sequence.load(std::memory_order_acquire)!=sequence)return;
     slot.work.store(work,std::memory_order_relaxed);slot.presented.store(now,std::memory_order_release);
 }
-// How the guest frame reaches the panel. The compositor modes hand SurfaceFlinger a
-// guest-sized buffer (or an integer multiple, for sharp pixels) and let it scale on the
-// display hardware; the CPU mode is the old full-resolution nearest-neighbour upscale,
-// which wrote every panel pixel (~10 MB a frame at 1080x2400). LT_PRESENT_SCALE=cpu for A/B.
+// How the guest frame reaches the panel (Settings > Screen scaling). The compositor modes hand
+// SurfaceFlinger a guest-sized buffer (Smooth), or for Crisp the largest whole multiple that fits,
+// which the display hardware brings to the view's size (Pixel perfect sizes the view to an exact
+// multiple: nothing scales). Below twice the guest's size that is 1, as Smooth: rounding up there
+// would mean a 1280x1920 buffer for a Retina guest.
+// The CPU mode is Sharp, nearest neighbour at the view's own size, which writes every pixel of
+// it (~7 MB a frame for a 1080x1620 view). LT_PRESENT_SCALE=cpu|sharp picks one for A/B.
 enum PresentScale : int { ScaleSmooth=0, ScaleSharp=1, ScaleCpu=2 };
 // False while a full page (Settings, the Store, setup) covers the guest surface. The guest keeps
 // running; the presenter stops posting frames nobody can see and withdraws its 60 Hz request,
@@ -184,25 +188,75 @@ void *angle_provider_handles[3]={};
 const char *graphics_provider_name() { return graphics_provider_choice==1?"angle-gl":"platform"; }
 std::string engine_log_path;
 
-// Each guest session writes engine-PID.log into the record's state, and nothing removed
-// them: 137 (41 MB) on one phone, 271 on another. Keep the newest few for diagnosis.
-static void prune_engine_logs(const char *state_path)
+// The engine's log (docs/LOGS.md): files/logs/engine.log is the head of this start's output, then
+// engine.tail.log, which rolls into engine.tail.1.log; the start before is kept as engine.prev*.log.
+// stdout and stderr point at the file itself, not a pipe, so the lines before a crash are on disk;
+// a watcher moves them to the next segment (dup2) once a part passes its size.
+constexpr off_t engine_log_head=1<<20, engine_log_segment=1<<20;
+static const char *const engine_log_parts[]={".log",".tail.1.log",".tail.log"};
+std::string engine_log_dir;
+
+static void engine_log_generation(const std::string &dir)
 {
-    constexpr size_t keep=7;  // plus the one this session opens
-    std::vector<std::pair<time_t,std::string>> logs;
+    for(const char *part:engine_log_parts)unlink((dir+"/engine.prev"+part).c_str());
+    for(const char *part:engine_log_parts)rename((dir+"/engine"+part).c_str(),(dir+"/engine.prev"+part).c_str());
+}
+
+// stdout and stderr to `path` (appending), after `first` if the file is new.
+static bool engine_log_point(const std::string &path,const std::string &first)
+{
+    const int fd=open(path.c_str(),O_CREAT|O_WRONLY|O_APPEND|O_CLOEXEC,0600);
+    if(fd<0)return false;
+    if(!first.empty() && write(fd,first.data(),first.size())<0) {}
+    const bool ok=fchmod(fd,0600)==0 && dup2(fd,STDOUT_FILENO)>=0 && dup2(fd,STDERR_FILENO)>=0;
+    close(fd);
+    if(ok){std::lock_guard<std::mutex> lock(guard);engine_log_path=path;}
+    return ok;
+}
+
+static std::string engine_log_marker(int segment)
+{
+    char line[96];const time_t now=time(nullptr);struct tm local;localtime_r(&now,&local);
+    std::snprintf(line,sizeof(line),"----- [log] tail segment %d, %02d:%02d:%02d -----\n",segment,local.tm_hour,local.tm_min,local.tm_sec);
+    return line;
+}
+
+static void engine_log_watch(std::string dir)
+{
+    // Perf runs that print all along (LT_FRAME_LOG, vCPU accounting, IT_GLES_PROF) set LT_LOG_UNCAPPED=1 in
+    // files/debug-env to keep their whole log (docs/LOGS.md).
+    if(const char *uncapped=getenv("LT_LOG_UNCAPPED"); uncapped && *uncapped=='1')return;
+    std::thread([dir]{
+        int segment=0;
+        for(;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            struct stat st;
+            if(fstat(STDERR_FILENO,&st)!=0)continue;
+            if(segment==0 && st.st_size>=engine_log_head) {
+                fflush(stdout);
+                if(engine_log_point(dir+"/engine.tail.log",engine_log_marker(segment+1)))segment=1;
+            } else if(segment>0 && st.st_size>=engine_log_segment) {
+                fflush(stdout);
+                rename((dir+"/engine.tail.log").c_str(),(dir+"/engine.tail.1.log").c_str());
+                if(engine_log_point(dir+"/engine.tail.log",engine_log_marker(segment+1)))segment++;
+            }
+        }
+    }).detach();
+}
+
+// Logs from before docs/LOGS.md: engine-PID.log files and guest-serial.log in the record's state.
+static void remove_old_engine_logs(const char *state_path)
+{
     if(DIR *dir=opendir(state_path)) {
+        std::vector<std::string> old;
         while(dirent *entry=readdir(dir)) {
             const std::string name=entry->d_name;
-            if(name.rfind("engine-",0)!=0 || name.size()<5 || name.compare(name.size()-4,4,".log")!=0)continue;
-            struct stat st;
-            const std::string path=std::string(state_path)+"/"+name;
-            if(stat(path.c_str(),&st)==0 && S_ISREG(st.st_mode))logs.emplace_back(st.st_mtime,path);
+            if(name.rfind("engine-",0)==0 && name.size()>4 && name.compare(name.size()-4,4,".log")==0)old.push_back(std::string(state_path)+"/"+name);
         }
         closedir(dir);
+        for(const auto &path:old)unlink(path.c_str());
     }
-    if(logs.size()<=keep)return;
-    std::sort(logs.begin(),logs.end());
-    for(size_t i=0;i+keep<logs.size();i++)unlink(logs[i].second.c_str());
+    unlink((std::string(state_path)+"/guest-serial.log").c_str());  // now in files/logs
 }
 std::string debug_qmp_path;
 bool debug_qmp_armed=false;
@@ -501,7 +555,11 @@ void present() {
                 geometry_height=ANativeWindow_getHeight(target_window);
                 geometry_format=ANativeWindow_getFormat(target_window);
                 if(!geometry_code && scale!=ScaleCpu && shown.width && shown.height) {
-                    const int factor=scale==ScaleSharp?std::max(1,std::min(geometry_width/int(shown.width),geometry_height/int(shown.height))):1;
+                    // Crisp's multiple (ScreenScaling.kt crispMultiple), at most 8 and 4096 pixels a side.
+                    const double reach=std::min(double(geometry_width)/shown.width,double(geometry_height)/shown.height);
+                    const int most=std::max(1,std::min(8,4096/int(std::max(shown.width,shown.height))));
+                    const int whole=int(std::floor(reach+0.01));
+                    const int factor=scale==ScaleSharp?std::clamp(whole,1,most):1;
                     geometry_code=ANativeWindow_setBuffersGeometry(target_window,int(shown.width)*factor,int(shown.height)*factor,WINDOW_FORMAT_RGBA_8888);
                 }
                 request_guest_frame_rate(target_window);
@@ -546,13 +604,13 @@ void present() {
                         const int x0=std::max(int(view.left),0);
                         int x1=x0;
                         while(x1<view.left+view.width && x1<target.width)++x1;
-                        const bool exact_2x=x0==0 && x1==target.width && target.width==int(source.width)*2;
+                        const bool exact_2x=x0==0 && x1==target.width && target.width==int(shown.width)*2;
                         if(!exact_2x) {
                             columns.resize(size_t(std::max(x1-x0,0)));
                             for(int x=x0;x<x1;++x)
-                                columns[x-x0]=std::min(uint32_t((x-view.left)*source.width/view.width),source.width-1);
+                                columns[x-x0]=std::min(uint32_t((x-view.left)*shown.width/view.width),shown.width-1);
                         }
-                        converted_row.resize(source.width);
+                        converted_row.resize(shown.width);
                         const uint32_t *previous=nullptr;
                         uint32_t previous_sy=UINT32_MAX;
                         for(int y=0;y<target.height;++y) {
@@ -561,14 +619,14 @@ void present() {
                                 std::fill(row,row+target.width,0xff000000u);
                                 continue;
                             }
-                            uint32_t sy=std::min(uint32_t((y-view.top)*source.height/view.height),source.height-1);
+                            uint32_t sy=std::min(uint32_t((y-view.top)*shown.height/view.height),shown.height-1);
                             if(previous && sy==previous_sy) {
                                 memcpy(row,previous,size_t(target.width)*4);
                                 continue;
                             }
                             convert_row_rgba(converted_row.data(),shown_pixels+size_t(sy)*shown.stride,int(shown.width));
                             if(exact_2x) {
-                                duplicate_row_2x(row,converted_row.data(),int(source.width));
+                                duplicate_row_2x(row,converted_row.data(),int(shown.width));
                             } else {
                                 std::fill(row,row+x0,0xff000000u);
                                 std::fill(row+x1,row+target.width,0xff000000u);
@@ -658,8 +716,11 @@ void present() {
 static std::mutex import_progress_guard;
 static std::string import_phase;
 static uint64_t import_done=0,import_total=0;
-static int import_observed(void *,const char *phase,uint64_t done,uint64_t total) {
-    std::lock_guard<std::mutex> lock(import_progress_guard);import_phase=phase?phase:"";import_done=done;import_total=total;return 0;
+// Set by cancelTransfer: the running export or import stops at its next progress report.
+static std::atomic<bool> transfer_cancelled{false};
+static int import_observed(void *transfer,const char *phase,uint64_t done,uint64_t total) {
+    std::lock_guard<std::mutex> lock(import_progress_guard);import_phase=phase?phase:"";import_done=done;import_total=total;
+    return transfer && transfer_cancelled.load()?1:0;
 }
 JNI(importProgress) jobjectArray JNICALL Java_org_un1box_android_Native_importProgress(JNIEnv *env,jobject) {
     std::lock_guard<std::mutex> lock(import_progress_guard);
@@ -705,6 +766,44 @@ JNI(adoptPrepared) jstring JNICALL Java_org_un1box_android_Native_adoptPrepared(
     import_observed(nullptr,"",0,0);
     return string(env,result(status,error));
 }
+// Device transfer (Transfer.cpp) on descriptors the app opened through the Storage Access Framework. Each opens its
+// own library handle and leaves library_guard alone: an export or import takes minutes, and records() or Start must
+// not wait for it (the core's own locks keep them apart).
+static lt_status transfer_library(const char *root,lt_library **out,lt_error *error) {
+    lt_library_config config=LT_INIT(lt_library_config);config.root_path=root;
+    return lt_library_open(&config,out,error);
+}
+JNI(exportDevice) jstring JNICALL Java_org_un1box_android_Native_exportDevice(JNIEnv *env,jobject,jstring root,jstring id,jint fd,jstring app) {
+    Utf path(env,root),record_id(env,id),name(env,app);
+    lt_error error=LT_INIT(lt_error);lt_library *own=nullptr;auto status=transfer_library(path.value,&own,&error);
+    if(status!=LT_OK)return string(env,result(status,error));
+    lt_export_config config=LT_INIT(lt_export_config);
+    config.record_id=record_id.value;config.path=nullptr;config.fd=fd;config.app=name.value;
+    transfer_cancelled=false;import_observed(nullptr,"",0,0);
+    char marker=1;
+    status=lt_library_export(own,&config,import_observed,&marker,&error);
+    import_observed(nullptr,"",0,0);lt_library_close(own);
+    return string(env,result(status,error));
+}
+/* [error, id, name]: the new device, or why not. */
+JNI(importDevice) jobjectArray JNICALL Java_org_un1box_android_Native_importDevice(JNIEnv *env,jobject,jstring root,jint fd) {
+    Utf path(env,root);
+    auto out=env->NewObjectArray(3,env->FindClass("java/lang/String"),nullptr);
+    lt_error error=LT_INIT(lt_error);lt_library *own=nullptr;auto status=transfer_library(path.value,&own,&error);
+    lt_record_info record=LT_INIT(lt_record_info);
+    if(status==LT_OK) {
+        lt_transfer_import_config config=LT_INIT(lt_transfer_import_config);config.path=nullptr;config.fd=fd;
+        transfer_cancelled=false;import_observed(nullptr,"",0,0);
+        char marker=1;
+        status=lt_library_import_device(own,&config,import_observed,&marker,&record,&error);
+        import_observed(nullptr,"",0,0);lt_library_close(own);
+    }
+    env->SetObjectArrayElement(out,0,string(env,result(status,error)));
+    env->SetObjectArrayElement(out,1,string(env,status==LT_OK?record.id:""));
+    env->SetObjectArrayElement(out,2,string(env,status==LT_OK?record.display_name:""));
+    return out;
+}
+JNI(cancelTransfer) void JNICALL Java_org_un1box_android_Native_cancelTransfer(JNIEnv *,jobject) { transfer_cancelled=true; }
 JNI(setGuestPackage) jstring JNICALL Java_org_un1box_android_Native_setGuestPackage(JNIEnv *env,jobject,jstring root,jstring id,jstring guest) {
     std::lock_guard<std::mutex> lock(library_guard);
     Utf path(env,root),record_id(env,id),package(env,guest);
@@ -727,10 +826,10 @@ JNI(records) jobjectArray JNICALL Java_org_un1box_android_Native_records(JNIEnv 
     auto rows=env->NewObjectArray(count,strings,nullptr);
     for(uint32_t i=0;i<count;++i) {
         lt_record_info record=LT_INIT(lt_record_info);status=lt_library_record_at(library,i,&record,&error);
-        auto row=env->NewObjectArray(11,str,nullptr);
+        auto row=env->NewObjectArray(12,str,nullptr);
         lt_board_info facts=LT_INIT(lt_board_info);
         if(status==LT_OK)status=lt_engine_board("libqemu-arm.so",record.board,&facts,&error);
-        std::vector<std::string> values=status==LT_OK?std::vector<std::string>{record.id,record.display_name,record.board,record.build,std::to_string(record.selected),std::to_string(record.dirty),std::to_string(facts.max_contacts),(facts.capabilities&2)?"1":"0",(facts.capabilities&1)?"1":"0",record.bootrom_path[0] && access(record.bootrom_path,R_OK)==0?"1":"0",record.guest_package_path[0] && access(record.guest_package_path,R_OK)==0?"1":"0"}:std::vector<std::string>{"",result(status,error)};
+        std::vector<std::string> values=status==LT_OK?std::vector<std::string>{record.id,record.display_name,record.board,record.build,std::to_string(record.selected),std::to_string(record.dirty),std::to_string(facts.max_contacts),(facts.capabilities&2)?"1":"0",(facts.capabilities&1)?"1":"0",record.bootrom_path[0] && access(record.bootrom_path,R_OK)==0?"1":"0",record.guest_package_path[0] && access(record.guest_package_path,R_OK)==0?"1":"0",lt_board_has_modem(record.board)?"1":"0"}:std::vector<std::string>{"",result(status,error)};
         for(size_t index=0;index<values.size();++index)env->SetObjectArrayElement(row,index,string(env,values[index]));
         env->SetObjectArrayElement(rows,i,row);env->DeleteLocalRef(row);
     }
@@ -750,6 +849,55 @@ JNI(remove) jstring JNICALL Java_org_un1box_android_Native_remove(JNIEnv *env,jo
     std::lock_guard<std::mutex> lock(library_guard);Utf path(env,root),record(env,id);lt_error error=LT_INIT(lt_error);
     auto status=open_library(path.value,&error);if(status==LT_OK)status=lt_library_remove(library,record.value,&error);
     return string(env,result(status,error));
+}
+// Carrier settings (lt_carrier), as strings: carrier, mcc_mnc, registered, sim_present, bars, latitude, longitude,
+// last_caller, last_sender. carrierGet puts the error first ("" when it worked).
+JNI(carrierGet) jobjectArray JNICALL Java_org_un1box_android_Native_carrierGet(JNIEnv *env,jobject,jstring root,jstring id) {
+    std::lock_guard<std::mutex> lock(library_guard);Utf path(env,root),record(env,id);lt_error error=LT_INIT(lt_error);
+    lt_carrier c=LT_INIT(lt_carrier);
+    auto status=open_library(path.value,&error);if(status==LT_OK)status=lt_library_carrier(library,record.value,&c,&error);
+    char latitude[32],longitude[32];
+    snprintf(latitude,sizeof latitude,"%.7f",c.latitude);snprintf(longitude,sizeof longitude,"%.7f",c.longitude);
+    std::vector<std::string> values{result(status,error),c.carrier,c.mcc_mnc,c.registered?"1":"0",c.sim_present?"1":"0",
+        std::to_string(c.bars),latitude,longitude,c.last_caller,c.last_sender};
+    auto out=env->NewObjectArray(jsize(values.size()),env->FindClass("java/lang/String"),nullptr);
+    for(size_t i=0;i<values.size();++i)env->SetObjectArrayElement(out,jsize(i),string(env,values[i]));
+    return out;
+}
+JNI(carrierSet) jstring JNICALL Java_org_un1box_android_Native_carrierSet(JNIEnv *env,jobject,jstring root,jstring id,jobjectArray fields) {
+    if(!fields||env->GetArrayLength(fields)!=9)return string(env,"Invalid carrier settings");
+    std::vector<std::string> v;
+    for(jsize i=0;i<9;++i) {
+        auto item=static_cast<jstring>(env->GetObjectArrayElement(fields,i));Utf text(env,item);v.push_back(text.text);
+        env->DeleteLocalRef(item);
+    }
+    lt_carrier c=LT_INIT(lt_carrier);
+    auto put=[](char *out,size_t n,const std::string &value){ if(value.size()>=n)return false;memcpy(out,value.c_str(),value.size()+1);return true; };
+    if(!put(c.carrier,sizeof c.carrier,v[0])||!put(c.mcc_mnc,sizeof c.mcc_mnc,v[1])||!put(c.last_caller,sizeof c.last_caller,v[7])||
+       !put(c.last_sender,sizeof c.last_sender,v[8]))
+        return string(env,"A carrier setting is too long");
+    c.registered=v[2]=="1";c.sim_present=v[3]=="1";c.bars=uint32_t(strtoul(v[4].c_str(),nullptr,10));
+    c.latitude=strtod(v[5].c_str(),nullptr);c.longitude=strtod(v[6].c_str(),nullptr);
+    std::lock_guard<std::mutex> lock(library_guard);Utf path(env,root),record(env,id);lt_error error=LT_INIT(lt_error);
+    auto status=open_library(path.value,&error);if(status==LT_OK)status=lt_library_set_carrier(library,record.value,&c,&error);
+    return string(env,result(status,error));
+}
+// The running modem: reload what was saved, a call/answer/hang-up/text, and its state (JSON, "" before it reports).
+JNI(reloadCarrier) jstring JNICALL Java_org_un1box_android_Native_reloadCarrier(JNIEnv *env,jobject) {
+    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
+    return string(env,runtime?result(lt_runtime_reload_carrier(runtime,&error),error):"");
+}
+JNI(modem) jstring JNICALL Java_org_un1box_android_Native_modem(JNIEnv *env,jobject,jstring action,jstring value) {
+    Utf name(env,action),text(env,value);
+    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
+    if(!runtime)return string(env,"Start the device first");
+    return string(env,result(lt_runtime_modem(runtime,name.value?name.value:"",text.value?text.value:"",&error),error));
+}
+JNI(modemStatus) jstring JNICALL Java_org_un1box_android_Native_modemStatus(JNIEnv *env,jobject) {
+    std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);
+    char json[8192];
+    if(!runtime||lt_runtime_modem_status(runtime,json,sizeof json,&error)!=LT_OK)return string(env,"");
+    return string(env,json);
 }
 static jstring start_runtime(JNIEnv *env,jstring root,jstring id,bool allow_dirty,bool headphones) {
     bool qmp_requested=false;
@@ -797,19 +945,27 @@ static jstring start_runtime(JNIEnv *env,jstring root,jstring id,bool allow_dirt
     }
     if(status==LT_OK)status=lt_library_device_open(library,record.value,allow_dirty?1u:0u,&prepared_device,&error);
     if(status==LT_OK) {
-        prune_engine_logs(selected.state_path);
-        const std::string path=std::string(selected.state_path)+"/engine-"+std::to_string(getpid())+".log";
-        const int log_fd=open(path.c_str(),O_CREAT|O_WRONLY|O_APPEND|O_CLOEXEC,0600);
-        if(log_fd<0 || fchmod(log_fd,0600)!=0 || dup2(log_fd,STDOUT_FILENO)<0 || dup2(log_fd,STDERR_FILENO)<0) {
+        remove_old_engine_logs(selected.state_path);
+        // The library is files/library; the logs are files/logs.
+        const std::filesystem::path lib_path(path.value);
+        engine_log_dir=(lib_path.parent_path()/"logs").string();
+        mkdir(engine_log_dir.c_str(),0700);
+        engine_log_generation(engine_log_dir);
+        // iOS's console for this start; QEMU truncates it, so the start before is kept beside it.
+        rename((engine_log_dir+"/guest-serial.log").c_str(),(engine_log_dir+"/guest-serial.prev.log").c_str());
+        char header[512];const time_t now=time(nullptr);struct tm local;localtime_r(&now,&local);
+        std::snprintf(header,sizeof(header),"[log] engine log of \"%s\" (%s %s, record %.8s), started %04d-%02d-%02d %02d:%02d:%02d%s\n",
+            selected.display_name,selected.board,selected.build,selected.id,local.tm_year+1900,local.tm_mon+1,local.tm_mday,
+            local.tm_hour,local.tm_min,local.tm_sec,allow_dirty?" (recovering retained state)":"");
+        if(!engine_log_point(engine_log_dir+"/engine.log",header)) {
             status=LT_IO;error.code=LT_IO;std::snprintf(error.message,sizeof(error.message),"Cannot retain private guest diagnostics; check available storage");
         } else {
             std::setvbuf(stdout,nullptr,_IOLBF,0);std::setvbuf(stderr,nullptr,_IONBF,0);
-            std::lock_guard<std::mutex> lock(guard);engine_log_path=path;
+            engine_log_watch(engine_log_dir);
         }
-        if(log_fd>=0)close(log_fd);
     }
     if(status==LT_OK)status=lt_engine_board("libqemu-arm.so",selected.board,&prepared_board,&error);
-    std::string serial=std::string(selected.state_path)+"/guest-serial.log";
+    std::string serial=(engine_log_dir.empty()?std::string(selected.state_path):engine_log_dir)+"/guest-serial.log";
     lt_runtime_config engine=LT_INIT(lt_runtime_config);
     engine.engine_library="libqemu-arm.so";engine.device=prepared_device;engine.boot=lt_boot_config LT_INIT(lt_boot_config);
     engine.boot.machine=nullptr;engine.boot.bootrom_path=selected.bootrom_path[0]?selected.bootrom_path:nullptr;
@@ -1091,10 +1247,16 @@ jstring touch_command(JNIEnv *env,uint64_t lease,jlong time,jintArray ids,jintAr
     lt_touch_batch batch=LT_INIT(lt_touch_batch);batch.timestamp_ns=time;batch.count=count;
     // A scan wider than tall is shown turned upright (present): the contact goes back into the scan's own axes,
     // which is the space the engine takes touches in.
-    const bool turned=scan_turned(frame);
+    const bool turned=scan_turned(latest_frame_meta);
     const auto view=viewport(width,height);lt_error error=LT_INIT(lt_error);
+    // width < 0: the coordinates are already the guest screen's normalized ones (the debug build's bench control).
+    const bool normalized=width<0;
     for(jsize i=0;i<count;++i) {
         batch.contacts[i]=lt_contact LT_INIT(lt_contact);batch.contacts[i].id=id[i];batch.contacts[i].phase=phase[i];
+        if(normalized) {
+            batch.contacts[i].x=std::clamp(double(coords[i*2]),0.0,1.0);batch.contacts[i].y=std::clamp(double(coords[i*2+1]),0.0,1.0);
+            continue;
+        }
         // A finger past the guest's edge (into a letterbox, or off the glass) holds at the nearest edge instead of
         // cancelling every finger's gesture, as a touchscreen that ends at the guest's border would.
         double px=coords[i*2],py=coords[i*2+1];
@@ -1209,6 +1371,43 @@ JNI(audio) jint JNICALL Java_org_un1box_android_Native_audio(JNIEnv *env,jobject
 JNI(audioInfo) jintArray JNICALL Java_org_un1box_android_Native_audioInfo(JNIEnv *env,jobject) {
     std::lock_guard<std::mutex> lock(guard);jint data[2]={jint(pcm.sample_rate),jint(pcm.channels)};
     jintArray arr=env->NewIntArray(2);env->SetIntArrayRegion(arr,0,2,data);return arr;
+}
+// The phone's microphone into the guest's capture port: 0 taken, 1 dropped (not recording), else -lt_status.
+JNI(micWrite) jint JNICALL Java_org_un1box_android_Native_micWrite(JNIEnv *env,jobject,jshortArray frames,jint count) {
+    if(count<=0||count*2>env->GetArrayLength(frames))return -jint(LT_INVALID);
+    std::vector<int16_t> data(size_t(count)*2);env->GetShortArrayRegion(frames,0,count*2,data.data());
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return 1;
+    lt_error error=LT_INIT(lt_error);const auto status=lt_runtime_mic_write(runtime,data.data(),uint32_t(count),&error);
+    return status==LT_OK?0:status==LT_AGAIN?1:-jint(status);
+}
+JNI(micCapturing) jboolean JNICALL Java_org_un1box_android_Native_micCapturing(JNIEnv *,jobject) {
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return JNI_FALSE;
+    lt_mic_info info=LT_INIT(lt_mic_info);lt_error error=LT_INIT(lt_error);
+    return lt_runtime_mic_info(runtime,&info,&error)==LT_OK&&info.capturing?JNI_TRUE:JNI_FALSE;
+}
+// capturing, port rate, queued, pushed, dropped; empty when the engine has no microphone input.
+JNI(micInfo) jlongArray JNICALL Java_org_un1box_android_Native_micInfo(JNIEnv *env,jobject) {
+    std::lock_guard<std::mutex> lock(guard);
+    lt_mic_info info=LT_INIT(lt_mic_info);lt_error error=LT_INIT(lt_error);
+    if(!runtime||lt_runtime_mic_info(runtime,&info,&error)!=LT_OK)return env->NewLongArray(0);
+    jlong data[5]={jlong(info.capturing),jlong(info.sample_rate),jlong(info.queued_frames),jlong(info.pushed_frames),jlong(info.dropped_frames)};
+    jlongArray arr=env->NewLongArray(5);env->SetLongArrayRegion(arr,0,5,data);return arr;
+}
+// The guest's vibration motor: on (0/1) and its starts so far; empty without a runtime or from an engine without it.
+JNI(vibrator) jlongArray JNICALL Java_org_un1box_android_Native_vibrator(JNIEnv *env,jobject) {
+    std::lock_guard<std::mutex> lock(guard);
+    lt_vibrator_info info=LT_INIT(lt_vibrator_info);lt_error error=LT_INIT(lt_error);
+    if(!runtime||lt_runtime_vibrator(runtime,&info,&error)!=LT_OK)return env->NewLongArray(0);
+    jlong data[2]={jlong(info.on),jlong(info.pulses)};
+    jlongArray arr=env->NewLongArray(2);env->SetLongArrayRegion(arr,0,2,data);return arr;
+}
+JNI(holdStorageSync) void JNICALL Java_org_un1box_android_Native_holdStorageSync(JNIEnv *,jobject,jboolean hold) {
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return;
+    lt_error error=LT_INIT(lt_error);lt_runtime_hold_storage_sync(runtime,hold?1:0,&error);
+}
+JNI(micFlush) void JNICALL Java_org_un1box_android_Native_micFlush(JNIEnv *,jobject) {
+    std::lock_guard<std::mutex> lock(guard);if(!runtime)return;
+    lt_error error=LT_INIT(lt_error);lt_runtime_mic_flush(runtime,&error);
 }
 
 // The capture port reads interleaved stereo; the phone's recorder hands us mono, because a mono
@@ -1344,8 +1543,9 @@ JNI(guestRequest) jobjectArray JNICALL Java_org_un1box_android_Native_guestReque
     std::lock_guard<std::mutex> lock(guard);Utf text(env,argument);lt_error error=LT_INIT(lt_error);uint64_t id=0;
     lt_guest_request request=LT_INIT(lt_guest_request);request.operation=operation;request.timeout_ms=timeout;request.argument=text.value;
     auto status=runtime?lt_runtime_guest_request(runtime,&request,&id,&error):LT_AGAIN;
-    auto output=env->NewObjectArray(2,env->FindClass("java/lang/String"),nullptr);
-    env->SetObjectArrayElement(output,0,string(env,std::to_string(id)));env->SetObjectArrayElement(output,1,string(env,result(status,error)));return output;
+    auto output=env->NewObjectArray(3,env->FindClass("java/lang/String"),nullptr);
+    env->SetObjectArrayElement(output,0,string(env,std::to_string(id)));env->SetObjectArrayElement(output,1,string(env,result(status,error)));
+    env->SetObjectArrayElement(output,2,string(env,std::to_string(status)));return output;
 }
 JNI(guestPoll) jobjectArray JNICALL Java_org_un1box_android_Native_guestPoll(JNIEnv *env,jobject,jlong id) {
     std::lock_guard<std::mutex> lock(guard);lt_error error=LT_INIT(lt_error);lt_guest_result completed=LT_INIT(lt_guest_result);
@@ -1459,6 +1659,16 @@ JNI(debugEnableTouchTrace) jstring JNICALL Java_org_un1box_android_Native_debugE
 #else
     return string(env,"Debug diagnosis is unavailable in this build");
 #endif
+}
+// The guest's NAND traffic so far: read ops, bytes, ns, write ops, bytes, ns, erase ops, ns; empty
+// when no device runs or its engine lacks the counters.
+JNI(storageStats) jlongArray JNICALL Java_org_un1box_android_Native_storageStats(JNIEnv *env,jobject) {
+    std::lock_guard<std::mutex> lock(guard);
+    lt_runtime_storage_stats s=LT_INIT(lt_runtime_storage_stats);lt_error error=LT_INIT(lt_error);
+    if(!runtime || lt_runtime_storage_statistics(runtime,&s,&error)!=LT_OK)return env->NewLongArray(0);
+    const jlong values[]={jlong(s.read_ops),jlong(s.read_bytes),jlong(s.read_ns),jlong(s.write_ops),jlong(s.write_bytes),
+                          jlong(s.write_ns),jlong(s.erase_ops),jlong(s.erase_ns)};
+    auto array=env->NewLongArray(8);env->SetLongArrayRegion(array,0,8,values);return array;
 }
 // Frames in each of the last 240 complete 250 ms buckets, oldest first (0 = none published).
 JNI(guestFrameBuckets) jintArray JNICALL Java_org_un1box_android_Native_guestFrameBuckets(JNIEnv *env,jobject) {

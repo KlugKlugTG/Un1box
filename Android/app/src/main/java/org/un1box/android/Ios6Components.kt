@@ -124,6 +124,7 @@ fun TextButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    colors: ButtonColors = ButtonDefaults.textButtonColors(),
     content: @Composable RowScope.() -> Unit,
 ) {
     val inAlert = LocalIosAlertButton.current
@@ -138,11 +139,16 @@ fun TextButton(
         }
         return
     }
+    val tint = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant
+        colors.contentColor != Color.Unspecified -> colors.contentColor
+        else -> MaterialTheme.colorScheme.primary
+    }
     Box(modifier.clip(RoundedCornerShape(8.dp))
         .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
         .padding(horizontal = 10.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
         CompositionLocalProvider(
-            LocalContentColor provides if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            LocalContentColor provides tint,
             LocalTextStyle provides MaterialTheme.typography.labelLarge) {
             Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.alpha(if (pressed) 0.55f else 1f)) { content() }
@@ -312,9 +318,12 @@ fun AlertDialog(
     text: (@Composable () -> Unit)? = null,
     properties: DialogProperties = DialogProperties(),
 ) {
-    Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onDismissRequest,
+        properties = DialogProperties(dismissOnBackPress = properties.dismissOnBackPress,
+            dismissOnClickOutside = properties.dismissOnClickOutside, usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().then(modifier).background(Color.Black.copy(alpha = 0.42f))
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismissRequest() },
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
+                enabled = properties.dismissOnClickOutside) { onDismissRequest() },
             contentAlignment = Alignment.Center) {
             Column(Modifier.widthIn(min = 260.dp, max = 300.dp)
                 .ios6Lacquer(RoundedCornerShape(10.dp), Ios6.AlertTop, Ios6.AlertBottom, Color(0xFF0E141C), gloss = 0.5f)
@@ -510,6 +519,7 @@ fun OutlinedTextField(
     placeholder: (@Composable () -> Unit)? = null,
     leadingIcon: (@Composable () -> Unit)? = null,
     trailingIcon: (@Composable () -> Unit)? = null,
+    supportingText: (@Composable () -> Unit)? = null,
     isError: Boolean = false,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     keyboardActions: KeyboardActions = KeyboardActions.Default,
@@ -518,7 +528,7 @@ fun OutlinedTextField(
     minLines: Int = 1,
     interactionSource: MutableInteractionSource? = null,
 ) {
-    Ios6Field(modifier, label) { field ->
+    Ios6Field(modifier, label, supportingText, isError) { field ->
         Ios6TextFieldCore(
             value = value,
             onValueChange = onValueChange,
@@ -548,6 +558,7 @@ fun OutlinedTextField(
     placeholder: (@Composable () -> Unit)? = null,
     leadingIcon: (@Composable () -> Unit)? = null,
     trailingIcon: (@Composable () -> Unit)? = null,
+    supportingText: (@Composable () -> Unit)? = null,
     isError: Boolean = false,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     keyboardActions: KeyboardActions = KeyboardActions.Default,
@@ -556,7 +567,7 @@ fun OutlinedTextField(
     minLines: Int = 1,
     interactionSource: MutableInteractionSource? = null,
 ) {
-    Ios6Field(modifier, label) { field ->
+    Ios6Field(modifier, label, supportingText, isError) { field ->
         Ios6TextFieldCore(
             value = value,
             onValueChange = onValueChange,
@@ -575,7 +586,13 @@ fun OutlinedTextField(
 
 /** The small bold caption a field wears, and the field under it. */
 @Composable
-private fun Ios6Field(modifier: Modifier, label: (@Composable () -> Unit)?, field: @Composable (Modifier) -> Unit) {
+private fun Ios6Field(
+    modifier: Modifier,
+    label: (@Composable () -> Unit)?,
+    supportingText: (@Composable () -> Unit)? = null,
+    isError: Boolean = false,
+    field: @Composable (Modifier) -> Unit,
+) {
     Column(modifier.fillMaxWidth()) {
         label?.let {
             Box(Modifier.padding(start = 2.dp, bottom = 4.dp)) {
@@ -585,5 +602,12 @@ private fun Ios6Field(modifier: Modifier, label: (@Composable () -> Unit)?, fiel
             }
         }
         field(Modifier.fillMaxWidth())
+        supportingText?.let {
+            Box(Modifier.padding(start = 2.dp, top = 4.dp)) {
+                CompositionLocalProvider(
+                    LocalTextStyle provides MaterialTheme.typography.labelSmall,
+                    LocalContentColor provides if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) { it() }
+            }
+        }
     }
 }

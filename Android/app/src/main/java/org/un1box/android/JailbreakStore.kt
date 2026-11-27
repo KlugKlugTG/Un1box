@@ -521,7 +521,7 @@ internal object JailbreakCaches {
  * Cydia slow, and neither is on this path.
  */
 /**
- * The app's own bunzip2 (libjbBz2.so, built from Packages/FirmwareKit/build-support/jb-bunzip2.c).
+ * The app's own bunzip2 (libjbBz2.so, built from build-support/jb-bunzip2.c).
  *
  * Android has no bzip2 at all, and half of these repositories serve their package indexes as .bz2 --
  * BigBoss's 9 973 packages are only there. The tool is run as a child process, like the engine's own

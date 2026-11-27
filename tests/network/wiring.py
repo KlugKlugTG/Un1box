@@ -12,8 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "ci" / "engine-patches" / "0002-engine-sdio-link-retry.patch"
-HEADER = "include/hw/arm/ipod_touch_sdio.h"
-SOURCE = "hw/arm/ipod_touch_sdio.c"
+HEADER = "include/hw/net/bcm_fullmac.h"
+SOURCE = "hw/arm/bcm_fullmac.c"
 
 
 def read(path):
@@ -81,7 +81,7 @@ def the_state_lives_and_dies_with_the_machine():
     require(re.search(r"s->link_timer = timer_new_ns\(QEMU_CLOCK_VIRTUAL, sdio_link_check, s\);", body)
             is not None,
             "the check's timer is never created, so the arming has nothing to arm")
-    require("VMSTATE_TIMER_PTR(link_timer" in body and "version_id = 2" in body,
+    require("VMSTATE_TIMER_PTR_V(fullmac.link_timer" in body and "version_id = 2" in body,
             "a saved machine does not carry the watchdog (or its version was not raised for the new "
             "fields)")
     require(re.search(r"s->link_retries = 0;", body) is not None,

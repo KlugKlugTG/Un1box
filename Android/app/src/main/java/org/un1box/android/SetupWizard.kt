@@ -64,7 +64,8 @@ internal class SetupState {
 @Composable
 internal fun SetupWizard(state: SetupState, canCancel: Boolean, onPickFolder: () -> Unit, onPickSystem: () -> Unit,
                          onPickRom: () -> Unit, onCreate: () -> Unit, onPrepare: () -> Unit,
-                         onFinish: (start: Boolean) -> Unit, onCancel: () -> Unit) {
+                         onFinish: (start: Boolean) -> Unit, onCancel: () -> Unit, onSaveLogs: () -> Unit = {},
+                         savingLogs: Boolean = false, onImport: () -> Unit = {}) {
     BackHandler {
         when {
             state.step == SetupStep.CREATING -> {}  // consumed: the import keeps running behind the wizard
@@ -80,10 +81,10 @@ internal fun SetupWizard(state: SetupState, canCancel: Boolean, onPickFolder: ()
             }
             AnimatedContent(state.step, Modifier.weight(1f), label = "setup-step") { step ->
                 when (step) {
-                    SetupStep.WELCOME -> Welcome(onPrepare) { state.step = SetupStep.FILES }
+                    SetupStep.WELCOME -> Welcome(onPrepare, onImport) { state.step = SetupStep.FILES }
                     SetupStep.FILES -> Files(state, onPickFolder, onPickSystem, onPickRom, onCreate, onPrepare)
                     SetupStep.CREATING -> Creating(state.phase, state.progress)
-                    SetupStep.DONE -> Done(state.created ?: "Your device", state.timings, onFinish)
+                    SetupStep.DONE -> Done(state.created ?: "Your device", state.timings, onFinish, onSaveLogs, savingLogs)
                 }
             }
         }
@@ -91,7 +92,7 @@ internal fun SetupWizard(state: SetupState, canCancel: Boolean, onPickFolder: ()
 }
 
 @Composable
-private fun Welcome(onPrepare: () -> Unit, onFiles: () -> Unit) {
+private fun Welcome(onPrepare: () -> Unit, onImport: () -> Unit, onFiles: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 28.dp), verticalArrangement = Arrangement.Center) {
         Box(Modifier.size(64.dp).ios6Lacquer(RoundedCornerShape(12.dp), Ios6.ButtonTop, Ios6.ButtonBottom, Ios6.ButtonEdge),
             contentAlignment = Alignment.Center) {
@@ -107,12 +108,15 @@ private fun Welcome(onPrepare: () -> Unit, onFiles: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         Need(LtIcons.Phone, "Choose a device and iOS version", "The iPod touch 2G on iOS 3.1.3 is the easiest place to start")
         Need(LtIcons.Download, "Un1box downloads it", "iOS comes from Apple, or the Internet Archive when Apple no longer has it")
-        Need(LtIcons.Layers, "And prepares it", "A minute or a few, with 1.5 to 5 GB free")
+        Need(LtIcons.Layers, "And prepares it", "From a minute to half an hour, with 1.5 to 10 GB free")
         Spacer(Modifier.height(40.dp))
         Button(onClick = onPrepare, modifier = Modifier.align(Alignment.CenterHorizontally).height(44.dp).testTag("setup_start"), contentPadding = PaddingValues(horizontal = 32.dp)) {
             Text("Get started", style = MaterialTheme.typography.titleMedium)
         }
-        TextButton(onClick = onFiles, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).testTag("setup_advanced")) {
+        TextButton(onClick = onImport, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp).testTag("setup_import")) {
+            Text("Import a device from another phone or computer")
+        }
+        TextButton(onClick = onFiles, modifier = Modifier.align(Alignment.CenterHorizontally).testTag("setup_advanced")) {
             Text("I already have the device files")
         }
     }
@@ -216,7 +220,7 @@ private fun Creating(phase: String, progress: Float) {
 }
 
 @Composable
-private fun Done(name: String, timings: String, onFinish: (Boolean) -> Unit) {
+private fun Done(name: String, timings: String, onFinish: (Boolean) -> Unit, onSaveLogs: () -> Unit, savingLogs: Boolean) {
     Column(Modifier.fillMaxSize().padding(horizontal = 28.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Filled.CheckCircle, null, Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(24.dp))
@@ -230,6 +234,7 @@ private fun Done(name: String, timings: String, onFinish: (Boolean) -> Unit) {
         }
         TextButton(onClick = { onFinish(false) }, modifier = Modifier.padding(top = 8.dp)) { Text("Not now") }
         if (timings.isNotEmpty()) StageTimes(timings)
+        TextButton(onClick = onSaveLogs, enabled = !savingLogs, modifier = Modifier.testTag("save_logs")) { Text("Save logs") }
     }
 }
 

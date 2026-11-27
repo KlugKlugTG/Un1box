@@ -6,14 +6,23 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -23,17 +32,27 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * The default view: the selected device lit from behind, a top bar for switching devices and
@@ -44,17 +63,31 @@ import kotlinx.coroutines.delay
 @Composable
 internal fun HomeScreen(host: GuestHost, guestSurface: @Composable (Modifier) -> Unit) {
     var confirmStop by remember { mutableStateOf(false) }
+    var dockHeight by remember { mutableStateOf(0) }
     Ios6WallpaperPage(Modifier.semantics { testTagsAsResourceId = true }) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             HomeTopBar(host)
-            Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp), contentAlignment = Alignment.Center) {
+            // The device fits this room, but its drawing runs on under the dock and off the screen's sides and
+            // bottom; only the top stays clear, cut where the top bar ends.
+            Box(Modifier.weight(1f).fillMaxWidth().drawWithContent {
+                val big = 10_000f
+                clipRect(left = -big, top = -8.dp.toPx(), right = size.width + big, bottom = size.height + big) { this@drawWithContent.drawContent() }
+            }.padding(horizontal = 24.dp, vertical = 4.dp), contentAlignment = Alignment.Center) {
                 DeviceStage(host) { modifier -> GuestScreen(host, guestSurface, modifier, overlayScale = 0.85f, inDeviceView = true) }
             }
             SessionStats(host)
-            AnimatedVisibility(host.active, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                SessionDock(host) { confirmStop = true }
+            val docked = host.active && !host.settings.dockHidden
+            AnimatedVisibility(docked, modifier = Modifier.zIndex(1f), enter = expandVertically() + slideInHorizontally { it } + fadeIn(),
+                exit = shrinkVertically() + fadeOut()) {
+                SessionDock(host, onHeight = { dockHeight = it }, onHide = { host.settings.dockHidden = true }) { confirmStop = true }
             }
-            LtNavBar(Screen.HOME, host::navigate, Modifier.padding(top = if (host.active) 0.dp else 14.dp))
+            LtNavBar(Screen.HOME, host::navigate, Modifier.padding(top = if (docked) 0.dp else 14.dp))
+        }
+        AnimatedVisibility(host.active && host.settings.dockHidden, modifier = Modifier.align(Alignment.BottomEnd).zIndex(2f)
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+            enter = slideInHorizontally { it } + fadeIn(), exit = slideOutHorizontally { it } + fadeOut()) {
+            val middle = 64.dp + with(LocalDensity.current) { if (dockHeight > 0) (dockHeight / 2).toDp() else 34.dp }
+            DockTab(middle) { host.settings.dockHidden = false }
         }
         // Floats over the device under the top bar, so a message never resizes the guest screen.
         ErrorBanner(host.error, host::dismissError, Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing)
@@ -102,7 +135,9 @@ private fun DeviceStage(host: GuestHost, screen: @Composable (Modifier) -> Unit)
             topLeft = Offset(size.width * 0.16f, size.height * 0.88f), size = androidx.compose.ui.geometry.Size(size.width * 0.68f, size.height * 0.10f))
     }, contentAlignment = Alignment.Center) {
         DeviceFrame(DeviceSkin.forBoard(host.selected?.board), enabled = host.running, button = host::button,
-            screen = screen, modifier = Modifier.fillMaxSize(), haptics = host.settings.haptics)
+            screen = screen, modifier = Modifier.fillMaxSize(), haptics = host.settings.haptics,
+            pixels = screenPixels(host.selected?.board).takeIf { host.settings.scaling == ScreenScaling.PIXEL_PERFECT },
+            multiple = host.settings.integerScale, realPxPerMm = host.settings.realPxPerMm(host.selected?.board))
     }
 }
 
@@ -202,24 +237,86 @@ private fun Busy(label: String) {
 
 /** Pause, screenshot, full screen, inspect, stop: one blue toolbar over the bottom bar. */
 @Composable
-private fun SessionDock(host: GuestHost, onStop: () -> Unit) {
+private fun SessionDock(host: GuestHost, onHeight: (Int) -> Unit, onHide: () -> Unit, onStop: () -> Unit) {
+    // Dragged right it follows the finger; let go past a sixth of its width, or flick it, (or tap its arrow) and it
+    // slides the rest of the way off before it's hidden, so it never jumps back first. Short of that it springs back.
+    val slide = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    var width by remember { mutableStateOf(1) }
+    val tuck: () -> Unit = {
+        scope.launch {
+            slide.animateTo(width * 1.1f, tween(160))
+            onHide()
+        }
+    }
     val dark = Ios6.isDark()
-    Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).testTag("dock")
+    Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)
+        .onSizeChanged { width = it.width.coerceAtLeast(1); onHeight(it.height) }
+        .graphicsLayer { translationX = slide.value; alpha = 1f - (slide.value / width).coerceIn(0f, 1f) * 0.6f }
+        .pointerInput(Unit) {
+            val tracker = VelocityTracker()
+            var travel = 0f
+            detectHorizontalDragGestures(
+                onDragStart = { tracker.resetTracking(); travel = 0f },
+                onDragEnd = {
+                    val flick = tracker.calculateVelocity().x > 400.dp.toPx()
+                    if (flick || slide.value > width / 6f) tuck() else scope.launch { slide.animateTo(0f) }
+                },
+                onDragCancel = { scope.launch { slide.animateTo(0f) } }) { change, dx ->
+                change.consume()
+                travel += dx
+                tracker.addPosition(change.uptimeMillis, Offset(travel, 0f))
+                scope.launch { slide.snapTo((slide.value + dx).coerceAtLeast(0f)) }
+            }
+        }
+        .testTag("dock")
         .ios6Lacquer(RoundedCornerShape(9.dp),
             if (dark) Ios6.NavTopDark else Ios6.NavTop,
             if (dark) Ios6.NavBottomDark else Ios6.NavBottom,
             if (dark) Color(0xFF0A0A0B) else Color(0xFF173F6B))) {
         CompositionLocalProvider(LocalIosOnChrome provides true) {
-            Row(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+            Row(Modifier.padding(start = 4.dp, end = 0.dp, top = 4.dp, bottom = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically) {
                 val canControl = host.status in listOf("running", "paused")
                 DockButton(if (host.paused) LtIcons.Play else LtIcons.Pause, if (host.paused) "Resume" else "Pause",
                     { host.setPaused(!host.paused) }, Modifier.weight(1f), enabled = canControl, tag = "pause_guest", primary = true)
                 DockButton(LtIcons.Fullscreen, "Full screen", { host.navigate(Screen.FULLSCREEN) }, Modifier.weight(1f), tag = "fullscreen_button")
-                DockButton(LtIcons.Camera, "Screenshot", host::screenshot, Modifier.weight(1f), enabled = canControl, tag = "screenshot_button")
+                if (host.settings.screenshotButton) DockButton(LtIcons.Camera, "Screenshot", host::screenshot, Modifier.weight(1f), enabled = canControl, tag = "screenshot_button")
                 if (host.settings.hitchButton) DockButton(LtIcons.Timeline, "Inspect", host::openHitch, Modifier.weight(1f), enabled = canControl, tag = "hitch_button")
-                DockButton(LtIcons.Stop, "Stop", onStop, Modifier.weight(1f),
-                    enabled = host.sessionOwned && host.status != "stopping" && !host.storeInstalling, tint = LtColors.Danger, tag = "stop_guest")
+                if (host.carrierButton) CarrierDockButton(host, Modifier.weight(1f))
+                DockButton(LtIcons.Stop, if (host.status == "stopping") "Force stop" else "Stop", onStop, Modifier.weight(1f),
+                    enabled = host.sessionOwned, tint = LtColors.Danger, tag = "stop_guest")
+                Box(Modifier.width(30.dp).height(52.dp).clip(RoundedCornerShape(topStart = 9.dp, bottomStart = 9.dp)).clickable(onClick = tuck)
+                    .testTag("dock_hide"), contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Hide the controls", tint = Color.White.copy(alpha = 0.85f))
+                }
             }
+        }
+    }
+}
+
+/**
+ * The tucked-away dock: a small tab at the right edge, its middle [middle] above the bottom (level with the dock's),
+ * where a tap, or a drag left, brings the dock back. A taller band around it is kept out of the system's edge-swipe
+ * Back gesture (which would otherwise take the drag) and takes the same tap and drag, so it's forgiving to hit.
+ */
+@Composable
+private fun DockTab(middle: Dp, onShow: () -> Unit) {
+    val dark = Ios6.isDark()
+    Box(Modifier.systemGestureExclusion().pointerInput(Unit) {
+        var pulled = 0f
+        detectHorizontalDragGestures(onDragEnd = { if (pulled < -16f) onShow(); pulled = 0f }, onDragCancel = { pulled = 0f }) { change, dx ->
+            change.consume(); pulled += dx
+        }
+    }.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onShow)
+        .padding(start = 24.dp, top = 80.dp, bottom = (middle - 32.dp).coerceAtLeast(0.dp)).testTag("dock_show"), contentAlignment = Alignment.CenterEnd) {
+        Box(Modifier.size(width = 44.dp, height = 64.dp)
+            .ios6Lacquer(RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp),
+                if (dark) Ios6.NavTopDark else Ios6.NavTop,
+                if (dark) Ios6.NavBottomDark else Ios6.NavBottom,
+                if (dark) Color(0xFF0A0A0B) else Color(0xFF173F6B))
+            .clickable(onClick = onShow), contentAlignment = Alignment.Center) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Show the controls", tint = Color.White)
         }
     }
 }
@@ -227,6 +324,7 @@ private fun SessionDock(host: GuestHost, onStop: () -> Unit) {
 /** Shutting down is slow and closes every app, so it is confirmed; Save & Stop keeps the session. */
 @Composable
 internal fun StopDialog(host: GuestHost, onDismiss: () -> Unit) {
+    if (host.status == "stopping" || host.storeInstalling) return ForceStopDialog(host, onDismiss)
     val shutDown: (@Composable () -> Unit)? = if (host.canSaveState) {
         { TextButton(onClick = { onDismiss(); host.stop() }, modifier = Modifier.testTag("confirm_stop")) { Text("Shut down") } }
     } else null
@@ -248,6 +346,21 @@ internal fun StopDialog(host: GuestHost, onDismiss: () -> Unit) {
         // Three actions stack vertically in iOS 6, Cancel last.
         neutralButton = shutDown,
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+
+/** Stop has been asked for and iOS hasn't finished, or an app install would hold the shutdown up: end it now. */
+@Composable
+private fun ForceStopDialog(host: GuestHost, onDismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, modifier = DialogTags,
+        icon = { Icon(LtIcons.Stop, null) },
+        title = { Text("Force stop ${host.selected?.name ?: "device"}?", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center) },
+        text = { Text(if (host.status != "stopping" && host.storeInstalling)
+                "An app is being installed, so iOS can't shut down until that finishes. Force stop ends it now, like pulling the battery: the app being installed is lost, along with anything else iOS hadn't saved, and the next start checks the device's storage first."
+                else "iOS hasn't finished shutting down. Force stop ends it now, like pulling the battery: anything it hadn't saved is lost, and the next start checks the device's storage first.",
+            style = MaterialTheme.typography.bodyMedium) },
+        confirmButton = { Button(onClick = { onDismiss(); host.forceStop() }, modifier = Modifier.testTag("confirm_force_stop"),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Force stop") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(if (host.status != "stopping" && host.storeInstalling) "Keep installing" else "Keep waiting") } })
 }
 
 internal fun Color.luminance() = 0.2126f * red + 0.7152f * green + 0.0722f * blue

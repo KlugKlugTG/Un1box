@@ -40,6 +40,14 @@ internal class StoreInstaller private constructor(private val context: Context) 
     @Volatile var onInstalled: (List<InstalledApp>) -> Unit = {}
     /** Run on the main thread when the queue has emptied; null while no activity exists. */
     @Volatile var onIdle: (() -> Unit)? = null
+    /**
+     * Set by the activity once it reaches the engine: holds (true) or releases its periodic storage sync. The sync made
+     * the guest's writes wait, so uploads went in bursts, and an install cut short is lost anyway. A new connection is
+     * told the current state, so a hold or release made while none existed still arrives.
+     */
+    @Volatile var storageSync: (Boolean) -> Unit = {}
+        set(value) { field = value; value(holdingStorageSync) }
+    @Volatile private var holdingStorageSync = false
 
     private val changePosted = AtomicBoolean(false)
     private var lastNotified = 0L
@@ -102,13 +110,26 @@ internal class StoreInstaller private constructor(private val context: Context) 
         if (!context.bindService(Intent(context, EngineService::class.java), connection, 0)) context.unbindService(connection)
     }
 
+    /**
+     * The socket, waiting out a short pause: coming back from the file picker the guest is paused for a moment and
+     * the activity clears the socket, so an IPA picked there reached its install step with none (seen on the Poco).
+     */
+    private fun liveSocket(cancelled: () -> Boolean): String? {
+        val deadline = SystemClock.elapsedRealtime() + 15_000
+        while (true) {
+            socket?.takeIf { it.isNotEmpty() }?.let { return it }
+            if (cancelled() || SystemClock.elapsedRealtime() > deadline) return null
+            Thread.sleep(250)
+        }
+    }
+
     /** What the running guest is, asked once per guest. */
     private fun exactTarget(socket: String): StoreTarget = synchronized(this) {
         exact?.takeIf { it.first == socket }?.second ?: apps.target(socket).also { exact = socket to it }
     }
 
     override fun fetch(payload: InstallRequest, report: QueueReport, cancelled: () -> Boolean): File {
-        val socket = socket ?: throw StoreError("Start the guest to install apps.")
+        val socket = liveSocket(cancelled) ?: throw StoreError("Start the guest to install apps.")
         report.update("Preparing", 0f)
         val target = exactTarget(socket)
         when (payload) {
@@ -137,14 +158,16 @@ internal class StoreInstaller private constructor(private val context: Context) 
     }
 
     override fun install(payload: InstallRequest, file: File, report: QueueReport, cancelled: () -> Boolean) {
-        val socket = socket ?: throw StoreError("The guest stopped. Start it to install apps.")
+        val socket = liveSocket(cancelled) ?: throw StoreError("The guest stopped. Start it to install apps.")
         val target = exactTarget(socket)
         report.update("Checking app", null)
         val prepared = File(file.parentFile, "Install.ipa")
         val info = IpaPreflight.prepare(file, prepared, target)
         if (payload is InstallRequest.Local) report.rename(info.name)
         if (cancelled()) throw StoreError("Cancelled")
-        apps.install(socket, prepared, info.bundleId, cancelled) { e ->
+        holdingStorageSync = true
+        storageSync(true)
+        try { apps.install(socket, prepared, info.bundleId, cancelled) { e ->
             when (e.optString("phase")) {
                 "upload" -> { report.update("Copying to device", e.optInt("percent") / 100f); report.overall(QueueStages.copy(e.optInt("percent") / 100f)) }
                 "mutation" -> { report.commit(); report.update("Installing", null) }
@@ -163,7 +186,7 @@ internal class StoreInstaller private constructor(private val context: Context) 
                     }
                 }
             }
-        }
+        } } finally { holdingStorageSync = false; storageSync(false) }
         runCatching { apps.installedApps(socket) }.getOrNull()?.let { list -> main.post { onInstalled(list) } }
     }
 

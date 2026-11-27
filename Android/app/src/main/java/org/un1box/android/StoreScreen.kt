@@ -24,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
@@ -61,7 +62,7 @@ internal fun JSONObject.text(key: String): String? = if (isNull(key)) null else 
 internal fun productName(productType: String): String = when (productType) {
     "iPod1,1" -> "iPod touch"; "iPod2,1" -> "iPod touch (2nd generation)"; "iPod3,1" -> "iPod touch (3rd generation)"
     "iPod4,1" -> "iPod touch (4th generation)"; "iPhone1,1" -> "iPhone"; "iPhone1,2" -> "iPhone 3G"; "iPhone2,1" -> "iPhone 3GS"
-    "iPhone3,1" -> "iPhone 4"; "iPad1,1" -> "iPad"; else -> productType
+    "iPhone3,1" -> "iPhone 4"; "iPhone5,2" -> "iPhone 5"; "iPad1,1" -> "iPad"; else -> productType
 }
 
 internal fun byteSize(bytes: Long): String = when {
@@ -107,11 +108,16 @@ internal class StoreModel(context: Context, private val muxSocket: () -> String?
     var queue by mutableStateOf(installer.queue.snapshot())
     var searchOpen by mutableStateOf(false)
     var crash by mutableStateOf<String?>(null)
+    /** The bundle id being removed from the guest, and what went wrong with the last removal. */
+    var removing by mutableStateOf<String?>(null)
+    var removeError by mutableStateOf<String?>(null)
     private var searchGeneration = 0
     private var checkGeneration = 0
 
     val servicesAvailable get() = apps.available
     val installing get() = queue.any { it.active }
+    /** iOS is installing an app ([QueueItem.committed]): a shutdown now would wait for it, so only Force stop helps. */
+    val committed get() = queue.any { it.active && it.committed }
 
     init {
         installer.onChanged = { queue = it }
@@ -198,6 +204,25 @@ internal class StoreModel(context: Context, private val muxSocket: () -> String?
         if (found != null) open(found.app) else installedList.plain = app
     }
 
+    /** Remove an app and its data from the running guest, then read its list again and leave the app's page. */
+    fun remove(bundleId: String) {
+        val socket = muxSocket() ?: return
+        if (removing != null || queuedBundle(bundleId)?.active == true) return
+        removing = bundleId; removeError = null
+        background("store-remove") {
+            val failure = runCatching { apps.uninstall(socket, bundleId) }.exceptionOrNull()
+            post {
+                removing = null
+                if (muxSocket() != socket) return@post
+                if (failure != null) { removeError = "Couldn't remove it: ${failure.message}"; return@post }
+                installed = installed - bundleId
+                installedList.list?.let { list -> installedList.set(list.filter { it.bundleId != bundleId }) }
+                installedList.refresh(force = true)
+                close(); installedList.plain = null
+            }
+        }
+    }
+
     /** The app's queue entry by bundle id, for lists that don't have the store's row. */
     fun queuedBundle(bundleId: String) = queue.firstOrNull { it.key == "app:$bundleId" }
 
@@ -229,6 +254,7 @@ internal class StoreModel(context: Context, private val muxSocket: () -> String?
     fun queued(app: JSONObject) = queueKey(app).let { key -> queue.firstOrNull { it.key == key } }
 
     private fun enqueue(key: String, name: String, request: InstallRequest) {
+        if (target?.managesApps == false) { message = StoreTarget.NO_INSTALLS; return }
         val socket = muxSocket() ?: run { message = "Start the guest to install apps."; return }
         installer.socket = socket
         if (!installing) askNotifications()
@@ -242,9 +268,6 @@ internal class StoreModel(context: Context, private val muxSocket: () -> String?
     var watching by mutableStateOf(false)
         private set
 
-    /** Where the running device's own logs are (the record the store is showing). */
-    private fun stateDir() = File(appContext.filesDir, "library/records/$recordId/state")
-
     /**
      * Why the last app quit. The crash report's faulting-thread frames say where it died (the old report kept only
      * the header, so every crash looked like the same null dereference), and the emulation's own logs say whether
@@ -256,7 +279,7 @@ internal class StoreModel(context: Context, private val muxSocket: () -> String?
         background("store-crash") {
             val text = try {
                 val last = runCatching { apps.lastCrash(socket) }.getOrNull()
-                GuestCrashDiagnosis.report(stateDir(), last?.first, last?.second, null)
+                GuestCrashDiagnosis.report(Logs.dir(appContext), last?.first, last?.second, null)
             } catch (e: Exception) { "Couldn't read crash reports: ${e.message}" }
             post { crash = text }
         }
@@ -276,7 +299,7 @@ internal class StoreModel(context: Context, private val muxSocket: () -> String?
             var failure: String? = null
             try { log = apps.guestLog(socket, 30) } catch (e: Exception) { failure = e.message }
             val last = runCatching { apps.lastCrash(socket) }.getOrNull()
-            val text = GuestCrashDiagnosis.report(stateDir(), last?.first, last?.second, log)
+            val text = GuestCrashDiagnosis.report(Logs.dir(appContext), last?.first, last?.second, log)
             post {
                 watching = false
                 crash = if (failure != null && log == null) "Couldn't record the system log ($failure).\n\n$text" else text
@@ -528,14 +551,16 @@ private fun ColumnScope.StoreDetails(model: StoreModel, app: JSONObject, running
             val a = LegacyStore.version(chosenVersion.substringBefore(' ')); val b = LegacyStore.version(installedVersion)
             if (a != null && b != null && LegacyStore.newer(b, a)) note("Version $installedVersion is installed. An older version may not read its data.", false)
         }
-        if (!running) note("Start the device to install.", false)
+        if (model.target?.managesApps == false) note(StoreTarget.NO_INSTALLS, true)
+        else if (!running) note("Start the device to install.", false)
         else if (!model.servicesAvailable) note("App installation is not included in this build.", true)
         Spacer(Modifier.height(8.dp))
         val inQueue = model.queued(app)?.takeIf { it.active }
         Button(onClick = { model.candidate?.let { model.install(it); model.close() } }, Modifier.align(Alignment.CenterHorizontally).height(44.dp).testTag("store_install"),
-            contentPadding = PaddingValues(horizontal = 40.dp), enabled = running && model.servicesAvailable && model.candidate != null && inQueue == null) {
+            contentPadding = PaddingValues(horizontal = 40.dp), enabled = running && model.servicesAvailable && model.target?.managesApps != false && model.candidate != null && inQueue == null) {
             Text(if (inQueue != null) "In the queue" else if (installedVersion != null) "Reinstall" else "Install", style = MaterialTheme.typography.titleMedium)
         }
+        if (installedVersion != null) RemoveApp(model, app.optString("bundle_id"), app.optString("name"), running && inQueue == null)
         Spacer(Modifier.height(12.dp))
     }
 }
@@ -628,4 +653,22 @@ private fun QueueRow(item: QueueItem, model: StoreModel) {
         }
         if (item.state == QueueState.DOWNLOADING || item.state == QueueState.INSTALLING) QueueProgress(item)
     }
+}
+
+/** Remove an installed app from the device, after asking. */
+@Composable
+internal fun ColumnScope.RemoveApp(model: StoreModel, bundleId: String, name: String, enabled: Boolean) {
+    var asking by remember { mutableStateOf(false) }
+    val busy = model.removing == bundleId
+    model.removeError?.let { Text(it, Modifier.padding(horizontal = 4.dp, vertical = 2.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+    TextButton(onClick = { asking = true }, Modifier.align(Alignment.CenterHorizontally).testTag("store_remove"),
+        enabled = enabled && model.servicesAvailable && model.removing == null, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+        Text(if (busy) "Removing…" else "Remove from device")
+    }
+    if (asking) AlertDialog(onDismissRequest = { asking = false }, modifier = DialogTags, icon = { Icon(Icons.Filled.Delete, null) },
+        title = { Text("Remove $name?", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center) },
+        text = { Text("The app and its data are deleted from the device. You can install it again from the Legacy Store.") },
+        confirmButton = { Button(onClick = { asking = false; model.remove(bundleId) },
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), modifier = Modifier.testTag("confirm_remove")) { Text("Remove") } },
+        dismissButton = { TextButton(onClick = { asking = false }) { Text("Cancel") } })
 }

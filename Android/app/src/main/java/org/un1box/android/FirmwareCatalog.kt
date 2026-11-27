@@ -29,6 +29,12 @@ internal data class CatalogFirmware(
         status == "available" || status == "experimental" -> Support.EXPERIMENTAL
         else -> Support.UNTESTED
     }
+    /** The prepare screen's line under the support label; the desktop's Firmware::support_detail says the same. */
+    val supportDetail get() = when {
+        // The iPhone 5 runs everything it was tried with, at a fraction of the other boards' speed.
+        support == Support.EXPERIMENTAL && board == "n42ap" -> "Works on Un1box, but runs much slower than the other devices for now."
+        else -> support.detail
+    }
 }
 
 /** How far a firmware has been tried: Un1box's own compatibility runs first, then the catalog's label. */
@@ -48,8 +54,12 @@ internal val testedFirmwares = setOf(
     "n18ap-8C148",  // iPod touch 3G 4.2.1
     "n81ap-10B500",  // iPod touch 4G 6.1.6
     "n88ap-9B206",  // iPhone 3GS 5.1.1
-    "n90ap-8C148", "n90ap-8L1",  // iPhone 4 4.2.1, 4.3.5
+    "n90ap-8C148", "n90ap-8L1", "n90ap-10B329",  // iPhone 4 4.2.1, 4.3.5, 6.1.3
+    "k48ap-9B206",  // iPad 5.1.1
 )
+
+/** Firmwares that work on Un1box but stay Experimental (the iPhone 5): listed with the tested devices. */
+internal val workingFirmwares = setOf("n42ap-14G61")
 
 /**
  * Boards that stop at a white screen after preparation, whatever the catalog calls them: the S5L8900's iBoot never

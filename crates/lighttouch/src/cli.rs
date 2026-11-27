@@ -1,0 +1,635 @@
+//! Developer commands, mainly for headless tests:
+//!
+//! ```text
+//! lighttouch list
+//! lighttouch prepare <firmware id> [--ipsw FILE [--unchecked-ipsw]] [--rom FILE] [--name NAME] [--jailbreak] [--ipa FILE]...
+//!                    [--no-game-center]
+//! lighttouch run <record id> [--seconds N] [--recover] [--shot FILE.ppm] [--script FILE] [--frames FILE] [--control]
+//!                [--network direct|archive[:yyyyMMdd]] [--lan] [--no-headphones] [--microphone]
+//!                [--install-dir APP.app [--afc N]]
+//! lighttouch fetch <firmware id> <query> --out DIR [--bundle ID]
+//! lighttouch guest <bridge mux.sock>
+//! lighttouch export <record id> <FILE.lighttouch.zip>
+//! lighttouch import <FILE.lighttouch.zip>
+//! ```
+//!
+//! `prepare --ipa` installs apps while the device is prepared (benchmark devices). `run --control` (tools/bench)
+//! takes command JSON lines on stdin as they come and prints every event as a JSON line on stdout; it runs until
+//! stopped (`{"cmd":"stop"}`) unless --seconds is given. `run --frames` writes one line per
+//! guest frame, `<sequence> <published_ns>`, for frame-time statistics. `fetch` downloads the Legacy Store copy of the
+//! first app matching the query (and the bundle ID, if given) that runs on the firmware, as DIR/<bundle id>.ipa, and
+//! prints `<bundle id>\t<version>\t<name>\t<path>`.
+//!
+//! With `--install`/`--store`/`--services`, LIGHTTOUCH_SYSLOG=FILE also streams the guest's system log there, and
+//! LIGHTTOUCH_SERVICES_AFTER=SECONDS holds the services off until then (the iPhone 5 boots slowly).
+//!
+//! `run` starts a worker like the app does, prints its events, takes an optional screenshot of the last frame, then
+//! shuts iOS down cleanly. A script line is `<seconds> <command json>`, e.g. `40 {"cmd":"button","button":0,"down":true}`
+//! or, live, `60 {"cmd":"network","config":{"mode":"archive","archive_date":"20090909","local_network":false}}`.
+use lighttouch_core::frames::{FrameReader, segment_name};
+use lighttouch_core::library::Library;
+use lighttouch_core::network::NetworkConfig;
+use lighttouch_core::paths::{DataDirs, Resources};
+use lighttouch_core::protocol::{Command, Event, NetworkArgs, WorkerArgs};
+use lighttouch_core::runtime::NetworkMode;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Stdio};
+use std::time::{Duration, Instant};
+
+pub fn handles(command: &str) -> bool {
+    matches!(command, "list" | "run" | "prepare" | "fetch" | "guest" | "export" | "import")
+}
+
+pub fn main(args: &[String]) -> i32 {
+    let dirs = lighttouch_model::data_dirs();
+    if let Some(missing) = dirs.missing_library().filter(|_| args[0] != "guest") {
+        eprintln!("error: the devices folder {} isn't there (Settings > Storage)", missing.display());
+        return 1;
+    }
+    let result = match args[0].as_str() {
+        "list" => list(&dirs),
+        "run" => run(&dirs, &args[1..]),
+        "prepare" => prepare(dirs, &args[1..]),
+        "fetch" => fetch(&dirs, &args[1..]),
+        "guest" => guest(&args[1..]),
+        "export" => transfer(&dirs, &args[1..], true),
+        "import" => transfer(&dirs, &args[1..], false),
+        _ => unreachable!(),
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+fn option(args: &[String], name: &str) -> Option<String> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// `guest <usbmux socket>`: connect to a running guest (the app's own bridge) as the store does, and say what it is.
+fn guest(args: &[String]) -> Result<(), String> {
+    let socket = PathBuf::from(args.first().ok_or("guest needs the bridge's mux.sock")?);
+    let mut guest =
+        lighttouch_services::apps::Guest::connect(&socket, Duration::from_secs(120)).map_err(|e| e.to_string())?;
+    let target = guest.target().map_err(|e| e.to_string())?;
+    println!("{} iOS {} {}", target.product_type, target.ios, target.arch);
+    for app in guest.installed().map_err(|e| e.to_string())? {
+        println!("  {} {:?}", app.bundle_id, app.name);
+    }
+    // `guest SOCKET crash [PART]`: the newest crash report (whose name contains PART), whole.
+    if args.get(1).map(String::as_str) == Some("crash") {
+        match guest.last_crash_named(args.get(2).map_or("", String::as_str)).map_err(|e| e.to_string())? {
+            Some((name, text)) => println!("--- {name}\n{text}"),
+            None => println!("no crash reports"),
+        }
+    }
+    Ok(())
+}
+
+/// Export a device to a device file, or import one, printing progress and the time it took.
+fn transfer(dirs: &DataDirs, args: &[String], export: bool) -> Result<(), String> {
+    let library = Library::open(&dirs.library()).map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    let mut last = Instant::now();
+    let mut progress = |phase: &str, done: u64, total: u64| {
+        if last.elapsed() >= Duration::from_secs(1) {
+            last = Instant::now();
+            eprintln!("{phase}: {:.0} of {:.0} MB", done as f64 / 1e6, total as f64 / 1e6);
+        }
+        true
+    };
+    if export {
+        let [id, file] = args else { return Err("export needs a record id and a file".into()) };
+        let app = lighttouch_model::transfer::app_name();
+        library.export(id, Path::new(file), &app, &mut progress).map_err(|e| e.to_string())?;
+        let bytes = std::fs::metadata(file).map_or(0, |m| m.len());
+        println!("exported {id} to {file}: {bytes} bytes in {:.1} s", started.elapsed().as_secs_f64());
+    } else {
+        let [file] = args else { return Err("import needs a file".into()) };
+        let record = library.import_device(Path::new(file), &mut progress).map_err(|e| e.to_string())?;
+        println!(
+            "imported {} \"{}\" ({} {}) in {:.1} s",
+            record.id,
+            record.name,
+            record.board,
+            record.build,
+            started.elapsed().as_secs_f64()
+        );
+    }
+    Ok(())
+}
+
+fn list(dirs: &DataDirs) -> Result<(), String> {
+    let library = Library::open(&dirs.library()).map_err(|e| e.to_string())?;
+    for r in library.records().map_err(|e| e.to_string())? {
+        println!(
+            "{}{} {:<28} {} {}{}{}",
+            if r.selected { "*" } else { " " },
+            r.id,
+            r.name,
+            r.board,
+            r.build,
+            if r.dirty { " (needs recovery)" } else { "" },
+            if r.guest_package_path.is_some() { "" } else { " (no guest tools)" }
+        );
+    }
+    Ok(())
+}
+
+fn run(dirs: &DataDirs, args: &[String]) -> Result<(), String> {
+    let record = args.first().ok_or("run needs a record id")?.clone();
+    let control = args.iter().any(|a| a == "--control");
+    let default_seconds = if control { f64::INFINITY } else { 120.0 };
+    let seconds: f64 = option(args, "--seconds").and_then(|s| s.parse().ok()).unwrap_or(default_seconds);
+    let shot = option(args, "--shot").map(PathBuf::from);
+    let mut frame_log = match option(args, "--frames") {
+        Some(path) => Some(std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| format!("{path}: {e}"))?)),
+        None => None,
+    };
+    let script = match option(args, "--script") {
+        Some(path) => parse_script(&std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?)?,
+        None => Vec::new(),
+    };
+    let frames = FrameReader::create(&segment_name()).map_err(|e| format!("frame memory: {e}"))?;
+    let action = match (option(args, "--install"), option(args, "--store")) {
+        _ if option(args, "--install-dir").is_some() => Some(ServiceAction::InstallDir(
+            PathBuf::from(option(args, "--install-dir").unwrap()),
+            option(args, "--afc").and_then(|n| n.parse().ok()).unwrap_or(1),
+        )),
+        (Some(path), _) => Some(ServiceAction::Install(PathBuf::from(path))),
+        (_, Some(query)) => Some(ServiceAction::Store(query)),
+        _ => args.iter().any(|a| a == "--services").then_some(ServiceAction::Report),
+    };
+    let services = action.is_some();
+    let action = action.unwrap_or(ServiceAction::Report);
+    let usb = if services { lighttouch_model::usb_args(dirs, &Resources::locate(), &record) } else { None };
+    if services && usb.is_none() {
+        return Err("--services needs usbmuxd-qemu (LIGHTTOUCH_USBMUXD)".into());
+    }
+    let network = match option(args, "--network") {
+        Some(value) => {
+            let (mode, date) = value.split_once(':').unwrap_or((value.as_str(), "20090909"));
+            let mode = match mode {
+                "off" => NetworkMode::Off,
+                "direct" => NetworkMode::Direct,
+                "archive" => NetworkMode::Archive,
+                _ => return Err("--network is off, direct or archive[:yyyyMMdd]".into()),
+            };
+            if !lighttouch_core::network::valid_date(date) {
+                return Err(format!("{date} isn't a yyyyMMdd date from 1996 on"));
+            }
+            let config =
+                NetworkConfig { mode, archive_date: date.into(), local_network: args.iter().any(|a| a == "--lan") };
+            Some(NetworkArgs {
+                config,
+                directory: dirs.network().join(&record),
+                guest_tools: Resources::locate().guest_tools(),
+            })
+        }
+        None => None,
+    };
+    let worker_args = WorkerArgs {
+        library: dirs.library(),
+        usb,
+        network,
+        record,
+        engine: Resources::locate().engine(),
+        frames: frames.name().to_string(),
+        recover: args.iter().any(|a| a == "--recover"),
+        audio: !args.iter().any(|a| a == "--no-audio"),
+        headphones: !args.iter().any(|a| a == "--no-headphones"),
+        microphone: args.iter().any(|a| a == "--microphone"),
+    };
+    let mut child = spawn_worker(&worker_args)?;
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Event>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(event) = Event::parse(&line) {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    let (live_tx, live) = std::sync::mpsc::channel::<Command>();
+    let services_tx = live_tx.clone();
+    if control {
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                match serde_json::from_str::<Command>(line.trim()) {
+                    Ok(command) => {
+                        if live_tx.send(command).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) if !line.trim().is_empty() => eprintln!("bad command {line:?}: {e}"),
+                    Err(_) => {}
+                }
+            }
+            // The driver went away: shut iOS down cleanly rather than run on with nobody steering.
+            let _ = live_tx.send(Command::Stop);
+        });
+    }
+    let mut stdout = std::io::stdout();
+    let started = Instant::now();
+    let mut stop_sent = false;
+    let mut script = script.into_iter().peekable();
+    let mut frame_count = 0u64;
+    let mut last_frame_log = Instant::now();
+    let mut last_status_log = Instant::now();
+    loop {
+        while let Some((at, _)) = script.peek() {
+            if started.elapsed().as_secs_f64() < *at {
+                break;
+            }
+            let (_, command) = script.next().unwrap();
+            send(&mut stdin, &command);
+        }
+        while let Ok(command) = live.try_recv() {
+            stop_sent |= matches!(command, Command::Stop);
+            send(&mut stdin, &command);
+        }
+        if !stop_sent && started.elapsed().as_secs_f64() >= seconds {
+            // A missing frame is reported, but the guest still gets its shutdown.
+            if let Some(Err(e)) = shot.as_ref().map(|path| save_frame(&frames, path)) {
+                eprintln!("[{:6.1}] couldn't save the frame: {e}", started.elapsed().as_secs_f64());
+            }
+            eprintln!("[{:6.1}] requesting shutdown", started.elapsed().as_secs_f64());
+            send(&mut stdin, &Command::Stop);
+            stop_sent = true;
+        }
+        // Wake for the next script line on time: lines sent in a burst reach the engine closer together than a
+        // person's input would.
+        let next = script.peek().map_or(if control { 0.01 } else { 0.1 }, |(at, _)| {
+            (at - started.elapsed().as_secs_f64()).clamp(0.001, 0.1)
+        });
+        let received = rx.recv_timeout(Duration::from_secs_f64(next));
+        if control && let Ok(event) = &received {
+            let _ = stdout.write_all(event.to_line().as_bytes());
+            let _ = stdout.flush();
+        }
+        match received {
+            Ok(Event::Frame { sequence, published_ns }) => {
+                frame_count += 1;
+                if let Some(log) = frame_log.as_mut() {
+                    let _ = writeln!(log, "{sequence} {published_ns}");
+                }
+                if last_frame_log.elapsed() >= Duration::from_secs(10) {
+                    eprintln!("[{:6.1}] {frame_count} frames", started.elapsed().as_secs_f64());
+                    last_frame_log = Instant::now();
+                }
+            }
+            Ok(Event::Status(status)) => {
+                if last_status_log.elapsed() >= Duration::from_secs(10) {
+                    eprintln!("[{:6.1}] status {:?}", started.elapsed().as_secs_f64(), status);
+                    last_status_log = Instant::now();
+                }
+            }
+            Ok(Event::Usb { socket: Some(socket), .. }) => {
+                eprintln!("[{:6.1}] usb bridge at {}", started.elapsed().as_secs_f64(), socket.display());
+                let (action, scratch, commands) = (action.clone(), dirs.cache().join("services"), services_tx.clone());
+                std::thread::spawn(move || probe_services(socket, started, action, scratch, commands));
+            }
+            Ok(Event::Exit { clean, dirty, message }) => {
+                eprintln!("[{:6.1}] exit clean={clean} dirty={dirty} {message}", started.elapsed().as_secs_f64());
+                break;
+            }
+            Ok(event) => eprintln!("[{:6.1}] {}", started.elapsed().as_secs_f64(), event.to_line().trim_end()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    if let Some(mut log) = frame_log {
+        let _ = log.flush();
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    eprintln!("worker exited with {status}; {frame_count} frames");
+    Ok(())
+}
+
+/// Download the Legacy Store's copy of an app for a firmware (benchmark devices get theirs with `prepare --ipa`).
+fn fetch(dirs: &DataDirs, args: &[String]) -> Result<(), String> {
+    use lighttouch_catalog::{catalog::Catalog, store, target::Target};
+    let (Some(id), Some(query)) = (args.first(), args.get(1)) else {
+        return Err(
+            "fetch needs a firmware id and a query, e.g. fetch n81ap-10B500 \"Jetpack Joyride\" --out DIR".into()
+        );
+    };
+    let out = PathBuf::from(option(args, "--out").ok_or("fetch needs --out DIR")?);
+    let firmware = Catalog::get().find(id).ok_or_else(|| format!("{id} is not in the catalog"))?;
+    let target = Target::of(&firmware.product_type, &firmware.version)
+        .ok_or_else(|| format!("{}: no store target", firmware.product_type))?;
+    let bundle = option(args, "--bundle");
+    let apps = store::search(query, &target).map_err(|e| format!("store: {e}"))?;
+    for a in &apps {
+        let why = a.incompatibility().unwrap_or_default();
+        eprintln!("  {} {} {:?} {why}", a.bundle_id, a.version.as_deref().unwrap_or(""), a.name);
+    }
+    let app = apps
+        .into_iter()
+        .filter(|a| bundle.as_ref().is_none_or(|b| &a.bundle_id == b))
+        .find(|a| a.incompatibility().is_none())
+        .ok_or_else(|| format!("store: nothing for {query:?} runs on {id}"))?;
+    // The search row can name a broken copy (Fruit Ninja 1.7.4's executable is cut short); take the one the store
+    // screens select first.
+    let good = store::preferred(app.ipa_id);
+    let app = match store::versions(&app, &target).map_err(|e| format!("store: {e}"))?.iter().find(|c| c.ipa_id == good)
+    {
+        Some(copy) if good != app.ipa_id => app.with_copy(copy),
+        _ => app,
+    };
+    let scratch = dirs.cache().join("fetch");
+    std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let ipa = store::download(&app, &target, &scratch, &mut |_, _| true).map_err(|e| format!("store: {e}"))?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let path = out.join(format!("{}.ipa", app.bundle_id));
+    if std::fs::rename(&ipa, &path).is_err() {
+        std::fs::copy(&ipa, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    if let Some(dir) = ipa.parent() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    println!("{}\t{}\t{}\t{}", app.bundle_id, app.version.unwrap_or_default(), app.name, path.display());
+    Ok(())
+}
+
+pub fn spawn_worker(args: &WorkerArgs) -> Result<Child, String> {
+    let exe = lighttouch_core::paths::worker_exe()?;
+    std::process::Command::new(exe)
+        .arg("worker")
+        .arg(serde_json::to_string(args).unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("start the session process: {e}"))
+}
+
+fn send(stdin: &mut ChildStdin, command: &Command) {
+    let _ = stdin.write_all(command.to_line().as_bytes());
+    let _ = stdin.flush();
+}
+
+fn parse_script(text: &str) -> Result<Vec<(f64, Command)>, String> {
+    let mut lines = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let (at, json) = line.split_once(' ').ok_or_else(|| format!("bad script line: {line}"))?;
+        let at: f64 = at.parse().map_err(|_| format!("bad time: {line}"))?;
+        let command: Command = serde_json::from_str(json).map_err(|e| format!("{e}: {line}"))?;
+        lines.push((at, command));
+    }
+    // In time order, whatever order they were written in (a stable sort keeps same-time lines as written).
+    lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(lines)
+}
+
+/// Write the newest frame as a binary PPM.
+fn save_frame(frames: &FrameReader, path: &PathBuf) -> Result<(), String> {
+    let mut pixels = Vec::new();
+    let meta = frames.read(0, &mut pixels).ok_or("no frame to save")?;
+    let mut out = format!("P6\n{} {}\n255\n", meta.width, meta.height).into_bytes();
+    for row in pixels.chunks(meta.stride as usize).take(meta.height as usize) {
+        for px in row[..meta.width as usize * 4].chunks_exact(4) {
+            out.extend_from_slice(&[px[2], px[1], px[0]]);
+        }
+    }
+    std::fs::write(path, out).map_err(|e| e.to_string())?;
+    eprintln!("saved {}x{} frame to {}", meta.width, meta.height, path.display());
+    Ok(())
+}
+
+/// Prepare a device from an IPSW through the app's own pipeline, printing its progress.
+fn prepare(dirs: DataDirs, args: &[String]) -> Result<(), String> {
+    use lighttouch_model::prepare::{IpswSource, PrepareRequest};
+    let firmware_id = args.first().ok_or("prepare needs a firmware id, e.g. n72ap-7E18")?.clone();
+    let request = PrepareRequest {
+        firmware_id,
+        ipsw: option(args, "--ipsw").map(|p| IpswSource::File(PathBuf::from(p))).unwrap_or(IpswSource::Download),
+        bootrom: option(args, "--rom").map(PathBuf::from),
+        name: option(args, "--name"),
+        jailbreak: args.iter().any(|a| a == "--jailbreak"),
+        ipas: args.windows(2).filter(|w| w[0] == "--ipa").map(|w| PathBuf::from(&w[1])).collect(),
+        no_game_center: args.iter().any(|a| a == "--no-game-center"),
+        unchecked_ipsw: args.iter().any(|a| a == "--unchecked-ipsw"),
+    };
+    let mut model = lighttouch_model::Model::new(dirs, Resources::locate(), std::sync::Arc::new(|| {}));
+    lighttouch_model::prepare::availability(&model.resources)?;
+    model.prepare(request);
+    let mut last = String::new();
+    loop {
+        model.tick();
+        if let Some(finished) = model.take_finished() {
+            match finished {
+                lighttouch_model::Finished::DeviceAdded { name, id, timings, .. } => {
+                    for (stage, seconds) in timings {
+                        eprintln!("  {stage:<44} {seconds:7.1} s");
+                    }
+                    println!("added {name} ({id})");
+                    return Ok(());
+                }
+                lighttouch_model::Finished::Failed { message, .. } => return Err(message),
+                _ => {}
+            }
+        }
+        if let Some((_, progress)) = model.busy() {
+            let percent = progress.fraction().map(|f| format!(" {:.0}%", f * 100.0)).unwrap_or_default();
+            let line = format!("{}{percent}", progress.phase);
+            if line != last {
+                eprintln!("{line}");
+                last = line;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// What `run` does over the USB link once it is up.
+#[derive(Clone)]
+enum ServiceAction {
+    Report,
+    Install(PathBuf),
+    Store(String),
+    /// An unpacked .app over N parallel AFC sessions, then a Developer install (docs/STORAGE.md experiments).
+    InstallDir(PathBuf, usize),
+}
+
+/// Once the USB link is up: connect to the guest, report it, its apps and its newest crash report, then install a
+/// local IPA or the first Legacy Store result for a query.
+fn probe_services(
+    socket: PathBuf,
+    started: Instant,
+    action: ServiceAction,
+    scratch: PathBuf,
+    commands: std::sync::mpsc::Sender<Command>,
+) {
+    use lighttouch_catalog::{ipa, store};
+    use lighttouch_services::apps::{Guest, InstallProgress};
+    let at = || started.elapsed().as_secs_f64();
+    let say = |text: String| eprintln!("[{:6.1}] services: {text}", at());
+    // Wait for the guest to attach (it boots first), then for its session.
+    let mux = lighttouch_services::usbmux::Mux::new(&socket);
+    while mux.devices().map(|l| l.is_empty()).unwrap_or(true) {
+        if at() > 180.0 {
+            return say("the guest never attached".into());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    say("attached".into());
+    // LIGHTTOUCH_SERVICES_DELAY=SECONDS: wait that long after the attach first, so an install measures a settled iOS
+    // rather than one still starting up (its first ~20 s of uploads stall while startup has the guest's CPU).
+    if let Some(delay) = std::env::var("LIGHTTOUCH_SERVICES_DELAY").ok().and_then(|v| v.parse::<f64>().ok()) {
+        std::thread::sleep(Duration::from_secs_f64(delay));
+        say(format!("waited {delay} s"));
+    }
+    // LIGHTTOUCH_SYSLOG=FILE: the guest's whole system log, as it comes, for the rest of the run.
+    if let Some(path) = std::env::var_os("LIGHTTOUCH_SYSLOG") {
+        let socket = socket.clone();
+        std::thread::spawn(move || {
+            let Ok(mut file) = std::fs::File::create(&path) else { return };
+            if let Ok(mut log) = Guest::connect(&socket, Duration::from_secs(600)) {
+                let _ = log.stream_system_log(&mut file, &|| false);
+            }
+        });
+    }
+    // LIGHTTOUCH_SERVICES_AFTER=SECONDS: leave the guest alone until then (a slow guest's services time out early).
+    if let Some(after) = std::env::var("LIGHTTOUCH_SERVICES_AFTER").ok().and_then(|s| s.parse::<f64>().ok()) {
+        while at() < after {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    let mut guest = match Guest::connect(&socket, Duration::from_secs(600)) {
+        Ok(guest) => guest,
+        Err(e) => return say(e.to_string()),
+    };
+    let target = match guest.target() {
+        Ok(t) => t,
+        Err(e) => return say(format!("target: {e}")),
+    };
+    say(format!("{} iOS {} {} family {}", target.product_type, target.ios, target.arch, target.family));
+    match guest.installed() {
+        Ok(apps) => {
+            say(format!("{} user apps", apps.len()));
+            for app in apps {
+                eprintln!("    {} {:?} {:?}", app.bundle_id, app.name, app.short_version.or(app.version));
+            }
+        }
+        Err(e) => say(format!("apps: {e}")),
+    }
+    match guest.last_crash() {
+        Ok(Some((name, text))) => {
+            say(format!("newest crash {name} ({} bytes)", text.len()));
+            if std::env::var_os("LIGHTTOUCH_CRASH_TEXT").is_some() {
+                eprintln!("{text}");
+            }
+        }
+        Ok(None) => say("no crash reports".into()),
+        Err(e) => say(format!("crash reports: {e}")),
+    }
+    std::fs::create_dir_all(&scratch).ok();
+    let (source, downloaded) = match action {
+        ServiceAction::Report => return,
+        ServiceAction::InstallDir(dir, connections) => {
+            let say_sync = |text: String| eprintln!("[{:6.1}] services: {text}", started.elapsed().as_secs_f64());
+            match guest.install_unpacked(&dir, connections, &say_sync) {
+                Ok(r) => say(format!(
+                    "installed (developer, {connections} AFC) {} files {} dirs {} bytes, {} links skipped, {} AFC \
+                     requests, upload {:.1} s install {:.1} s, staging after: {:?}",
+                    r.files, r.dirs, r.bytes, r.skipped_links, r.requests, r.upload_s, r.install_s, r.staging_after
+                )),
+                Err(e) => say(format!("install failed: {e}")),
+            }
+            return;
+        }
+        ServiceAction::Install(path) => (path, None),
+        ServiceAction::Store(query) => {
+            let apps = match store::search(&query, &target) {
+                Ok(apps) => apps,
+                Err(e) => return say(format!("store: {e}")),
+            };
+            say(format!("store: {} results for {query:?}", apps.len()));
+            let Some(app) = apps.into_iter().find(|a| a.incompatibility().is_none()) else {
+                return say("store: nothing compatible".into());
+            };
+            say(format!(
+                "store: {} {} ({}), {:?} bytes",
+                app.name,
+                app.version.clone().unwrap_or_default(),
+                app.ipa_id,
+                app.size
+            ));
+            match store::versions(&app, &target) {
+                Ok(copies) => say(format!(
+                    "store: {} versions run here, newest {:?}",
+                    copies.len(),
+                    copies.first().map(|c| &c.version)
+                )),
+                Err(e) => say(format!("store: versions: {e}")),
+            }
+            let mut last = 0;
+            match store::download(&app, &target, &scratch, &mut |done, total| {
+                let percent = total.map(|t| done * 100 / t.max(1)).unwrap_or(0);
+                if percent / 25 != last / 25 {
+                    say(format!("downloading {percent}%"));
+                }
+                last = percent;
+                true
+            }) {
+                Ok(path) => {
+                    let dir = path.parent().map(Path::to_path_buf);
+                    (path, dir)
+                }
+                Err(e) => return say(format!("store: download: {e}")),
+            }
+        }
+    };
+    let copy = scratch.join("install.ipa");
+    let result = ipa::prepare(&source, &copy, &target).map_err(|e| e.to_string()).and_then(|info| {
+        say(format!(
+            "checked {} {} ({:?}), {} bytes unpacked",
+            info.name, info.bundle_id, info.short_version, info.unpacked
+        ));
+        let mut last = String::new();
+        // As the app does (Session::hold_storage_sync); LT_INSTALL_SYNC_HOLD=off keeps the periodic sync, for A/B.
+        let hold = std::env::var("LT_INSTALL_SYNC_HOLD").map_or(true, |v| v != "off");
+        if hold {
+            let _ = commands.send(Command::HoldStorageSync { hold: true });
+        }
+        let result = guest
+            .install(&copy, &info.bundle_id, Some(info.unpacked), &mut |p| {
+                let line = match p {
+                    InstallProgress::Uploading { sent, total } => {
+                        format!("uploading {}%", sent * 100 / total.max(1) / 25 * 25)
+                    }
+                    InstallProgress::Submitted => "submitted".into(),
+                    InstallProgress::Installing { status, percent } => format!("{status} {percent:?}"),
+                    InstallProgress::Unpacking { done, total } => {
+                        format!("unpacking {}%", done * 100 / total.max(1) / 25 * 25)
+                    }
+                };
+                if line != last {
+                    say(line.clone());
+                    last = line;
+                }
+                true
+            })
+            .map_err(|e| e.to_string());
+        if hold {
+            let _ = commands.send(Command::HoldStorageSync { hold: false });
+        }
+        result
+    });
+    let _ = std::fs::remove_file(&copy);
+    if let Some(dir) = downloaded {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    match result {
+        Ok(app) => say(format!("installed {app:?}")),
+        Err(e) => say(format!("install failed: {e}")),
+    }
+}

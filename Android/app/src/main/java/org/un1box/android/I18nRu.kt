@@ -777,10 +777,248 @@ internal object I18nRu {
         put("Checking .deb", "Проверка .deb")
         put("Package name or description", "Имя пакета или описание")
         put("Section", "Раздел")
+        // Device specs & screen scaling
+        put("Apple A6", "Чип Apple A6")
+        put("Apple Swift (2 cores), 1.3 GHz", "Apple Swift (2 ядра), 1,3 ГГц")
+        put("640 × 1136 (Retina)", "640 × 1136 (экран Retina)")
+        put("Blends pixels: soft, with no jagged edges", "Смешивание пикселей: мягкое изображение без лесенок")
+        put("Hard-edged pixels, some a little wider than others", "Чёткие края пикселей, некоторые чуть шире других")
+        put("Crisp", "Чёткий")
+        put("Sharp pixels, evened out with a hint of blending", "Резкие пиксели, слегка выровненные лёгким смешиванием")
+        put("Pixel perfect", "Пиксель в пиксель")
+        put("Whole-number sizes only, with a border", "Только целочисленное масштабирование, с рамкой")
+        put("All", "Все")
+        put("Pixel art", "Пиксель-арт")
+        put("3D game", "3D-игра")
+        put("1 cm", "1 см")
+        put("Hide preview", "Скрыть предпросмотр")
+        put("Preview", "Предпросмотр")
+        put("Method", "Метод")
+        put("Real size", "Реальный размер")
+        put("Show at real size", "Показывать в реальном размере")
+        put("Pixel perfect sets its own size", "Режим «Пиксель в пиксель» сам задаёт размер")
+        put("The real device's size, for toys and pieces used on the screen", "Размер реального устройства — для игрушек и фигурок на экране")
+        put("Measure this display", "Измерить этот дисплей")
+        put("as the system reports", "по данным системы")
+        put("measured", "измерено")
+        put("Squares are 1 cm", "Квадраты по 1 см")
+        put("Cropped to fit here", "Обрезано, чтобы поместиться здесь")
+        put("Preview full screen", "Предпросмотр во весь экран")
+        put(" · cropped", " · обрезано")
+        put("full screen shows all of it", "во весь экран видно полностью")
+        put("full screen shows all of it turned to landscape", "в альбомном режиме во весь экран видно полностью")
+        put("this phone is smaller, so part of it is always cropped", "экран телефона меньше, поэтому часть всегда обрезается")
+        put(" · 1× here, cropped", " · 1× здесь, обрезано")
+        put(" · uneven pixels", " · неравномерные пиксели")
+        put(" · Smooth below 2×", " · «Плавно» ниже 2×")
+        put(" · smaller here", " · меньше здесь")
+        put("Bank card", "Банковская карта")
+        put("Ruler", "Линейка")
+        put("Hold a bank or ID card upright against the screen, its corner in the outline's top-left corner. Drag the handle until the outline's bottom edge meets the card's.", "Приложите банковскую карту или удостоверение вертикально к экрану углом в левый верхний угол рамки. Перетаскивайте ползунок, пока нижний край рамки не совпадёт с краем карты.")
+        put("Hold a ruler upright along the marks, its 0 on the top one. Drag the handle until the bottom mark meets the same number on the ruler.", "Приложите линейку вертикально вдоль меток нулём к верхней метке. Перетаскивайте ползунок, пока нижняя метка не совпадёт с тем же числом на линейке.")
+        put("Density", "Плотность")
+        put("Larger", "Крупнее")
+        put("Use the system's value", "Использовать системное значение")
+        put("This device", "Это устройство")
+        // Carrier
+        put("No SIM", "Нет SIM")
+        put("No Service", "Нет сети")
+        put("Calling out", "Исходящий вызов")
+        put("Calling out (ringing)", "Исходящий вызов (гудки)")
+        put("Ringing", "Входящий вызов")
+        put("Connected", "Соединено")
+        put("On hold", "Удержание")
+        put("No call", "Нет вызова")
+        put("the modem is not in a state", "модем сейчас в неподходящем состоянии")
+        put("The device isn't on the network yet: iOS may still be starting, or Registered or SIM card is off", "Устройство ещё не в сети: возможно, iOS ещё запускается, либо выключены «В сети» или «SIM-карта»")
+        put("Call the device", "Позвонить на устройство")
+        put("It rings from this number; answer it on the device.", "Устройство зазвонит с этого номера; ответьте на нём.")
+        put("Caller", "Вызывающий")
+        put("1 to 20 digits, optionally after a +", "от 1 до 20 цифр, при желании с + в начале")
+        put("Call", "Позвонить")
+        put("Send a text to the device", "Отправить SMS на устройство")
+        put("From", "От кого")
+        put("Emoji can't be sent in a text this old", "Эмодзи нельзя отправить в таком старом SMS")
+        put("Answer", "Ответить")
+        put("Send text…", "Отправить SMS…")
+        put("Carrier settings…", "Настройки оператора…")
+        put("Carrier", "Оператор")
+        put("This device has no cellular modem.", "У этого устройства нет сотового модема.")
+        put("Saved with this device and used every time it starts. Changes reach a running device at once; iOS can take a few seconds to update its status bar.", "Сохраняется вместе с этим устройством и применяется при каждом запуске. Изменения сразу передаются запущенному устройству; обновление строки состояния iOS может занять несколько секунд.")
+        put("Session dock", "Панель сессии")
+        put("Show Carrier button", "Показывать кнопку «Оператор»")
+        put("On every iPhone: a dock button for calling the device, sending it texts and these settings", "На каждом iPhone: кнопка на панели для звонков, отправки SMS и этих настроек")
+        put("This session", "Эта сессия")
+        put("Start the device to see its calls and texts here.", "Запустите устройство, чтобы видеть здесь его звонки и SMS.")
+        put("The dock's Carrier button calls the device, sends it texts, answers and hangs up", "Кнопка «Оператор» на панели позволяет звонить на устройство, отправлять SMS, отвечать и сбрасывать")
+        put("Turn on Show Carrier button to call and text the device from the dock", "Включите «Показывать кнопку «Оператор»», чтобы звонить и писать SMS с панели")
+        put("Texts the device sends appear here.", "Отправленные устройством SMS появятся здесь.")
+        put("Texts the device sent", "SMS с устройства")
+        put("Network", "Сеть")
+        put("Carrier name", "Имя оператора")
+        put("Shown in the status bar. 1 to 32 characters, no quotes", "Показывается в строке состояния. От 1 до 32 символов, без кавычек")
+        put("001 01 is the test network", "001 01 — тестовая сеть")
+        put("Signal", "Сигнал")
+        put("Registered", "В сети")
+        put("On the network. Off, iOS shows No Service", "В сети. Если выключено, iOS показывает «Нет сети»")
+        put("SIM card", "SIM-карта")
+        put("Location", "Геопозиция")
+        put("Where the iPhone's GPS says it is, in degrees", "Координаты GPS для iPhone в градусах")
+        put("Latitude", "Широта")
+        put("Longitude", "Долгота")
+        put("Set", "Задать")
+        put("Apple Park", "Apple Park (Купертино)")
+        // Home / Devices / Setup / Prepare / Settings / Store / Transfer
+        put("More ways to add a device", "Другие способы добавить устройство")
+        put("Import device", "Импортировать устройство")
+        put("Export", "Экспорт")
+        put("Force stop", "Принудительно остановить")
+        put("Hide the controls", "Скрыть панель управления")
+        put("Show the controls", "Показать панель управления")
+        put("An app is being installed, so iOS can't shut down until that finishes. Force stop ends it now, like pulling the battery: the app being installed is lost, along with anything else iOS hadn't saved, and the next start checks the device's storage first.", "Идёт установка приложения, поэтому iOS не может выключиться до её завершения. Принудительная остановка завершает работу сразу, как отключение батареи: устанавливаемое приложение и несохранённые данные iOS будут потеряны, а при следующем запуске сначала проверится хранилище.")
+        put("Keep installing", "Продолжить установку")
+        put("Keep waiting", "Подождать")
+        put("Fullscreen", "На весь экран")
+        put("From a minute to half an hour, with 1.5 to 10 GB free", "От минуты до получаса, требуется 1,5–10 ГБ свободного места")
+        put("Import a device from another phone or computer", "Импортировать устройство с другого телефона или компьютера")
+        put("20 to 40 minutes", "от 20 до 40 минут")
+        put("Keep the phone plugged in.", "Держите телефон подключённым к зарядке.")
+        put("Prepare", "Подготовка")
+        put("Moving a device from another phone or computer?", "Переносите устройство с другого телефона или компьютера?")
+        put("Import", "Импорт")
+        put("Downloads what it needs, then sets it up on this phone.", "Скачивает всё необходимое, а затем настраивает на этом телефоне.")
+        put("Not Apple's file for this version; it may not work", "Это не файл Apple для данной версии; он может не сработать")
+        put("downloaded for you", "скачивается автоматически")
+        put("Use anyway", "Всё равно использовать")
+        put("Boot ROM", "Boot ROM")
+        put("64 KB · downloaded for you", "64 КБ · скачивается автоматически")
+        put("You can leave Un1box while it works.", "Вы можете свернуть Un1box, пока идёт работа.")
+        put("Downloading, then preparing…", "Загрузка, затем подготовка…")
+        put("Use my own file", "Выбрать свой файл")
+        put("Save logs", "Сохранить журналы")
+        put("Export logs", "Экспорт журналов")
+        put("Collecting logs…", "Сбор журналов…")
+        put("Device logs, engine logs and the last crash, as one zip file", "Журналы устройства, эмулятора и последний отчёт о сбое в одном zip-файле")
+        put("Vibration", "Вибрация")
+        put("Your phone vibrates when the device's own vibration motor runs", "Телефон вибрирует, когда срабатывает собственный вибромотор устройства")
+        put("Screenshot button", "Кнопка снимка экрана")
+        put("Show Screenshot in the session dock on the home screen", "Показывать кнопку снимка экрана в панели сессии на главном экране")
+        put("This phone's microphone becomes the device's input, for Voice Memos, Shazam and anything else that records; iOS asks inside the device the first time an app records. Android asks for the microphone permission when you turn this on", "Микрофон телефона становится входом устройства — для «Диктофона», Shazam и других приложений, записывающих звук; при первой записи iOS спросит внутри устройства. Android запросит разрешение на микрофон при включении")
+        put("Connection", "Сотовая связь")
+        put("Select an iPhone first", "Сначала выберите iPhone")
+        put("Network name, signal and SIM card", "Имя сети, сигнал и SIM-карта")
+        put(" · real size", " · реальный размер")
+        put("Removing…", "Удаление…")
+        put("Remove from device", "Удалить с устройства")
+        put("The app and its data are deleted from the device. You can install it again from the Legacy Store.", "Приложение и его данные будут удалены с устройства. Вы сможете снова установить его из магазина Legacy.")
+        put("The package is not downloaded.", "Пакет ещё не скачан.")
+        put("App installs need iPhone OS 2 or later.", "Для установки приложений нужна iPhone OS 2 или новее.")
+        put("Exporting", "Экспорт")
+        put("Importing", "Импорт")
+        put("Finishing up", "Завершение")
+        // Firmware / Services / MainActivity / Exit diagnosis
+        put("Works on Un1box, but runs much slower than the other devices for now.", "Работает в Un1box, но пока значительно медленнее других устройств.")
+        put("Device setup", "Настройка устройства")
+        put("Tap to see its progress.", "Нажмите, чтобы посмотреть прогресс.")
+        put("Open Un1box to add it.", "Откройте Un1box, чтобы добавить его.")
+        put("Couldn't prepare the device", "Не удалось подготовить устройство")
+        put("Open Un1box to see why.", "Откройте Un1box, чтобы узнать причину.")
+        put(", jailbroken", ", с джейлбрейком")
+        put(", with a boot ROM", ", с boot ROM")
+        put(", used anyway (not the version's own IPSW)", ", использовано принудительно (IPSW от другой версии)")
+        put(" (jailbreak)", " (джейлбрейк)")
+        put("Force stopped before iOS finished shutting down. The next start checks the device's storage first.", "Остановлено принудительно до завершения выключения iOS. При следующем запуске сначала проверится хранилище устройства.")
+        put("Vibration: this phone has no vibrator", "Вибрация: в этом телефоне нет вибромотора")
+        put("Microphone open: the guest is recording", "Микрофон открыт: гостевая система ведёт запись")
+        put("Microphone off", "Микрофон выключен")
+        put("Waiting for an iOS app to record", "Ожидание записи от приложения iOS")
+        put("guest capturing", "гостевая запись идёт")
+        put("guest not capturing", "гостевая запись не идёт")
+        put("no ring report", "нет отчёта о буфере")
+        put("Running device", "Работающее устройство")
+        put("Paused while you're away. Tap to go back to it.", "На паузе, пока вы отошли. Нажмите, чтобы вернуться.")
+        put("Running. Tap to go back to it.", "Работает. Нажмите, чтобы вернуться.")
+        put("That file is empty.", "Этот файл пуст.")
+        put("That file isn't an IPSW.", "Этот файл не является IPSW.")
+        put("Un1box can't read that file.", "Un1box не может прочитать этот файл.")
+        put("Checking what it is…", "Определение файла…")
+        put("Couldn't save the logs: Un1box was closed while the save dialog was open. Try Export logs again.", "Не удалось сохранить журналы: Un1box был закрыт, пока было открыто окно сохранения. Попробуйте «Экспорт журналов» ещё раз.")
+        put("the file couldn't be opened", "не удалось открыть файл")
+        put("Logs saved", "Журналы сохранены")
+        put("Log export failed", "Не удалось экспортировать журналы")
+        put("No active session", "Нет активной сессии")
+        put("The device worker isn't running; try again", "Рабочий процесс устройства не запущен; попробуйте ещё раз")
+        put("the device worker stopped", "рабочий процесс устройства остановился")
+        put("Export cancelled", "Экспорт отменён")
+        put("Import cancelled", "Импорт отменён")
+        put("This phone's microphone feeds the device", "Микрофон телефона подключён к устройству")
+        put("The device gets no microphone input", "На устройство не поступает звук с микрофона")
+        put("exited by itself", "завершился самостоятельно")
+        put("killed by a signal", "завершён сигналом")
+        put("native crash", "нативный сбой")
+        put("initialization failure", "ошибка инициализации")
+        put("excessive resource usage", "чрезмерное потребление ресурсов")
+        put("stopped at the user's request", "остановлен по запросу пользователя")
+        put("force stopped by the user", "принудительно остановлен пользователем")
+        put("a process it depends on died", "процесс, от которого он зависит, завершился")
+        put("Aborted", "Аварийно завершён")
+        put("Rotate", "Повернуть")
     }
 
     /** The English match, then the Russian replacement, with $1.. for its groups. */
     private val rules: List<Pair<Regex, String>> = listOf(
+        Regex("^The emulator stopped unexpectedly: (.+)\\nThe device's data is kept; press Start to run it again\\.\$") to "Эмулятор неожиданно остановился: \$1\nДанные устройства сохранены; нажмите «Запустить», чтобы продолжить.",
+        Regex("^(.+) is larger than this screen at its real size, so it's fitted instead\\.\$") to "\$1 в реальном размере больше этого экрана, поэтому изображение вписано в экран.",
+        Regex("^([0-9.]+) pixels per inch, measured\$") to "\$1 пикс./дюйм (измерено)",
+        Regex("^([0-9.]+) pixels per inch, as the system reports\$") to "\$1 пикс./дюйм (по данным системы)",
+        Regex("^([0-9.]+) pixels/inch\$") to "\$1 пикс./дюйм",
+        Regex("^The system reports ([0-9.]+) pixels per inch\\.\$") to "По данным системы: \$1 пикс./дюйм.",
+        Regex("^Screen ([0-9.]+ × [0-9.]+) cm · (.+)\$") to "Экран \$1 см · \$2",
+        Regex("^(\\d+) ppi\$") to "\$1 пикс./дюйм",
+        Regex("^(\\d+ × \\d+) rendered · tap to leave\$") to "Отрисовка \$1 · нажмите, чтобы выйти",
+        Regex("^(.+) · tap to leave\$") to "\$1 · нажмите, чтобы выйти",
+        Regex("^(\\d+ × \\d+) rendered · (.+)\$") to "Отрисовка \$1 · \$2",
+        Regex("^(\\d+ × \\d+) rendered\$") to "Отрисовка \$1",
+        Regex("^real size \\((.+)\\) · (.+)\$") to "реальный размер (\$1) · \$2",
+        Regex("^real size \\((.+)\\)\$") to "реальный размер (\$1)",
+        Regex("^(\\d+×) doesn't fit · (.+)\$") to "\$1 не помещается · \$2",
+        Regex("^(\\d+×) doesn't fit\$") to "\$1 не помещается",
+        Regex("^1× here, cropped\$") to "1× здесь, обрезано",
+        Regex("^(\\d+×) here\$") to "\$1 здесь",
+        Regex("^uneven pixels · smaller here\$") to "неравномерные пиксели · меньше здесь",
+        Regex("^uneven pixels\$") to "неравномерные пиксели",
+        Regex("^Smooth below 2× · smaller here\$") to "«Плавно» ниже 2× · меньше здесь",
+        Regex("^Smooth below 2×\$") to "«Плавно» ниже 2×",
+        Regex("^(\\d+×) then smoothed · smaller here\$") to "\$1, затем сглаживание · меньше здесь",
+        Regex("^(\\d+×) then smoothed\$") to "\$1, затем сглаживание",
+        Regex("^smaller here\$") to "меньше здесь",
+        Regex("^Pixel perfect (.+) · (\\d+×) doesn't fit\$") to "Пиксель в пиксель \$1 · \$2 не помещается",
+        Regex("^Pixel perfect (.+)\$") to "Пиксель в пиксель \$1",
+        Regex("^(.+) · real size, (.+) · cropped\$") to "\$1 · реальный размер, \$2 · обрезано",
+        Regex("^(.+) · real size, (.+)\$") to "\$1 · реальный размер, \$2",
+        Regex("^(.+) · real size\$") to "\$1 · реальный размер",
+        Regex("^(.+) · (\\d+×)\$") to "\$1 · \$2",
+        Regex("^(.+) scaling (.+)\$") to "Масштабирование «\$1» \$2",
+        Regex("^(.+) scaling\$") to "Масштабирование «\$1»",
+        Regex("^(.+) pixels\$") to "\$1 пикс.",
+        Regex("^(.+) has no cellular modem\$") to "У \$1 нет сотового модема",
+        Regex("^Carrier: (.+)\$") to "Оператор: \$1",
+        Regex("^To (.+)\$") to "Кому: \$1",
+        Regex("^Remove (.+)\\?\$") to "Удалить \$1?",
+        Regex("^Couldn't remove it: (.+)\$") to "Не удалось удалить: \$1",
+        Regex("^Import ended: (.+)\$") to "Импорт завершён: \$1",
+        Regex("^Couldn't import the device: (.+)\$") to "Не удалось импортировать устройство: \$1",
+        Regex("^Preparation of (.+) cancelled\$") to "Подготовка \$1 отменена",
+        Regex("^Preparation of (.+) failed: (.+)\$") to "Ошибка подготовки \$1: \$2",
+        Regex("^Preparation of (.+) started\$") to "Подготовка \$1 начата",
+        Regex("^Un1box couldn't prepare this IPSW, so it may not support it\\. \\((.+)\\)\$") to "Un1box не смог подготовить этот IPSW; возможно, он не поддерживается. (\$1)",
+        Regex("^Vibration: the guest's motor started \\(buzz (.+), motor pulses (.+)\\)\$") to "Вибрация: гостевой вибромотор запустился (вибраций: \$1, импульсов мотора: \$2)",
+        Regex("^Microphone closed: (.+) frames pushed, (.+) dropped, guest port at (.+) Hz\$") to "Микрофон закрыт: передано кадров \$1, пропущено \$2, порт гостя \$3 Гц",
+        Regex("^phone recorder running · ([^·]+) · (.+)\$") to "запись с телефона идёт · \$1 · \$2",
+        Regex("^phone recorder running · (.+)\$") to "запись с телефона идёт · \$1",
+        Regex("^Android says: (.+) \\(status (.+)\\)(.+)\$") to "Android сообщает: \$1 (статус \$2)\$3",
+        Regex("^Android says: (.+)\$") to "Android сообщает: \$1",
+        Regex("^signal (.+)\$") to "сигнал \$1",
         Regex("^Preparing runs on this phone, takes (.+) and needs about (.+) free\\. Un1box's guest tools are added for you\\.\$") to "Подготовка выполняется на этом телефоне, занимает \$1 и требует около \$2 свободного места. Гостевые инструменты Un1box добавляются автоматически.",
         Regex("^The app needs (.+), which (.+) doesn't have\\. It was built for a newer iOS than (.+)\\.\$") to "Приложению требуется \$1, которого нет в \$2. Оно собрано для более новой версии iOS, чем \$3.",
         Regex("^The app crashed inside (.+), part of iOS\\. The emulation is the likely cause, not the app\\.\$") to "Приложение упало внутри \$1 — части iOS. Вероятная причина — эмуляция, а не само приложение.",

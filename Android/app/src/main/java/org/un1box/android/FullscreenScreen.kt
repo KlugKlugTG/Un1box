@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import kotlin.math.roundToInt
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -33,7 +34,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.min
 import kotlinx.coroutines.delay
 
 /**
@@ -47,18 +47,20 @@ internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifi
     BackHandler { host.navigate(Screen.HOME) }
     var confirmStop by remember { mutableStateOf(false) }
     val skin = DeviceSkin.forBoard(host.selected?.board)
-    val aspect = skin.screenWidth / skin.screenHeight
     BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black).semantics { testTagsAsResourceId = true }) {
         // The guest is centred on the panel itself, with equal black borders above and below, so it
         // sits in the middle of the phone however it is held. The buttons dock in the lower border
         // when it can hold them; the guest shrinks a little to make room before they float instead.
         val bar = 88.dp
-        val fitHeight = maxWidth / aspect
-        val docked = (maxHeight - fitHeight) / 2 >= bar * 0.8f
-        val screenHeight = if (docked) min(fitHeight, maxHeight - bar * 2) else min(fitHeight, maxHeight)
-        val screenWidth = screenHeight * aspect
+        val fit = with(LocalDensity.current) {
+            fullscreenFit(skin, screenPixels(host.selected?.board), maxWidth.toPx(), maxHeight.toPx(), bar.toPx(),
+                host.settings.scaling, host.settings.integerScale, host.settings.realPxPerMm(host.selected?.board))
+        }
+        val docked = fit.docked
+        val screenWidth = with(LocalDensity.current) { fit.width.toDp() }
+        val screenHeight = with(LocalDensity.current) { fit.height.toDp() }
         if (docked) {
-            GuestScreen(host, guestSurface, Modifier.size(screenWidth, screenHeight).align(Alignment.Center), overlayScale = 1f, inDeviceView = false)
+            GuestScreen(host, guestSurface, Modifier.requiredSize(screenWidth, screenHeight).align(Alignment.Center), overlayScale = 1f, inDeviceView = false)
             Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height((maxHeight - screenHeight) / 2), contentAlignment = Alignment.Center) {
                 // The hardware keys sit on their own pane, so the black border does not look like a gap.
                 Box(Modifier.padding(horizontal = 14.dp).clip(RoundedCornerShape(16.dp))
@@ -70,7 +72,7 @@ internal fun FullscreenScreen(host: GuestHost, guestSurface: @Composable (Modifi
             var visible by remember { mutableStateOf(true) }
             var touched by remember { mutableIntStateOf(0) }
             LaunchedEffect(visible, touched) { if (visible) { delay(4_000); visible = false } }
-            GuestScreen(host, guestSurface, Modifier.size(screenWidth, screenHeight).align(Alignment.Center), overlayScale = 1f, inDeviceView = false)
+            GuestScreen(host, guestSurface, Modifier.requiredSize(screenWidth, screenHeight).align(Alignment.Center), overlayScale = 1f, inDeviceView = false)
             AnimatedVisibility(visible, Modifier.align(Alignment.BottomCenter), enter = fadeIn(), exit = fadeOut()) {
                 ButtonBar(host, Modifier.padding(16.dp).ios6Lacquer(RoundedCornerShape(16.dp), Color(0xFF3E3E42), Color(0xEE08080A),
                     Color(0xFF050506), gloss = 0.45f)
@@ -109,6 +111,10 @@ private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Uni
                 SmallKey(LtIcons.Timeline, "Inspect frames", { onInteract(); host.openHitch() }, host.status in listOf("running", "paused"), tag = "hitch_button")
                 Spacer(Modifier.width(8.dp))
             }
+            if (host.carrierButton) {
+                CarrierKey(host) { open -> SmallKey(LtIcons.Signal, "Carrier", { onInteract(); open() }, host.status in listOf("running", "paused"), tag = "fs_carrier") }
+                Spacer(Modifier.width(8.dp))
+            }
             HardwareKey(LtIcons.Power, "Sleep/Wake", GuestButton.POWER, host, enabled, onInteract, tag = "power_button")
             Spacer(Modifier.width(8.dp))
             Box {
@@ -142,8 +148,8 @@ private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Uni
                     DropdownMenuItem(text = { Text("Settings") }, leadingIcon = { Icon(Icons.Filled.Settings, null) },
                         onClick = { menu = false; host.navigate(Screen.SETTINGS) })
                     HorizontalDivider()
-                    DropdownMenuItem(text = { Text("Stop", color = LtColors.Danger) }, leadingIcon = { Icon(LtIcons.Stop, null, tint = LtColors.Danger) },
-                        onClick = { menu = false; onStop() }, enabled = host.sessionOwned && host.status != "stopping" && !host.storeInstalling)
+                    DropdownMenuItem(text = { Text(if (host.status == "stopping") "Force stop" else "Stop", color = LtColors.Danger) }, leadingIcon = { Icon(LtIcons.Stop, null, tint = LtColors.Danger) },
+                        onClick = { menu = false; onStop() }, enabled = host.sessionOwned)
                 }
             }
         }

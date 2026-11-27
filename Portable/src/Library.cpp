@@ -1,14 +1,13 @@
 #include "Internal.hpp"
+#include "Records.hpp"
+#include "Carrier.hpp"
+#include "KernelRepair.hpp"
 #include <algorithm>
 #include <array>
-#include <fcntl.h>
+#include "Os.hpp"
 #include <memory>
-#include <sys/file.h>
-#include <sys/random.h>
-#include <sys/stat.h>
-#include <unistd.h>
 namespace lt {
-static std::string quote(const std::string &s) {
+std::string quote(const std::string &s) {
     std::string out = "\"";
     static const char h[] = "0123456789abcdef";
     for (unsigned char c : s) {
@@ -24,7 +23,7 @@ static std::string quote(const std::string &s) {
     }
     return out + '"';
 }
-static void record_id(const std::string &id) {
+void record_id(const std::string &id) {
     require(!id.empty() && id.size() < 64 &&
                 id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") ==
                     std::string::npos,
@@ -36,7 +35,7 @@ static void text(char *out, size_t capacity, const std::string &s) {
 }
 // Names are stored in record.json, which the JSON reader parses strictly: anything but well-formed
 // UTF-8 (overlong forms, surrogates such as JNI's modified UTF-8 emits) would make the record unreadable.
-static void display_name(const std::string &name) {
+void display_name(const std::string &name) {
     require(!name.empty() && name.size() < 128, "device name must be 1-127 bytes");
     for (size_t i = 0; i < name.size();) {
         auto c = static_cast<unsigned char>(name[i]);
@@ -54,15 +53,11 @@ static void display_name(const std::string &name) {
         i += n;
     }
 }
-static void copy_regular(const fs::path &source, const fs::path &destination, bool immutable = false) {
+// The copy is the record's own file: it never takes the source's mode (a read-only ROM stays deletable with its
+// record).
+static void copy_regular(const fs::path &source, const fs::path &destination) {
     require(fs::is_regular_file(fs::symlink_status(source)), "record asset must be regular file");
-    fs::copy_file(source, destination, fs::copy_options::none);
-    int fd = open(destination.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    io(fd >= 0, "open copied record file");
-    int result = fsync(fd);
-    close(fd);
-    io(result == 0, "sync copied record file");
-    io(chmod(destination.c_str(), immutable ? 0400 : 0600) == 0, "private copied file mode");
+    copy_contents(source, destination);
 }
 static void copy_state(const fs::path &source, const fs::path &destination) {
     fs::create_directories(destination);
@@ -85,24 +80,21 @@ static void copy_state(const fs::path &source, const fs::path &destination) {
             sync_dir(e.path());
     sync_dir(destination);
 }
-static void discard(const fs::path &p) {
+void discard(const fs::path &p) {
     std::error_code error;
+    if (fs::remove_all(p, error) != static_cast<std::uintmax_t>(-1) && !error)
+        return;
+    // Records made before NAND containers froze their base and assets read-only (0500 folders), which an unlink
+    // inside them needs undone. Nothing made since is read-only. Files too: on Windows only a file's read-only
+    // attribute blocks its delete.
     for (const auto &e : fs::recursive_directory_iterator(p, error))
-        if (e.is_directory())
-            chmod(e.path().c_str(), 0700);
-    chmod(p.c_str(), 0700);
+        lt::os::chmod(e.path().c_str(), 0700);
+    lt::os::chmod(p.c_str(), 0700);
     fs::remove_all(p, error);
 }
-static std::string new_id() {
+std::string new_id() {
     std::array<uint8_t, 16> b{};
-    size_t offset = 0;
-    while (offset < b.size()) {
-        ssize_t n = getrandom(b.data() + offset, b.size() - offset, 0);
-        if (n < 0 && errno == EINTR)
-            continue;
-        io(n > 0, "record identity entropy");
-        offset += size_t(n);
-    }
+    io(lt::os::random_bytes(b.data(), b.size()) == 0, "record identity entropy");
     static const char hex[] = "0123456789abcdef";
     std::string id;
     for (auto c : b) {
@@ -112,28 +104,22 @@ static std::string new_id() {
     return id;
 }
 } // namespace lt
-struct lt_library {
-    lt::fs::path root;
-};
 namespace lt {
-struct LibraryLock {
-    int fd = -1;
-    explicit LibraryLock(lt_library *l) {
-        require(l, "null library");
-        fd = open((l->root / ".library-lock").c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
-        io(fd >= 0, "library mutation lock");
-        if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-            close(fd);
-            fd = -1;
-            throw Failure(LT_BUSY, "device library operation in progress");
-        }
+LibraryLock::LibraryLock(lt_library *l) {
+    require(l, "null library");
+    fd = lt::os::open((l->root / ".library-lock").c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+    io(fd >= 0, "library mutation lock");
+    if (lt::os::lock_exclusive(fd) != 0) {
+        lt::os::close(fd);
+        fd = -1;
+        throw Failure(LT_BUSY, "device library operation in progress");
     }
-    ~LibraryLock() {
-        if (fd >= 0)
-            close(fd);
-    }
-};
-static std::vector<std::string> records(lt_library *l) {
+}
+LibraryLock::~LibraryLock() {
+    if (fd >= 0)
+        lt::os::close(fd);
+}
+std::vector<std::string> records(lt_library *l) {
     std::vector<std::string> ids;
     for (const auto &e : fs::directory_iterator(l->root / "records")) {
         auto id = e.path().filename().string();
@@ -147,14 +133,14 @@ static std::vector<std::string> records(lt_library *l) {
     std::sort(ids.begin(), ids.end());
     return ids;
 }
-static std::string selected(lt_library *l) {
+std::string selected(lt_library *l) {
     if (!fs::exists(l->root / "selected"))
         return "";
     std::string id = read_file(l->root / "selected", 64);
     record_id(id);
     return id;
 }
-static void describe(lt_library *l, const std::string &id, lt_record_info *out) {
+void describe(lt_library *l, const std::string &id, lt_record_info *out) {
     abi(out);
     record_id(id);
     auto directory = l->root / "records" / id;
@@ -193,19 +179,18 @@ static void import(lt_library *l, const lt_library_import_config *c, const char 
     std::string pattern = (l->root / "records/.record-stage-XXXXXX").string();
     std::vector<char> tmp(pattern.begin(), pattern.end());
     tmp.push_back(0);
-    io(mkdtemp(tmp.data()) != nullptr, "record staging");
+    io(lt::os::mkdtemp(tmp.data()) != nullptr, "record staging");
     fs::path stage = tmp.data();
     fs::path adopted;  // the caller's folder while it is ours, to hand back if the import fails
     try {
         std::string base = (stage / "base").string();
         if (adopt) {
             require(fs::is_directory(fs::symlink_status(c->source_path)), "prepared output must be a folder");
-            struct stat from {}, to {};
-            io(stat(c->source_path, &from) == 0 && stat(l->root.c_str(), &to) == 0, "stat prepared output");
+            lt::os::Stat from {}, to {};
+            io(lt::os::stat(c->source_path, &from) == 0 && lt::os::stat(l->root.c_str(), &to) == 0, "stat prepared output");
             require(from.st_dev == to.st_dev, "prepared output must be on the library's storage");
             adopted = fs::canonical(c->source_path);
-            io(chmod(adopted.c_str(), 0700) == 0, "own prepared output");  // a folder's move rewrites its ".."
-            io(rename(adopted.c_str(), base.c_str()) == 0, "move prepared output");
+            io(lt::os::rename(adopted.c_str(), base.c_str()) == 0, "move prepared output");
             adopt_base(base, observer, opaque);
         } else {
             lt_import_config cfg{sizeof(cfg),  1,           c->source_path, base.c_str(), c->expected_sha256,
@@ -222,15 +207,15 @@ static void import(lt_library *l, const lt_library_import_config *c, const char 
         display_name(name);
         fs::create_directory(stage / "assets");
         if (c->bootrom_path && *c->bootrom_path)
-            copy_regular(c->bootrom_path, stage / "assets/bootrom.bin", true);
+            copy_regular(c->bootrom_path, stage / "assets/bootrom.bin");
         if (c->guest_package_path && *c->guest_package_path)
-            copy_regular(c->guest_package_path, stage / "assets/guest.itpack", true);
+            copy_regular(c->guest_package_path, stage / "assets/guest.itpack");
         else if (const auto *outputs = lock.find("outputs"))
             if (const auto *package = outputs->find("guest_package")) {
                 auto source = stage / "base" / package->at("path").string();
                 require(digest_file(source) == package->at("sha256").string(),
                         "prepared guest package checksum mismatch");
-                copy_regular(source, stage / "assets/guest.itpack", true);
+                copy_regular(source, stage / "assets/guest.itpack");
             }
         if (legacy_state)
             copy_state(legacy->state, stage / "state");
@@ -246,7 +231,6 @@ static void import(lt_library *l, const lt_library_import_config *c, const char 
         metadata += "}\n";
         atomic_write(stage / "record.json", metadata);
         sync_dir(stage / "assets");
-        io(chmod((stage / "assets").c_str(), 0500) == 0, "immutable record assets");
         sync_dir(stage / "state");
         sync_dir(stage);
         fs::rename(stage, l->root / "records" / id);
@@ -263,16 +247,14 @@ static void import(lt_library *l, const lt_library_import_config *c, const char 
         describe(l, id, out);
     } catch (...) {
         std::error_code ec;
-        if (!adopted.empty() && fs::is_directory(stage / "base", ec) && !fs::exists(adopted, ec)) {
-            chmod((stage / "base").c_str(), 0700);
+        if (!adopted.empty() && fs::is_directory(stage / "base", ec) && !fs::exists(adopted, ec))
             fs::rename(stage / "base", adopted, ec);
-        }
         discard(stage);
         throw;
     }
 }
 /* record.json with one field replaced; the schema has no nested values. */
-static std::string record_json(const Json &metadata, const std::string &id, const std::string &name) {
+std::string record_json(const Json &metadata, const std::string &id, const std::string &name) {
     std::string json = "{\"schema\":1,\"id\":" + quote(id) + ",\"name\":" + quote(name) +
                        ",\"board\":" + quote(metadata.at("board").string()) +
                        ",\"build\":" + quote(metadata.at("build").string()) +
@@ -296,20 +278,46 @@ static void remove_record(lt_library *l, const std::string &id) {
     record_id(id);
     auto directory = l->root / "records" / id;
     require(fs::is_directory(fs::symlink_status(directory)), "no such device", LT_INVALID);
-    int lease = open((directory / "state/.lease").c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    int lease = lt::os::open((directory / "state/.lease").c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
     io(lease >= 0, "device lease");
     struct Closer {
         int fd;
-        ~Closer() { close(fd); }
+        ~Closer() {
+            if (fd >= 0)
+                lt::os::close(fd);
+        }
     } closer{lease};
-    require(flock(lease, LOCK_EX | LOCK_NB) == 0, "stop the device before deleting it", LT_BUSY);
+    require(lt::os::lock_exclusive(lease) == 0, "stop the device before deleting it", LT_BUSY);
+#ifdef _WIN32
+    // Windows won't rename a directory with a file open inside it, the lease included. The library lock, held
+    // until the record is gone, still keeps the device from opening; a process with the record's files open
+    // makes the rename fail instead.
+    lt::os::close(lease);
+    closer.fd = -1;
+#endif
+    // Trash left by a delete that crashed or failed before.
+    std::vector<fs::path> stale;
+    std::error_code ignored;
+    for (const auto &e : fs::directory_iterator(l->root / "records", ignored))
+        if (e.path().filename().string().rfind(".record-trash-", 0) == 0)
+            stale.push_back(e.path());
+    for (const auto &p : stale)
+        discard(p);
     // Out of the record namespace first, so a crash mid-delete leaves no half record.
     std::string pattern = (l->root / "records/.record-trash-XXXXXX").string();
     std::vector<char> tmp(pattern.begin(), pattern.end());
     tmp.push_back(0);
-    io(mkdtemp(tmp.data()) != nullptr, "record trash");
+    io(lt::os::mkdtemp(tmp.data()) != nullptr, "record trash");
     fs::path trash = tmp.data();
-    fs::rename(directory, trash / "record");
+    std::error_code moved;
+    fs::rename(directory, trash / "record", moved);
+    if (moved) {
+        discard(trash);
+        require(false,
+                "its files couldn't be moved (" + moved.message() +
+                    "); if another program has them open, close it and try again",
+                LT_IO);
+    }
     sync_dir(l->root / "records");
     if (selected(l) == id) {
         auto rest = records(l);
@@ -320,6 +328,84 @@ static void remove_record(lt_library *l, const std::string &id) {
     }
     discard(trash);
 }
+// A jailbroken kboot device prepared by v0.0.13, whose sandbox patch left out the profile-switch flag
+// (KernelRepair.hpp), gets today's patch in base/kboot.bin, and the lock and record pinned to the result, before it is
+// admitted. A repair cut short finishes at the next open: kboot.bin.repair is written and synced before
+// device.lock.json.repair, and once the latter exists the kernel copy (if still there) replaces kboot.bin, the record
+// and the state are pinned to the new lock, and the new lock replaces the old. Files that fail their pins are left for
+// the admission to report.
+void repair_kernel(const fs::path &directory, const std::string &id) {
+    const fs::path base = directory / "base", kboot = base / "kboot.bin", lock_path = base / "device.lock.json";
+    const fs::path kboot_new = base / "kboot.bin.repair", lock_new = base / "device.lock.json.repair";
+    const fs::path state_pin = directory / "state/.base-identity";
+    std::error_code ec;
+    if (!fs::exists(lock_new, ec)) {
+        // Until device.lock.json.repair exists nothing the device reads has changed: a failure leaves it as it was.
+        try {
+            if (!fs::is_regular_file(fs::symlink_status(kboot, ec)))
+                return;
+            auto metadata = parse(read_file(directory / "record.json", 65536));
+            auto lock = parse(read_file(lock_path));
+            auto *outputs = lock.find("outputs");
+            auto *output = outputs ? outputs->find("kboot") : nullptr;
+            const Json *pinned = output && output->kind == Json::Object ? output->find("sha256") : nullptr;
+            if (!pinned || output->at("path").string() != "kboot.bin")
+                return;
+            std::string bytes = read_file(kboot, 256u << 20);
+            if (bytes.find(std::string(reinterpret_cast<const char *>(kernel_repair::old_patch_bytes),
+                                       sizeof kernel_repair::old_patch_bytes)) == std::string::npos)
+                return;  // stock, or already repaired
+            auto fix = kernel_repair::needed_fix(reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
+            const std::string base_digest = digest_file(lock_path);
+            if (!fix || digest_file(kboot) != pinned->string() || base_digest != metadata.at("base_sha256").string() ||
+                (fs::exists(state_pin, ec) && read_file(state_pin, 128) != base_digest))
+                return;
+            bytes.replace(fix->offset, sizeof fix->bytes, reinterpret_cast<const char *>(fix->bytes), sizeof fix->bytes);
+            fs::remove(kboot_new, ec);
+            // A record from before NAND containers froze its base read-only.
+            if (lt::os::read_only(base.c_str()))
+                io(lt::os::chmod(base.c_str(), 0700) == 0, "record base permissions");
+            atomic_write(kboot_new, bytes);
+            lock.object.at("outputs").object.at("kboot").object.at("sha256").text = digest_file(kboot_new);
+            atomic_write(lock_new, dump(lock) + "\n");
+            sync_dir(base);
+        } catch (...) {
+            if (!fs::exists(lock_new, ec))
+                fs::remove(kboot_new, ec);
+            return;
+        }
+    }
+    if (fs::exists(kboot_new, ec)) {
+        if (lt::os::read_only(kboot.c_str()))
+            io(lt::os::chmod(kboot.c_str(), 0600) == 0, "kernel permissions");
+        fs::rename(kboot_new, kboot);
+    }
+    const std::string repaired = digest_file(lock_new);
+    auto metadata = parse(read_file(directory / "record.json", 65536));
+    metadata.object.at("base_sha256").text = repaired;
+    atomic_write(directory / "record.json", record_json(metadata, id, metadata.at("name").string()));
+    if (fs::exists(state_pin, ec))
+        atomic_write(state_pin, repaired);
+    fs::rename(lock_new, lock_path);
+    sync_dir(base);
+}
+// repair_kernel under the device's lease; a device another process holds is left alone.
+static void repair_kernel_leased(lt_library *l, const std::string &id) {
+    record_id(id);
+    auto directory = l->root / "records" / id;
+    std::error_code ec;
+    if (!fs::exists(directory / "base/kboot.bin", ec) || !fs::is_directory(directory / "state", ec))
+        return;
+    int lease = lt::os::open((directory / "state/.lease").c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (lease < 0)
+        return;
+    struct Closer {
+        int fd;
+        ~Closer() { lt::os::close(fd); }
+    } closer{lease};
+    if (lt::os::lock_exclusive(lease) == 0)
+        repair_kernel(directory, id);
+}
 static void set_guest_package(lt_library *l, const std::string &id, const char *path, lt_record_info *out) {
     abi(out);
     record_id(id);
@@ -328,29 +414,48 @@ static void set_guest_package(lt_library *l, const std::string &id, const char *
     auto metadata = parse(read_file(directory / "record.json", 65536));
     require(metadata.at("schema").integer() == 1 && metadata.at("id").string() == id, "invalid device record");
     // The device's own lease: a running (or opening) device holds it.
-    int lease = open((directory / "state/.lease").c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    int lease = lt::os::open((directory / "state/.lease").c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
     io(lease >= 0, "device lease");
     struct Closer {
         int fd;
-        ~Closer() { close(fd); }
+        ~Closer() { lt::os::close(fd); }
     } closer{lease};
-    require(flock(lease, LOCK_EX | LOCK_NB) == 0, "stop the device before updating its guest tools", LT_BUSY);
+    require(lt::os::lock_exclusive(lease) == 0, "stop the device before updating its guest tools", LT_BUSY);
     require(fs::is_regular_file(fs::symlink_status(path)), "guest package must be a regular .itpack file");
     {
         char magic[8] = {};
-        int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        int fd = lt::os::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         io(fd >= 0, "open guest package");
-        ssize_t n = read(fd, magic, sizeof magic);
-        close(fd);
+        ssize_t n = lt::os::read(fd, magic, sizeof magic);
+        lt::os::close(fd);
         require(n == 8 && std::memcmp(magic, "ITPACK01", 8) == 0, "not a guest tools package (ITPACK01)");
+    }
+    // The guest's loader installs only a family for its board and build, and never an older serial than it has: a
+    // package it would ignore is refused here instead of being swapped in to no effect.
+    const std::string board = metadata.at("board").string(), build = metadata.at("build").string();
+    const int64_t offered = guest_package_serial(path, board, build);
+    require(offered >= 0, "these guest tools have nothing for this device (" + board + ", " + build + ")",
+            LT_UNSUPPORTED);
+    if (fs::is_regular_file(directory / "assets/guest.itpack")) {
+        int64_t current = -1;
+        try {
+            current = guest_package_serial(directory / "assets/guest.itpack", board, build);
+        } catch (...) {  // unreadable: the new one replaces it
+        }
+        require(offered >= current,
+                "these guest tools (serial " + std::to_string(offered) + ") are older than the device's (serial " +
+                    std::to_string(current) + ")",
+                LT_UNSUPPORTED);
     }
     auto assets = directory / "assets";
     fs::create_directories(assets);
-    io(chmod(assets.c_str(), 0700) == 0, "record assets permissions");
+    // A record made before NAND containers froze its assets read-only (0500); writing into them needs that undone.
+    if (lt::os::read_only(assets.c_str()))
+        io(lt::os::chmod(assets.c_str(), 0700) == 0, "record assets permissions");
     try {
         std::error_code stale;
         fs::remove(assets / ".guest.itpack.new", stale);
-        copy_regular(path, assets / ".guest.itpack.new", true);
+        copy_regular(path, assets / ".guest.itpack.new");
         std::string sha = digest_file(assets / ".guest.itpack.new");
         fs::rename(assets / ".guest.itpack.new", assets / "guest.itpack");
         sync_dir(assets);
@@ -366,10 +471,8 @@ static void set_guest_package(lt_library *l, const std::string &id, const char *
     } catch (...) {
         std::error_code ec;
         fs::remove(assets / ".guest.itpack.new", ec);
-        chmod(assets.c_str(), 0500);
         throw;
     }
-    io(chmod(assets.c_str(), 0500) == 0, "immutable record assets");
     describe(l, id, out);
 }
 } // namespace lt
@@ -396,6 +499,46 @@ lt_status lt_library_remove(lt_library *l, const char *id, lt_error *e) {
         lt::remove_record(l, id);
     });
 }
+uint32_t lt_board_has_modem(const char *board) { return board && lt::carrier::board_has_modem(board); }
+void lt_carrier_defaults(lt_carrier *c) {
+    if (c && c->size >= sizeof(*c) && c->version == LT_ABI_VERSION)
+        lt::carrier::to_abi(lt::carrier::Settings{}, c);
+}
+lt_status lt_carrier_check(const lt_carrier *c, lt_error *e) {
+    return lt::guard(e, [&] {
+        const auto problem = lt::carrier::problem(lt::carrier::from_abi(c));
+        lt::require(problem.empty(), problem);
+    });
+}
+uint32_t lt_carrier_number_ok(const char *number) { return number && lt::carrier::number_ok(number); }
+uint32_t lt_carrier_sms_length(const char *text, uint32_t *limit) {
+    uint32_t ignored = 0;
+    return lt::carrier::sms_length(text ? text : "", limit ? limit : &ignored);
+}
+lt_status lt_library_carrier(lt_library *l, const char *id, lt_carrier *out, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::LibraryLock lock(l);
+        lt::require(id, "record ID missing");
+        lt::abi(out);
+        lt_record_info info{sizeof(info), 1, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0, 0};
+        lt::describe(l, id, &info);
+        lt::require(lt::carrier::board_has_modem(info.board), "this device has no cellular modem", LT_UNSUPPORTED);
+        lt::carrier::to_abi(lt::carrier::load(l->root / "records" / id / "carrier.json"), out);
+    });
+}
+lt_status lt_library_set_carrier(lt_library *l, const char *id, const lt_carrier *c, lt_error *e) {
+    return lt::guard(e, [&] {
+        lt::LibraryLock lock(l);
+        lt::require(id, "record ID missing");
+        const auto settings = lt::carrier::from_abi(c);
+        const auto problem = lt::carrier::problem(settings);
+        lt::require(problem.empty(), problem);
+        lt_record_info info{sizeof(info), 1, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0, 0};
+        lt::describe(l, id, &info);
+        lt::require(lt::carrier::board_has_modem(info.board), "this device has no cellular modem", LT_UNSUPPORTED);
+        lt::atomic_write(l->root / "records" / id / "carrier.json", lt::carrier::to_json(settings));
+    });
+}
 lt_status lt_library_open(const lt_library_config *c, lt_library **out, lt_error *e) {
     return lt::guard(e, [&] {
         lt::abi(c);
@@ -407,7 +550,6 @@ lt_status lt_library_open(const lt_library_config *c, lt_library **out, lt_error
         auto l = std::make_unique<lt_library>();
         l->root = lt::fs::canonical(c->root_path);
         lt::require(l->root.string().size() < 900, "library path exceeds record ABI bound");
-        lt::io(chmod(l->root.c_str(), 0700) == 0, "private library permissions");
         lt::fs::create_directories(l->root / "records");
         lt::require(!lt::fs::is_symlink(lt::fs::symlink_status(l->root / "records")),
                     "library records symlink refused");
@@ -487,6 +629,7 @@ lt_status lt_library_device_open_observed(lt_library *l, const char *id, uint32_
         lt::require(id && out, "device record ID/output missing");
         *out = nullptr;
         lt_record_info info{sizeof(info), 1, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0, 0};
+        lt::repair_kernel_leased(l, id);
         lt::describe(l, id, &info);
         auto metadata = lt::parse(lt::read_file(l->root / "records" / id / "record.json", 65536));
         std::vector<lt::AdmissionAssetCheck> assets;
@@ -499,6 +642,8 @@ lt_status lt_library_device_open_observed(lt_library *l, const char *id, uint32_
         lt_device_config cfg{sizeof(cfg), 1, info.base_path, info.state_path, recover};
         auto device = lt::open_device_checked(&cfg, observer, opaque, assets);
         lt::require(device->base_digest == info.base_sha256, "record base integrity pin mismatch");
+        device->board = info.board;
+        device->carrier = l->root / "records" / id / "carrier.json";
         *out = device.release();
     });
 }

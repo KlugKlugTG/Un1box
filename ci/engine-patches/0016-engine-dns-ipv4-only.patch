@@ -1,5 +1,14 @@
+From 0cc9e4ce9e6389a08beeacb4940408f62fd00b1b Mon Sep 17 00:00:00 2001
+From: Un1box <ci@un1box>
+Date: Fri, 27 Nov 2026 09:36:00 +0000
+Subject: [PATCH] engine: prefer IPv4 DNS resolvers on Android
+
+---
+ net/slirp-dns.c | 26 +++++++++++++++-----------
+ 1 file changed, 15 insertions(+), 11 deletions(-)
+
 diff --git a/net/slirp-dns.c b/net/slirp-dns.c
-index 77addfd..4ba7391 100644
+index 77addfd252..4ba7391ab6 100644
 --- a/net/slirp-dns.c
 +++ b/net/slirp-dns.c
 @@ -140,7 +140,7 @@ static void dns_add_answer(DNSJob *j, uint16_t type, const void *rdata, size_t r

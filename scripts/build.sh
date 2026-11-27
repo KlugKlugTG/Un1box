@@ -9,9 +9,11 @@
 #   linux          build/linux/lighttouch-linux (+ engine)     the Linux frontend (Linux/CMakeLists.txt)
 #   android-engine build/android/engine/arm64-v8a/              arm64 engine, libc++_shared.so, notices
 #   android        build/android/Un1box-debug.apk (+ engine) arm64 debug APK
+#   android-test   :app:testDebugUnitTest                    Android JVM unit tests
+#   android-usb    build/android/usb/arm64-v8a/              usbmuxd-qemu + lt_appservice
 #   portable-tests build/obj/portable-tests (ctest)            Portable/ unit tests
-#   firmwarekit    build/firmwarekit/linux/                     firmwarekit (Swift) + lighttouch-oneshot, x86_64
-#   firmwarekit-android build/firmwarekit/android/              the same for arm64 Android (Swift SDK for Android)
+#   firmwarekit    build/firmwarekit/linux/                     firmwarekit (Rust), x86_64
+#   firmwarekit-android build/firmwarekit/android/              the same for arm64 Android (Cargo + NDK)
 #   guest-package  build/guest-package/{armv6,armv7}.itpack   on the Mac ($LT_MAC), Xcode + old SDKs
 #   firmware-tools build/firmware-tools/                       on the Mac: the helpers firmwarekit create bakes in
 #                                                             (--guest-tools; contrib/export-guest-artifacts.sh)
@@ -37,6 +39,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 : "${LT_MAC:=}"                                                                   # user@host of the Mac
 : "${LT_DEBUGGABLE:=true}"                       # false: a non-debuggable APK (release; GrapheneOS AOT)
 : "${LT_PROFILEABLE:=false}"                     # true: simpleperf may attach from adb shell (perf builds)
+: "${LT_JAILBREAK:=false}"                       # true: jailbreak APK (org.un1box.android.jb + jb-bunzip2)
 : "${LT_ENGINE_PGO:=$LT_INPUTS/backend/pgo/engine-arm64.profdata}"   # Android engine PGO profile; off: none
 # LT_ENGINE_CFLAGS / LT_ENGINE_LDFLAGS: added to the engine's configure (e.g. -fprofile-generate for a PGO
 # profile run, which then skips LT_ENGINE_PGO); with LT_ENGINE_VARIANT=NAME the Android engine builds in its own
@@ -45,9 +48,6 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 : "${LT_MAC_IPAD_SDK:=\$HOME/Developer/ipod2g-re/OldSDK/iPhoneOS3.2.sdk}"         # expanded on the Mac
 : "${LT_MAC_ARMV6_SDK:=\$HOME/Developer/ipod2g-re/OldSDK/iPhoneOS3.1.3.sdk}"       # expanded on the Mac
 : "${JOBS:=$(nproc 2>/dev/null || echo 4)}"
-: "${LT_SWIFT_ENV:=$HOME/.local/share/swiftly/env.sh}"                           # swiftly's Swift 6.4+
-: "${LT_SWIFT_ANDROID_SDK:=aarch64-unknown-linux-android29}"   # swift sdk install ...android.artifactbundle
-: "${LT_SWIFT_ANDROID_BUNDLE:=$HOME/.swiftpm/swift-sdks/swift-6.4.1-RELEASE_android.artifactbundle}"
 PCLIBDIR=
 export ANDROID_HOME JAVA_HOME
 
@@ -152,14 +152,41 @@ PY
     echo "$e"
 }
 
+# The USB bridge, built from its pinned sources with this repository's patches (build-support/patches,
+# Android/packaging/patches): incrementally, or from scratch (keeping the downloads) once the recipe has changed.
+build_android_usb() {
+    local o="$OBJ/android-usb" ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+    local s="$REPO/Android/packaging/build-mobile-android.py"
+    log "android-usb (usbmuxd-qemu and the app service helper, arm64-v8a)"
+    if [ -e "$o/build-recipe.json" ] && ! python3 "$s" "$o" --ndk "$ndk" --matches; then
+        echo "the bridge's recipe changed: rebuilding $o"
+        find "$o" -mindepth 1 -maxdepth 1 ! -name sources -exec rm -rf {} +
+    fi
+    mkdir -p "$OBJ"
+    python3 "$s" "$o" --ndk "$ndk" --jobs "$JOBS" --source-cache "$LT_INPUTS" > "$OBJ/android-usb.out" 2>&1 ||
+        { tail -30 "$OBJ/android-usb.out" >&2; exit 1; }
+    rm -rf "$OUT/android/usb"; mkdir -p "$OUT/android/usb"
+    cp -a "$o/arm64-v8a" "$OUT/android/usb/"
+}
+
+build_android_test() { ANDROID_TASK=:app:testDebugUnitTest build_android; }
+
 build_android() {
-    build_android_engine
+    # LT_ANDROID_ENGINE=DIR (holding arm64-v8a/: libqemu-arm.so, libc++_shared.so, notices/, an android-engine
+    # output) packages that engine instead of building one.
+    local engine="${LT_ANDROID_ENGINE:-$OUT/android/engine}"
+    if [ -n "${LT_ANDROID_ENGINE:-}" ]; then need "$engine/arm64-v8a/libqemu-arm.so" "LT_ANDROID_ENGINE engine"
+    else build_android_engine; fi
+    # LT_ANDROID_USB=DIR (libusbmuxd_qemu.so and liblt_appservice.so, an android-usb output) packages that bridge.
+    local usb="${LT_ANDROID_USB:-$OUT/android/usb/arm64-v8a}"
+    if [ -n "${LT_ANDROID_USB:-}" ]; then need "$usb/libusbmuxd_qemu.so" "LT_ANDROID_USB bridge"
+    else build_android_usb; fi
+    mkdir -p "$OBJ" "$OUT/android"
     log "android APK (arm64-v8a, debug)"
     local w="$LT_INPUTS" angle="$LT_INPUTS/graphics/angle-android-arm64-gl-build-01/candidate-01"
     need "$angle/lib" "ANGLE arm64 libraries"
-    need "$w/mobile-android/arm64-v8a" "Android mobile services"
-    # firmwarekit prepares devices from IPSWs on the phone (build/firmwarekit/android): rebuilt every time (SwiftPM is
-    # incremental), or the APK carries whatever firmwarekit and lighttouch-oneshot were last built.
+    # firmwarekit prepares devices from IPSWs on the phone (build/firmwarekit/android): rebuilt every time (cargo is
+    # incremental), or the APK carries whatever firmwarekit was last built.
     build_firmwarekit_android
     # Guest tools the APK carries (new devices get the packages; firmwarekit bakes the helpers into the systems it
     # prepares); without them the APK still builds, but new devices get no guest tools and preparation cannot run.
@@ -167,24 +194,26 @@ build_android() {
     if [ -f "$tools/armv6.itpack" ] && [ -f "$tools/armv7.itpack" ] && [ -f "$tools/it_seal" ]; then guest=(-PguestToolsDir="$tools")
     else echo "warning: no guest packages and helpers in $tools (scripts/build.sh firmware-tools, or set LT_GUEST_TOOLS); the APK will carry no guest tools" >&2; fi
     # A non-debuggable build runs lint-vital, which needs an artifact the offline Gradle cache lacks.
-    local lint=()
+    local lint=() offline=(--offline)
+    [ "${LT_GRADLE_OFFLINE:-true}" = false ] && offline=()   # CI: Gradle downloads what it needs
     [ "$LT_DEBUGGABLE" = false ] && lint=(-x lintVitalAnalyzeDebug -x lintVitalReportDebug -x lintVitalDebug)
-    (cd "$REPO/Android" && CMAKE_BUILD_PARALLEL_LEVEL="$JOBS" ./gradlew --offline --no-daemon --max-workers=8 \
+    (cd "$REPO/Android" && CMAKE_BUILD_PARALLEL_LEVEL="$JOBS" ./gradlew "${offline[@]}" --no-daemon --max-workers=8 \
         '-Dorg.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m' -PnativeJobs="$JOBS" -PtargetAbis=arm64-v8a \
         -PportableDir="$REPO/Portable" -PqemuSource="$QEMU_IOS" \
-        -PengineRoot="$OUT/android/engine" -PfirmwareKitDir="$OUT/firmwarekit/android" \
-        -PengineNoticeArm64="$OUT/android/engine/arm64-v8a/notices" \
+        -PengineRoot="$engine" -PfirmwareKitDir="$OUT/firmwarekit/android" \
+        -PengineNoticeArm64="$engine/arm64-v8a/notices" \
         -PsourceRevision="$(git -C "$REPO" rev-parse HEAD)" \
-        -PsourceReference="${LT_SOURCE_REFERENCE:-https://github.com/blake-lucas/LightTouch/tree/$(git -C "$REPO" branch --show-current)}" \
-        -PbuildRoot="$OBJ/android-gradle" -PmobileServicesArm64="$w/mobile-android/arm64-v8a" \
+        -PsourceReference="${LT_SOURCE_REFERENCE:-https://github.com/KlugKlugTG/Un1box/tree/$(git -C "$REPO" branch --show-current)}" \
+        -PbuildRoot="$OBJ/android-gradle" -PmobileServicesArm64="$usb" \
         -PfrontendNotices="$w/product/frontend-inputs-15" \
         -PfrontendNoticesSha256=88918185b1a3ba3ea1b4c910c8b7dde56391597574f53824a160fef45d2b76a7 \
         -PangleArm64Libraries="$angle/lib" -PangleArm64Manifest="$angle/elf-closure.json" \
         -PangleArm64Notices="$angle/notices" \
         -PangleArm64ManifestSha256=3abde58ea5d9863453b12e3d7f67eff7c96ee989fbcfa4c00a16859cfd694945 \
         -PangleArm64NoticesSha256=63d2221b0fab9bff7788dc0c4e9a94c74079b3ab5ed3c09bd3ef72c909d1f924 \
-        -Pdebuggable="$LT_DEBUGGABLE" -Pprofileable="$LT_PROFILEABLE" "${guest[@]}" "${lint[@]}" :app:assembleDebug > "$OBJ/android-gradle.out" 2>&1) ||
+        -Pdebuggable="$LT_DEBUGGABLE" -Pprofileable="$LT_PROFILEABLE" -Pjailbreak="$LT_JAILBREAK" "${guest[@]}" "${lint[@]}" "${ANDROID_TASK:-:app:assembleDebug}" > "$OBJ/android-gradle.out" 2>&1) ||
         { grep -A12 "What went wrong" "$OBJ/android-gradle.out" >&2 || tail -30 "$OBJ/android-gradle.out" >&2; exit 1; }
+    [ -n "${ANDROID_TASK:-}" ] && { grep -E "tests completed|BUILD" "$OBJ/android-gradle.out" || true; return; }
     cp "$OBJ/android-gradle/app/outputs/apk/debug/app-debug.apk" "$OUT/android/Un1box-debug.apk"
     echo "$OUT/android/Un1box-debug.apk"
 }
@@ -198,64 +227,35 @@ build_portable_tests() {
     (cd "$OBJ/portable-tests" && ctest --output-on-failure | tail -3)
 }
 
-# firmwarekit (Packages/FirmwareKit) builds a device from an IPSW off the Mac too; its build-time boots go through
-# lighttouch-oneshot, which loads the engine library ($LTM_QEMU_DYLIB, else libqemu-arm.so beside it).
+# firmwarekit (crates/lighttouch-firmware, Rust) builds a device from an IPSW on every platform. Its preparation boots
+# run the engine library itself (`firmwarekit oneshot`: $LTM_QEMU_DYLIB, else libqemu-arm beside it), Android's too.
 build_firmwarekit() {
     log "firmwarekit (linux)"
-    . "$LT_SWIFT_ENV"
-    (cd "$REPO/Packages/FirmwareKit" && swift build -c release --product firmwarekit 2>&1 | tail -3)
+    # Debuggable builds (LT_DEBUGGABLE, default true) honor LT_ONESHOT_CRASH, the crash-report test (crashlog.rs).
+    (cd "$REPO" && cargo build --release -p lighttouch-firmware --bin firmwarekit \
+        $([ "$LT_DEBUGGABLE" = false ] || echo --features crash-test) 2>&1 | tail -3)
     mkdir -p "$OUT/firmwarekit/linux"
-    cp "$REPO/Packages/FirmwareKit/.build/release/firmwarekit" "$OUT/firmwarekit/linux/"
-    cc -O2 -Wall -Wextra -Werror -o "$OUT/firmwarekit/linux/lighttouch-oneshot" "$REPO/Portable/oneshot/lighttouch-oneshot.c" -ldl -lpthread
+    cp "$REPO/target/release/firmwarekit" "$OUT/firmwarekit/linux/"
     ls -la "$OUT/firmwarekit/linux"
 }
 
-# The Swift SDK for Android's static runtime wants NDK r30's libc++ (setup-android-sdk.sh with ANDROID_NDK_HOME at
-# r30); build-support/android-pkgconfig keeps the host's zlib off the link and takes libc++ statically.
+# The Rust target aarch64-linux-android (rustup target add) with the NDK's clang for the crate's C (activation.c,
+# the vendored iBoot32Patcher, SQLite) and as the linker.
 build_firmwarekit_android() {
     log "firmwarekit (android arm64)"
-    . "$LT_SWIFT_ENV"
-    (cd "$REPO/Packages/FirmwareKit" && swift build -c release --product firmwarekit --swift-sdk "$LT_SWIFT_ANDROID_SDK" \
-        --scratch-path .build-android --static-swift-stdlib --pkg-config-path build-support/android-pkgconfig \
-        -Xlinker -lssl -Xlinker -lcrypto 2>&1 | tail -3)
+    (cd "$REPO" && CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android29-clang" AR_aarch64_linux_android="$NDK_BIN/llvm-ar" \
+        CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android29-clang" \
+        cargo build --release --target aarch64-linux-android -p lighttouch-firmware --bin firmwarekit \
+            $([ "$LT_DEBUGGABLE" = false ] || echo --features crash-test) 2>&1 | tail -3)
     mkdir -p "$OUT/firmwarekit/android"
-    cp "$REPO/Packages/FirmwareKit/.build-android/out/Products/Release-android-aarch64/firmwarekit" "$OUT/firmwarekit/android/"
+    cp "$REPO/target/aarch64-linux-android/release/firmwarekit" "$OUT/firmwarekit/android/"
     "$NDK_BIN/llvm-strip" "$OUT/firmwarekit/android/firmwarekit"
-    "$NDK_BIN/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Werror -o "$OUT/firmwarekit/android/lighttouch-oneshot" \
-        "$REPO/Portable/oneshot/lighttouch-oneshot.c"
-    # The iPad 1 (k48) recipe runs iBoot32Patcher: on macOS it ships in the app bundle, on Android it has to
-    # be built for the device and named in the child's environment (FIRMWAREKIT_IBOOT_PATCHER, set by
-    # FirmwareService). The pin lives in build-support/dependencies.json, the patch beside it.
-    log "iBoot32Patcher (android arm64)"
-    read -r IBP_URL IBP_SHA IBP_DIR < <(python3 -c '
-import json, sys
-p = next(x for x in json.load(open(sys.argv[1]))["packages"] if x["name"] == "iBoot32Patcher")
-print(p["url"], p["sha256"], p["directory"])' "$REPO/build-support/dependencies.json")
-    IBP_SRC="$OBJ/iboot32patcher/$IBP_DIR"
-    if [ ! -d "$IBP_SRC" ]; then
-        mkdir -p "$OBJ/iboot32patcher"
-        curl -fsSL --retry 3 -o "$OBJ/iboot32patcher/$IBP_DIR.tar.gz" "$IBP_URL"
-        echo "$IBP_SHA  $OBJ/iboot32patcher/$IBP_DIR.tar.gz" | sha256sum -c -
-        tar -xzf "$OBJ/iboot32patcher/$IBP_DIR.tar.gz" -C "$OBJ/iboot32patcher"
-        patch -p1 -d "$IBP_SRC" < "$REPO/build-support/patches/iBoot32Patcher-ltm.patch"
+    if [ "$LT_JAILBREAK" = true ]; then
+        "$NDK_BIN/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
+            -o "$OUT/firmwarekit/android/jb-bunzip2" "$REPO/build-support/jb-bunzip2.c"
     fi
-    "$NDK_BIN/aarch64-linux-android29-clang" -O2 -Wno-multichar -Wno-int-conversion -I"$IBP_SRC" \
-        -Wl,-z,max-page-size=16384 "$IBP_SRC"/src/*.c -o "$OUT/firmwarekit/android/iBoot32Patcher"
-    # firmwarekit launches that patcher as "env <patcher> ...": a bare name, which Android's posix_spawn resolves
-    # against the working directory only. This shim is preloaded into firmwarekit and runs the patcher directly
-    # where env was asked for, logging the access and spawn calls a failure needs.
-    "$NDK_BIN/aarch64-linux-android29-clang" -O2 -fPIC -shared -Wl,-soname,libspawnshim.so \
-        -o "$OUT/firmwarekit/android/spawn-shim.so" "$REPO/Packages/FirmwareKit/build-support/spawn-shim.c" -ldl
-    # The jailbreak option installs Cydia by running the host's tar; Android has none, and toybox's has
-    # neither -k nor --exclude. The shim redirects /usr/bin/tar to this copy, and the Gradle build stages it
-    # as libjbTar.so when -Pjailbreak=true (the jailbreak-apk workflow; tests/jailbreak checks both).
-    "$NDK_BIN/aarch64-linux-android29-clang" -O2 -Wall -Wextra -Wl,-z,max-page-size=16384 \
-        -o "$OUT/firmwarekit/android/jb-tar" "$REPO/Packages/FirmwareKit/build-support/jb-tar.c" -lz
-    python3 "$REPO/Packages/FirmwareKit/build-support/stage-notices.py" "$OUT/firmwarekit/android/licenses" \
-        --checkouts "$REPO/Packages/FirmwareKit/.build-android/checkouts" \
-        --swift-license "$LT_SWIFT_ANDROID_BUNDLE/swift-android/swift-resources/usr/share/swift/LICENSE.txt" \
-        --source-reference "${LT_SOURCE_REFERENCE:-https://github.com/blake-lucas/LightTouch/tree/$(git -C "$REPO" branch --show-current)}"
-    python3 "$REPO/build-support/stage-iboot32patcher-notice.py" "$OUT/firmwarekit/android/licenses" "$IBP_SRC/LICENSE"
+    python3 "$REPO/crates/lighttouch-firmware/stage-notices.py" "$OUT/firmwarekit/android/licenses" --target aarch64-linux-android \
+        --source-reference "${LT_SOURCE_REFERENCE:-https://github.com/KlugKlugTG/Un1box/tree/$(git -C "$REPO" branch --show-current)}"
     ls -la "$OUT/firmwarekit/android"
 }
 
@@ -311,7 +311,7 @@ for a in "$@"; do
     --clean) clean=1 ;;
     -h|--help) sed -n 2,25p "$0"; exit 0 ;;
     all) targets+=(linux android portable-tests); [ -n "$LT_MAC" ] && targets+=(guest-package ltbench) ;;
-    linux-engine|linux|android-engine|android|portable-tests|firmwarekit|firmwarekit-android|guest-package|firmware-tools|ltbench) targets+=("$a") ;;
+    linux-engine|linux|android-engine|android|android-test|android-usb|portable-tests|firmwarekit|firmwarekit-android|guest-package|firmware-tools|ltbench) targets+=("$a") ;;
     *) echo "unknown target: $a (scripts/build.sh --help)" >&2; exit 2 ;;
     esac
 done
