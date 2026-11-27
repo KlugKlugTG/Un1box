@@ -53,7 +53,7 @@ fun angleProviderBundled(context: Context): Boolean = Build.SUPPORTED_ABIS.any {
 }
 
 /** User preferences, as Compose state backed by SharedPreferences. Read on the main thread. */
-class AppSettings(context: Context) {
+class AppSettings(private val context: Context) {
     private val prefs = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
 
     private inline fun <reified E : Enum<E>> enumPref(key: String, default: E) =

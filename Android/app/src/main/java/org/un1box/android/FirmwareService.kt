@@ -127,7 +127,7 @@ class FirmwareService : Service() {
             if (cancelling) PreparationNote.clear(this) else note("failed")
         } finally {
             process = null
-            log.close(); this.log = null
+            this.log = null
             if (awake.isHeld) awake.release()
             // Decrypted firmware is only worth keeping for another build of the same IPSW; it is large.
             cache.deleteRecursively()
