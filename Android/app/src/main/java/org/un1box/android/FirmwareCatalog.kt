@@ -35,16 +35,6 @@ internal data class CatalogFirmware(
         support == Support.EXPERIMENTAL && board == "n42ap" -> "Works on Un1box, but runs much slower than the other devices for now."
         else -> support.detail
     }
-    /**
-     * Why the prepare screen shows the Jailbreak switch turned off and locked for this firmware, or null where it can
-     * be turned on. firmwarekit refuses the same firmwares; the desktop's Firmware::jailbreak_unavailable says the same.
-     */
-    val jailbreakUnavailable: String? get() = when {
-        (version.substringBefore('.').toIntOrNull() ?: 0) < 2 -> "Needs iPhone OS 2.0 or later"
-        // Substrate's launchd hook (cynject from /etc/launchd.conf) hangs every boot after the first: docs/TODO.md.
-        board == "n72ap" -> "Not on iPod touch 2G yet: it wouldn't start up again after its first restart"
-        else -> null
-    }
 }
 
 /** How far a firmware has been tried: Un1box's own compatibility runs first, then the catalog's label. */

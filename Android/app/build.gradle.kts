@@ -8,9 +8,9 @@ val shutdownGraceMs = Regex("(?m)^#define\\s+LT_SHUTDOWN_GRACE_MS\\s+([0-9]+)u?\
 require(shutdownGraceMs > 0)
 // -Pjailbreak=true builds the jailbreak APK (the jailbreak-apk workflow passes it): every preparation
 // passes --jailbreak, so the device comes up with afc2 (the whole file system over USB), Cydia and
-// Substrate, and the small tar firmwarekit's Cydia step spawns as /usr/bin/tar is staged beside
-// firmwarekit. A normal build carries neither and prepares stock systems. The recipes that don't take
-// the option say so themselves (N45's: "the jailbreak option needs iPhone OS 2.0 or later").
+// Substrate, and jb-bunzip2 is staged as libjbBz2.so for the Jailbreak tab's .bz2 package indexes.
+// A normal build carries neither and prepares stock systems. The recipes that don't take the option
+// say so themselves (N45's: "the jailbreak option needs iPhone OS 2.0 or later"; N72's: "no jailbreak on the iPod touch 2G yet").
 val jailbreak = providers.gradleProperty("jailbreak").orElse("false").get().toBoolean()
 val gitCommit = providers.exec { commandLine("git", "-C", rootProject.projectDir.parentFile.absolutePath, "rev-parse", "--short", "HEAD") }
     .standardOutput.asText.map { it.trim() }.orElse("").get()

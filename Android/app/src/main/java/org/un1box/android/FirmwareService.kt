@@ -36,7 +36,7 @@ class FirmwareService : Service() {
         override fun supports(firmwareId: String): Boolean =
             File(applicationInfo.nativeLibraryDir, "libfirmwarekit.so").canExecute() &&
                 FirmwareCatalog.load(this@FirmwareService).any { it.id == firmwareId }
-        override fun start(firmwareId: String, ipswPath: String, trustedToolsRoot: String, bootromPath: String, jailbreak: Boolean,
+        override fun start(firmwareId: String, ipswPath: String, trustedToolsRoot: String, bootromPath: String,
                            uncheckedIpsw: Boolean): Bundle {
             check(consumed.compareAndSet(false, true)) { "A fresh firmware worker is required" }
             foreground(PREPARING)
@@ -47,7 +47,7 @@ class FirmwareService : Service() {
             destination = File(parent, "job-$job").absolutePath
             note("preparing")
             unchecked = uncheckedIpsw
-            Thread({ prepare(firmwareId, ipswPath, File(trustedToolsRoot), bootromPath, jailbreak || BuildConfig.JAILBREAK) }, "firmwarekit").start()
+            Thread({ prepare(firmwareId, ipswPath, File(trustedToolsRoot), bootromPath) }, "firmwarekit").start()
             return status()
         }
         override fun status(): Bundle = Bundle().apply {
@@ -73,7 +73,7 @@ class FirmwareService : Service() {
      * create into `destination`, the device folder the engine worker then moves into its library as it is
      * (adoptPrepared: no pack-base, no copy, no second hash). The IPSW is only read.
      */
-    private fun prepare(firmwareId: String, ipsw: String, tools: File, bootrom: String, jailbreak: Boolean) {
+    private fun prepare(firmwareId: String, ipsw: String, tools: File, bootrom: String) {
         // Preparation boots iOS (the keybag, the first start) against timeouts: the CPU stays awake while the phone
         // locks or the user switches away. The foreground service only keeps the process alive, not the CPU running.
         val awake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Un1box:preparation")
@@ -87,10 +87,10 @@ class FirmwareService : Service() {
         val log = Logs.Writer(logs, Logs.PREPARE).also { this.log = it }
         fun say(line: String) = log.write("[log] $line\n".toByteArray())
         say("Un1box ${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_COMMIT}) preparing $firmwareId from ${File(ipsw).name}" +
-            (if (jailbreak) ", jailbroken" else "") + (if (bootrom.isNotEmpty()) ", with a boot ROM" else "") +
+            (if (BuildConfig.JAILBREAK) ", jailbroken" else "") + (if (bootrom.isNotEmpty()) ", with a boot ROM" else "") +
             (if (unchecked) ", used anyway (not the version's own IPSW)" else "") +
             " on ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}")
-        AppLog.i("Preparation of $firmwareId started" + if (jailbreak) " (jailbreak)" else "")
+        AppLog.i("Preparation of $firmwareId started" + if (BuildConfig.JAILBREAK) " (jailbreak)" else "")
         val started = SystemClock.elapsedRealtime()
         try {
             val catalog = File(filesDir, "firmware-catalog.json")
@@ -100,12 +100,13 @@ class FirmwareService : Service() {
                 "--language", Locale.getDefault().toLanguageTag(),
                 // iOS 5 and later start at the Home screen, not Setup Assistant (ignored before 5, which has none)
                 "--skip-setup") +
-                // afc2 and Cydia with Substrate, from the bootstrap firmwarekit downloads beside its cache
-                (if (jailbreak) listOf("--jailbreak") else emptyList()) +
                 // the iPod touch 2G's keybag boot (iOS 4) runs its SecureROM, which no IPSW carries
                 (if (bootrom.isNotEmpty()) listOf("--bootrom", bootrom) else emptyList()) +
                 // the user chose "Use anyway" for an IPSW that isn't this version's own
-                (if (unchecked) listOf("--unchecked-ipsw") else emptyList()))
+                (if (unchecked) listOf("--unchecked-ipsw") else emptyList()) +
+                // This build prepares every device jailbroken (afc2, Cydia and Substrate, from the bootstrap firmwarekit
+                // downloads beside its cache). The recipes that don't support it refuse the option themselves (1.x, iPod touch 2G).
+                (if (BuildConfig.JAILBREAK) listOf("--jailbreak") else emptyList()))
             // create's own lease and boot logs; the device is the rest
             keepWorkLogs(out, log)
             writable(File(out, "work"))

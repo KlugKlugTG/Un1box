@@ -65,10 +65,15 @@ def service_passes_the_flag():
     service = read(SERVICE)
     require('listOf("--jailbreak")' in service and "BuildConfig.JAILBREAK" in service,
             "the worker never passes --jailbreak: a jailbreak build would prepare stock systems")
+    require("jailbreak || BuildConfig.JAILBREAK" not in service,
+            "FirmwareService mixes a per-preparation jailbreak flag with BuildConfig.JAILBREAK")
+    prepare_kt = read(ROOT / "Android" / "app" / "src" / "main" / "java" / "org" / "un1box" / "android" / "PrepareScreen.kt")
+    require("prepare_jailbreak" not in prepare_kt,
+            "PrepareScreen offers a per-device Jailbreak toggle, conflicting with the two-APK BuildConfig.JAILBREAK model")
     create = service.split('run(libs, listOf("create"', 1)[1][:1200]
     require("--jailbreak" in create,
             "the flag is not in the create command's arguments, so firmwarekit never hears it")
-    return "--jailbreak reaches firmwarekit create"
+    return "--jailbreak reaches firmwarekit create only through BuildConfig.JAILBREAK"
 
 
 def firmwarekit_extracts_cydia_in_process():

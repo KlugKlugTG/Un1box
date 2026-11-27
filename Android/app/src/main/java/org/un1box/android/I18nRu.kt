@@ -892,7 +892,6 @@ internal object I18nRu {
         put("Use anyway", "Всё равно использовать")
         put("Boot ROM", "Boot ROM")
         put("64 KB · downloaded for you", "64 КБ · скачивается автоматически")
-        put("Adds Cydia and afc2", "Добавляет Cydia и afc2")
         put("You can leave Un1box while it works.", "Вы можете свернуть Un1box, пока идёт работа.")
         put("Downloading, then preparing…", "Загрузка, затем подготовка…")
         put("Use my own file", "Выбрать свой файл")
@@ -919,8 +918,6 @@ internal object I18nRu {
         put("Finishing up", "Завершение")
         // Firmware / Services / MainActivity / Exit diagnosis
         put("Works on Un1box, but runs much slower than the other devices for now.", "Работает в Un1box, но пока значительно медленнее других устройств.")
-        put("Needs iPhone OS 2.0 or later", "Требуется iPhone OS 2.0 или новее")
-        put("Not on iPod touch 2G yet: it wouldn't start up again after its first restart", "Пока не работает на iPod touch 2G: после первой перезагрузки устройство не запустится снова")
         put("Device setup", "Настройка устройства")
         put("Tap to see its progress.", "Нажмите, чтобы посмотреть прогресс.")
         put("Open Un1box to add it.", "Откройте Un1box, чтобы добавить его.")

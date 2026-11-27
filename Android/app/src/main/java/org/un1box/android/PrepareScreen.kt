@@ -69,8 +69,6 @@ internal class PrepareState {
     var importPhase by mutableStateOf("")
     var importProgress by mutableFloatStateOf(-1f)
     var showBetas by mutableStateOf(false)
-    /** afc2 and Cydia with Substrate: firmwarekit's `create --jailbreak`, downloaded while it prepares. */
-    var jailbreak by mutableStateOf(false)
     val firmware get() = catalog.firstOrNull { it.id == firmwareId }
     val ipswReady get() = ipswPath.isNotEmpty() && ipswFor == firmwareId
     /** The boot ROM [firmware]'s device starts from; null when it starts from its prepared files. */
@@ -367,16 +365,7 @@ private fun ColumnScope.FilesStep(state: PrepareState, busy: Boolean, onChooseIp
             state.romError.isNotEmpty() -> Text(state.romError, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
     }
-    Spacer(Modifier.height(10.dp))
-    // afc2 and Cydia with Substrate, from Legacy iOS Kit's bootstrap (firmwarekit downloads it while it prepares). Off
-    // and locked, saying why, where the firmware can't be jailbroken.
-    val jailbreakUnavailable = firmware.jailbreakUnavailable
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).ios6CellLacquer()) {
-        SwitchRow(LtIcons.Bag, "Jailbreak", jailbreakUnavailable ?: "Adds Cydia and afc2",
-            state.jailbreak && jailbreakUnavailable == null, tag = "prepare_jailbreak",
-            enabled = jailbreakUnavailable == null) { if (!busy) state.jailbreak = it }
-    }
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(12.dp))
     val cost = preparationCost(firmware)
     Text("Takes ${cost.time} and needs about ${cost.space} free. " + cost.note.ifEmpty { "You can leave Un1box while it works." },
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
