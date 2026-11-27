@@ -12,6 +12,7 @@
 #   portable-tests build/obj/portable-tests (ctest)            Portable/ unit tests
 #   firmwarekit    build/firmwarekit/linux/                     firmwarekit (Swift) + lighttouch-oneshot, x86_64
 #   firmwarekit-android build/firmwarekit/android/              the same for arm64 Android (Swift SDK for Android)
+#   firmwarekit-a6-android build/firmwarekit/android/firmwarekit-a6  the iPhone 5's preparer (Rust, crates/)
 #   guest-package  build/guest-package/{armv6,armv7}.itpack   on the Mac ($LT_MAC), Xcode + old SDKs
 #   firmware-tools build/firmware-tools/                       on the Mac: the helpers firmwarekit create bakes in
 #                                                             (--guest-tools; contrib/export-guest-artifacts.sh)
@@ -161,11 +162,21 @@ build_android() {
     # firmwarekit prepares devices from IPSWs on the phone (build/firmwarekit/android): rebuilt every time (SwiftPM is
     # incremental), or the APK carries whatever firmwarekit and lighttouch-oneshot were last built.
     build_firmwarekit_android
+    # The iPhone 5's preparer (crates/lighttouch-firmware, Rust): a binary of its own in the same folder, so the
+    # devices prepared with the Swift kit keep its recipes. A machine without cargo still builds an APK; the
+    # iPhone 5 then has no versions to prepare and the app says so when its preparation is asked for.
+    build_firmwarekit_a6_android
     # Guest tools the APK carries (new devices get the packages; firmwarekit bakes the helpers into the systems it
     # prepares); without them the APK still builds, but new devices get no guest tools and preparation cannot run.
     local tools="${LT_GUEST_TOOLS:-$OUT/firmware-tools}" guest=()
     if [ -f "$tools/armv6.itpack" ] && [ -f "$tools/armv7.itpack" ] && [ -f "$tools/it_seal" ]; then guest=(-PguestToolsDir="$tools")
     else echo "warning: no guest packages and helpers in $tools (scripts/build.sh firmware-tools, or set LT_GUEST_TOOLS); the APK will carry no guest tools" >&2; fi
+    # The iPhone 5's own helpers (it_initialize, it_mobilegestalt, launchd-cache-template, it_agent, httpget-armv7,
+    # libappsync.dylib) ride beside them under assets/guest-tools-a6; export-guest-artifacts.sh writes both sets into
+    # one folder, so the same directory serves the two properties.
+    local a6=()
+    if [ -f "$tools/it_initialize" ] && [ -f "$tools/httpget-armv7" ] && [ -f "$tools/launchd-cache-template" ]; then a6=(-PguestToolsA6Dir="$tools")
+    else echo "warning: no iPhone 5 helpers in $tools (qemu-ios contrib/export-guest-artifacts.sh writes them); the APK cannot prepare an iPhone 5" >&2; fi
     # A non-debuggable build runs lint-vital, which needs an artifact the offline Gradle cache lacks.
     local lint=()
     [ "$LT_DEBUGGABLE" = false ] && lint=(-x lintVitalAnalyzeDebug -x lintVitalReportDebug -x lintVitalDebug)
@@ -183,7 +194,7 @@ build_android() {
         -PangleArm64Notices="$angle/notices" \
         -PangleArm64ManifestSha256=3abde58ea5d9863453b12e3d7f67eff7c96ee989fbcfa4c00a16859cfd694945 \
         -PangleArm64NoticesSha256=63d2221b0fab9bff7788dc0c4e9a94c74079b3ab5ed3c09bd3ef72c909d1f924 \
-        -Pdebuggable="$LT_DEBUGGABLE" -Pprofileable="$LT_PROFILEABLE" "${guest[@]}" "${lint[@]}" :app:assembleDebug > "$OBJ/android-gradle.out" 2>&1) ||
+        -Pdebuggable="$LT_DEBUGGABLE" -Pprofileable="$LT_PROFILEABLE" "${guest[@]}" "${a6[@]}" "${lint[@]}" :app:assembleDebug > "$OBJ/android-gradle.out" 2>&1) ||
         { grep -A12 "What went wrong" "$OBJ/android-gradle.out" >&2 || tail -30 "$OBJ/android-gradle.out" >&2; exit 1; }
     cp "$OBJ/android-gradle/app/outputs/apk/debug/app-debug.apk" "$OUT/android/Un1box-debug.apk"
     echo "$OUT/android/Un1box-debug.apk"
@@ -259,6 +270,30 @@ print(p["url"], p["sha256"], p["directory"])' "$REPO/build-support/dependencies.
     ls -la "$OUT/firmwarekit/android"
 }
 
+# The iPhone 5's preparer: the Rust firmwarekit taken from LightTouch (Cargo.toml, crates/), which carries the N42
+# recipe, the A6 restore and its first boot. It reads the same catalog and takes the same arguments as the Swift
+# firmwarekit, and lands beside it as firmwarekit-a6 (the APK stages it as libfirmwarekit_a6.so).
+#   rustup target add aarch64-linux-android       (once; docs/BUILDING.md)
+build_firmwarekit_a6_android() {
+    local cc="$NDK_BIN/aarch64-linux-android29-clang"
+    if ! command -v cargo >/dev/null; then
+        echo "warning: cargo is not installed, so no iPhone 5 preparer goes into the APK (rustup, then cargo; docs/BUILDING.md)" >&2
+        return 0
+    fi
+    log "firmwarekit-a6 (android arm64, Rust)"
+    need "$cc" "the Android NDK's clang"
+    mkdir -p "$OUT/firmwarekit/android"
+    # 16 KiB LOAD alignment, like every other executable the APK carries (Android/scripts/check-apk.py).
+    env CC_aarch64_linux_android="$cc" AR_aarch64_linux_android="$NDK_BIN/llvm-ar" \
+        CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$cc" \
+        RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384" \
+        cargo build --release --manifest-path "$REPO/Cargo.toml" -p lighttouch-firmware \
+        --target aarch64-linux-android --target-dir "$OBJ/cargo-target" 2>&1 | tail -3
+    cp "$OBJ/cargo-target/aarch64-linux-android/release/firmwarekit" "$OUT/firmwarekit/android/firmwarekit-a6"
+    "$NDK_BIN/llvm-strip" "$OUT/firmwarekit/android/firmwarekit-a6" 2>/dev/null || true
+    ls -la "$OUT/firmwarekit/android"
+}
+
 mac() { [ -n "$LT_MAC" ] || { echo "$1 builds on a Mac: set LT_MAC=user@host (docs/BUILDING.md)" >&2; exit 1; }; }
 
 build_guest_package() {
@@ -311,7 +346,7 @@ for a in "$@"; do
     --clean) clean=1 ;;
     -h|--help) sed -n 2,25p "$0"; exit 0 ;;
     all) targets+=(linux android portable-tests); [ -n "$LT_MAC" ] && targets+=(guest-package ltbench) ;;
-    linux-engine|linux|android-engine|android|portable-tests|firmwarekit|firmwarekit-android|guest-package|firmware-tools|ltbench) targets+=("$a") ;;
+    linux-engine|linux|android-engine|android|portable-tests|firmwarekit|firmwarekit-android|firmwarekit-a6-android|guest-package|firmware-tools|ltbench) targets+=("$a") ;;
     *) echo "unknown target: $a (scripts/build.sh --help)" >&2; exit 2 ;;
     esac
 done

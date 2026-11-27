@@ -12,6 +12,9 @@ tools/activation/build/
 build/
 docs/matrix-results.json.lock
 
+# Rust build output and the crates that need nothing built (the iPhone 5's firmwarekit, crates/)
+/target/
+
 # Working notes and generated reports stay local; the user docs below are tracked
 docs/*
 !docs/ASSETS.md

@@ -16,6 +16,7 @@ this fork started from has been removed; the macOS port is the shared desktop UI
 | `LightTouchDevice/` | The macOS per-device helper: one QEMU instance, frames over IOSurface, control over the `DeviceRuntime` link, the device's web proxy |
 | `Packages/HostRuntime/` | Boards, boot recipes, device lock, storage types shared by the Swift code |
 | `Packages/DeviceRuntime/` | The host-helper link (`DeviceLink`, `DeviceRendezvous`, the `LTMLinkC` module) |
+| `crates/` | The Rust `firmwarekit` taken from LightTouch (`lighttouch-firmware`), which carries the iPhone 5's N42 recipe, its A6 restore and first boot; root `Cargo.toml`/`Cargo.lock` are its workspace |
 | `Packages/FirmwareKit/` | `FirmwareKit` (IPSW to device), `FirmwareSchema`, the `firmwarekit` CLI and `CActivation` (the activation recognizer; `Portable/firmware` compiles the same source) |
 | `Packages/LightTouchCore/` | The Swift domain logic `LightTouchDesktopHost` links (library, session, catalog, guest, input) |
 | `Packages/DeviceServices/` | `HostServiceWire` and `HostServiceClient`, which `LightTouchCore` uses to talk to a device's stock lockdown services |
@@ -36,7 +37,8 @@ firmwarekit create --catalog Portable/firmware/firmware-catalog.json \
   --helper /path/to/LightTouchDevice --guest-tools /path/to/ipad-guest-tools
 ```
 
-Catalog availability is distinct from measured acceptance.
+Catalog availability is distinct from measured acceptance. The iPhone 5's `n42ap-14G61` entry is the one row
+prepared by the Rust `firmwarekit` (`crates/`); everything else goes through `Packages/FirmwareKit`.
 
 ## Repositories
 

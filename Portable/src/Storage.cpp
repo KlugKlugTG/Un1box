@@ -272,8 +272,8 @@ static std::string dump_digest_cache(const DigestCache &cache) {
 }
 // How each board firmwarekit prepares boots (Light Touch for Mac's BootRecipe and Board.requiredFiles): the
 // S5L8900 (iPod touch 1G, original iPhone) and S5L8720 (iPod touch 2G) from their SecureROM, which the caller
-// supplies; the S5L8920/S5L8922 (iPhone 3GS, iPod touch 3G) and A4 boards from prepared files alone. The engine
-// names the -M machine.
+// supplies; the S5L8920/S5L8922 (iPhone 3GS, iPod touch 3G), A4 and A6 (iPhone 5, booted as the A4 boards) boards
+// from prepared files alone. The engine names the -M machine.
 enum class BootFamily { S5L8900, S5L8720, A4 };
 struct BootRoute {
     BootFamily family;
@@ -287,7 +287,8 @@ static BootRoute boot_route(const std::string &board, const Json &lock) {
         {"n45ap", {BootFamily::S5L8900, false}}, {"m68ap", {BootFamily::S5L8900, false}},
         {"n72ap", {BootFamily::S5L8720, false}}, {"n18ap", {BootFamily::A4, false}},
         {"n88ap", {BootFamily::A4, true}},       {"k48ap", {BootFamily::A4, false}},
-        {"n81ap", {BootFamily::A4, false}},      {"n90ap", {BootFamily::A4, true}}};
+        {"n81ap", {BootFamily::A4, false}},      {"n90ap", {BootFamily::A4, true}},
+        {"n42ap", {BootFamily::A4, true}}};
     const auto b = boards.find(board);
     require(b != boards.end(), "no boot route for board " + board, LT_UNSUPPORTED);
     BootRoute r{b->second.first, "", b->second.second, {}};
@@ -1351,6 +1352,10 @@ lt_status lt_device_boot_argv(lt_device *d, const lt_boot_config *c, int *argc, 
         const std::string board = d->lock.at("board").string();
         const auto route = lt::boot_route(board, d->lock);
         const bool n72 = route.family == lt::BootFamily::S5L8720, s5l8900 = route.family == lt::BootFamily::S5L8900;
+        // The iPhone 5 (Light Touch for Mac's BootRecipe.iPhone5): no die-id option, its Wi-Fi a USB HSIC device
+        // given the identity's MAC, its modem's IMEI a -global, and multi-threaded TCG for its two cores.
+        const bool a6 = board == "n42ap";
+        std::string wifi_mac;
         if (route.needs_bootrom())
             lt::require(c->bootrom_path && lt::fs::is_regular_file(c->bootrom_path),
                         "this device needs its boot ROM (" + std::string(s5l8900 ? "S5L8900" : "iBoot-240.4") + ")");
@@ -1397,7 +1402,9 @@ lt_status lt_device_boot_argv(lt_device *d, const lt_boot_config *c, int *argc, 
             option("nand-overlay", (d->state / "nand").string());
             if (lt::fs::exists(d->base / "identity.json")) {
                 auto identity = lt::parse(lt::read_file(d->base / "identity.json"));
-                if (const auto *die = identity.find("die-id")) {
+                if (const auto *mac = identity.find("wifi-mac"); a6 && mac && mac->kind == lt::Json::String)
+                    wifi_mac = mac->string();
+                if (const auto *die = identity.find("die-id"); die && !a6) {
                     lt::require(die->kind == lt::Json::Array, "invalid die-id");
                     std::string value;
                     for (const auto &word : die->array) {
@@ -1415,6 +1422,7 @@ lt_status lt_device_boot_argv(lt_device *d, const lt_boot_config *c, int *argc, 
         // The S5L8900's NOR is a pflash drive (below); the others' a machine property.
         if (nor && !s5l8900)
             option("nor-rw", (d->state / "nor.bin").string());
+        std::string imei;
         std::string package =
             c->guest_package_path && *c->guest_package_path ? c->guest_package_path : lt::prepared_guest_package(d);
         if (!package.empty())
@@ -1429,8 +1437,14 @@ lt_status lt_device_boot_argv(lt_device *d, const lt_boot_config *c, int *argc, 
                             "invalid machine option value");
                 static const std::set<std::string> safe_options = {"wifi-mac", "bt-mac", "ecid", "aes-uid",
                                                                    "rtc-epoch", "imei"};
-                lt::require(safe_options.count(v.first), "unsupported prepared machine property: " + v.first,
-                            LT_UNSUPPORTED);
+                // The iPhone 5's: its PPN store, its cameras and a boot without the verbose handoff (N42Board).
+                static const std::set<std::string> a6_options = {"ppn", "camera", "quiet-boot", "imei"};
+                lt::require(a6 ? a6_options.count(v.first) : safe_options.count(v.first),
+                            "unsupported prepared machine property: " + v.first, LT_UNSUPPORTED);
+                if (a6 && v.first == "imei") {
+                    imei = v.second.kind == lt::Json::String ? v.second.string() : v.second.text;
+                    continue;
+                }
                 // FirmwareKit leaves a property the unit has no value for empty: the machine's default then.
                 if (v.second.kind == lt::Json::String && v.second.string().empty())
                     continue;
@@ -1442,6 +1456,21 @@ lt_status lt_device_boot_argv(lt_device *d, const lt_boot_config *c, int *argc, 
         if (c->headphones)
             option("headphones", "on");
         d->args = {"LightTouch", "-M", machine};
+        if (a6) {
+            // Its Wi-Fi is a USB HSIC device on the EHCI; the A6 machine creates no default backend, so the app
+            // gives it the same user network every other board's Wi-Fi gets (off the LAN, IPv4 only), and the
+            // identity's MAC so the device tree's own address matches.
+            d->args.insert(d->args.end(), {"-netdev", "user,id=wifi0,lan=off,ipv6=off"});
+            // Its modem has a network of its own, the same policy as Wi-Fi (BootRecipe.iPhone5 derives cell0 from
+            // wifi0), so a data session reaches the same backend.
+            d->args.insert(d->args.end(), {"-netdev", "user,id=cell0,lan=off,ipv6=off"});
+            std::string hsic = "usb-bcm-hsic,bus=usb-bus.0,port=4";
+            if (!wifi_mac.empty())
+                hsic += ",mac=" + escape(wifi_mac);
+            d->args.insert(d->args.end(), {"-device", hsic});
+            if (!imei.empty())
+                d->args.insert(d->args.end(), {"-global", "ios-baseband.imei=" + escape(imei)});
+        }
         // Chain TCG jumps across guest pages: iOS never remaps a code page to other code
         // in place (the engine's cross-page-chain property documents the assumption).
         // Interleaved A/B: Poco F3 Flight Control 19.8 -> 24.5 fps (6 pairs), Pixel 10
@@ -1451,8 +1480,19 @@ lt_status lt_device_boot_argv(lt_device *d, const lt_boot_config *c, int *argc, 
         const char *chain = getenv("LT_CROSS_PAGE_CHAIN");
         const char *indirect = getenv("LT_INDIRECT_CACHE");
         std::string accel = "tcg";
+        if (a6) {
+            // Its two application cores on two threads. Their TBs share the indirect caches, which the engine
+            // allows on this board only (tcg_indirect_cache_parallel). Epic Citadel on a Ryzen 3700X, interleaved
+            // pairs: 31.9 fps -> 36.6 with chaining, 39.9 with both.
+            accel += ",thread=multi";
+        }
         if (!chain || strcmp(chain, "off") != 0) accel += ",cross-page-chain=on";
         if (!indirect || strcmp(indirect, "off") != 0) accel += ",indirect-cache=on";
+        if (a6) {
+            // More options for A/B runs, last so that they win (e.g. LT_A6_TCG=thread=single).
+            if (const char *extra = getenv("LT_A6_TCG"); extra && *extra)
+                accel += std::string(",") + extra;
+        }
         if (accel != "tcg") {
             d->args.push_back("-accel");
             d->args.push_back(accel);

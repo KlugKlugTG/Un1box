@@ -20,12 +20,28 @@ scripts/build.sh --clean android       # reconfigure from scratch (after a confi
 | `android` | the engine, `firmwarekit-android` and `build/android/Un1box-debug.apk` (arm64-v8a, debug) | `Android/` Gradle |
 | `firmwarekit` | `build/firmwarekit/linux/` (`firmwarekit`, `lighttouch-oneshot`) | `Packages/FirmwareKit` (Swift) and `Portable/oneshot`; links the system's OpenSSL 3 `libcrypto` (`libssl-dev`) |
 | `firmwarekit-android` | `build/firmwarekit/android/` (the same, arm64, plus `licenses/`) | the same with the Swift SDK for Android (its static `libcrypto`) and NDK clang |
+| `firmwarekit-a6-android` | `build/firmwarekit/android/firmwarekit-a6` (the APK stages it as `libfirmwarekit_a6.so`) | `crates/` (Rust, the iPhone 5's `firmwarekit`, taken from LightTouch) with the NDK's clang and `llvm-ar`. Needs `cargo` and `rustup target add aarch64-linux-android`; without them the APK still builds, without an iPhone 5 preparer |
 | `portable-tests` | test results | `Portable/` with `-DLIGHTTOUCH_BUILD_TESTS=ON` |
 | `guest-package` | `build/guest-package/{armv6,armv7}.itpack`, `build.log`, `VERSION`, `SHA256SUMS` | qemu-ios `contrib/guest-package/build.sh`, run on the Mac over ssh |
 | `ltbench` | `build/ltbench/LTBench.ipa` | `tools/guestbench/build.sh`, on the Mac over ssh |
 
 Windows and macOS app builds are not in this script. `Desktop/build.py` runs their recipes on their
 own hosts (`Desktop/README.md`), and `Linux/packaging/README.md` has the AppImage packaging.
+
+## The iPhone 5 and the engine
+
+The iPhone 5 (N42AP, S5L8950/A6) is the one board whose machine the portable engine build does not select: the A6
+machine is qemu-ios `hw/arm/s5l8950.c`, compiled with `CONFIG_IPAD1`, and a given engine ref either carries it or
+does not. The Android APK's `engine_ref` input picks the ref: the default `perf` has no A6 machine, so an iPhone 5
+there prepares nothing (`engine does not expose board: n42ap`). Build the APK with a ref that has the file (for
+example the engine's `main`) and, when that ref's `configs/devices/arm-softmmu/portable.mak` lacks the A6's USB host,
+the workflow appends the EHCI/OHCI selections the machine's device tree describes.
+
+The A6 boot's own options live in `Portable/src/Storage.cpp` (`board == "n42ap"`): `-accel
+tcg,thread=multi,cross-page-chain=on,indirect-cache=on` (`LT_A6_TCG` appends, e.g. `thread=single`), the Wi-Fi as a
+`usb-bcm-hsic` device on the EHCI with a `wifi0` backend (and `cell0` for the modem), and the identity's MAC and IMEI
+passed as `-device ...mac=` and `-global ios-baseband.imei=`. `LT_CROSS_PAGE_CHAIN` and `LT_INDIRECT_CACHE` turn the
+two caches off for A/B on every board.
 
 ## Engine changes
 
@@ -74,6 +90,7 @@ tracked). The defaults are the development machine's paths.
 | `ANDROID_HOME`, `ANDROID_NDK_VERSION`, `JAVA_HOME` | `~/Android/Sdk`, `28.2.13676358`, JDK 17 | Android SDK, NDK and JDK (`Android/README.md` lists the pinned tool versions) |
 | `LT_SWIFT_ENV`, `LT_SWIFT_ANDROID_SDK` | `~/.local/share/swiftly/env.sh`, `swift-6.4.1-RELEASE_android` (target `aarch64-unknown-linux-android29`) | Swift 6.4.1 (swiftly) and the Swift SDK for Android that `firmwarekit` and `firmwarekit-android` build with. The SDK's static runtime needs NDK r30's libc++; relink the bundle to NDK r30 (`setup-android-sdk.sh`) |
 | `LT_GUEST_TOOLS` | `build/firmware-tools` | the guest tools the APK carries (`-PguestToolsDir`): `armv6.itpack` and `armv7.itpack`, which new devices get, and the helpers IPSW preparation installs (`it_seal` and the rest; `scripts/build.sh firmware-tools` on the Mac) |
+| `LT_GUEST_TOOLS`, `-PguestToolsA6Dir` | the same folder | the iPhone 5's own helpers (`it_initialize`, `it_mobilegestalt`, `launchd-cache-template`, `it_agent`, `httpget-armv7`, `libappsync.dylib`), staged under `assets/guest-tools-a6`; qemu-ios `contrib/export-guest-artifacts.sh` writes them beside the packages, and `ci/guest-package.yml` publishes them as the `Un1box-guest-tools-a6` artifact |
 | `LT_MAC` | unset | `user@host` of a Mac for `guest-package` and `ltbench` |
 | `LT_MAC_DEVELOPER_DIR`, `LT_MAC_IPAD_SDK` | Xcode.app; `~/Developer/ipod2g-re/OldSDK/iPhoneOS3.2.sdk` on the Mac | see the Mac below |
 | `JOBS` | `nproc` | parallel jobs |

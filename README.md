@@ -40,6 +40,7 @@ Un1box is still early and things can change between versions.
 | iPod touch 4G | 6.1.6 | **Tested**: on a Pixel 10, Infinity Blade and Infinity Blade II run at full speed and Epic Citadel at 60 fps. Most other games, such as Jetpack Joyride, Doodle Jump and Real Racing, run at or near 60 fps on recent phones. |
 | iPhone 3GS | 5.1.1 | **Tested, slow** |
 | iPhone 4 | 4.2.1, 4.3.5 | **Tested, slow** |
+| iPhone 5 | 10.3.4 (14G61) | **In progress**: the catalog row, its Rust preparer (`crates/`, built as `libfirmwarekit_a6.so`) and the app's side are here, but the engine the APK builds (`perf`) has no iPhone 5 machine yet, so the version shows and does not prepare or start until the APK is built with an engine ref that carries `hw/arm/s5l8950.c` (`engine_ref`). Heavy: 3 GB prepared, ~10 GB peak, 20 to 40 minutes to prepare. |
 | iPod touch 1G, original iPhone | iPhone OS 1 | **Doesn't start yet**: they stop at a white screen after they are set up. Upstream's finding, rechecked 2026-11-01; not run on Un1box. |
 | Others in the [firmware catalog](Portable/firmware/firmware-catalog.json) | iPhone OS 1 to iOS 7 | Can be prepared and tried; not yet checked on Un1box. [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) records what has been run. |
 

@@ -562,6 +562,21 @@ operation). Baselines, engine `16c09e7fe3` (Poco: ic8 APK with `LT_TLB_BANKS=off
 The same Poco and APK measured 13.2 µs and 16.6 µs `rpc` on two boots, and `icall` 31 and 63 ns:
 absolute numbers move between boots, so compare interleaved runs as with games.
 
+### iPhone 5, iOS 10.3.4 (A6): the boot options this port sets
+
+The iPhone 5 arrived with LightTouch's own measurements on its engine; this fork's app passes the same options
+(`Portable/src/Storage.cpp`) but has not run the device yet (the engine ref the APK builds does not carry the A6
+machine; [TODO.md](TODO.md)). An interleaved A/B, Epic Citadel on a Ryzen 7 3700X, in pairs:
+
+| Option | Result |
+| --- | --- |
+| `-accel tcg,thread=multi` + `cross-page-chain=on` | 31.9 → 36.6 fps (4 boots, every round faster); core 0's CPU per frame 29.0 → 25.0 ms host-side |
+| ↳ and `indirect-cache=on` | 39.9 fps with both; `LT_CROSS_PAGE_CHAIN=off` / `LT_INDIRECT_CACHE=off` turn each off, `LT_A6_TCG` appends engine accel options (e.g. `thread=single`) |
+
+Order of magnitude on a phone (upstream, Poco F3): preparing 14G61 takes 1221 s and peaks at 8.0 + 2.0 GB, so the app
+asks for ~10 GB free and warns that it takes 20 to 40 minutes. Once a build carries the machine, the entries above
+should be re-measured here.
+
 ## Current state and next targets
 
 Game frame rates, from the measurements above (full speed from the desktop runs; "—" was not

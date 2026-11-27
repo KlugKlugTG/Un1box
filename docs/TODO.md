@@ -16,9 +16,27 @@ tested only the iPad on 3.2, 3.2.2 and 4.2.1 and the iPod touch 2G on 2.2, 2.2.1
 | iPod touch 4G (n81ap) | 6.1.6 (10B500) | its last iOS, widest app range of the iPods | Tested; most games at or near 60 fps on a Poco F3 (Jetpack Joyride's title ~55, Epic Citadel ~30) |
 | iPhone 4 (n90ap) | 6.1.3 (10B329) | its last iOS 6 (6.1.6 shipped only for the 3GS and iPod touch 4G); wide app range | not run off the Mac |
 
-Later: the iPhone 4 on 4.2.1/4.3.5 and the 3GS on 5.1.1 (Tested, slow), the iPod touch 3G 4.2.1 (Tested), the
-iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 7 (skipped for now).
+Later: the iPhone 5 on 10.3.4 (below), the iPhone 4 on 4.2.1/4.3.5 and the 3GS on 5.1.1 (Tested, slow), the iPod
+touch 3G 4.2.1 (Tested), the iPad, the iPod touch 1G and the original iPhone (never booted off the Mac), iOS 7
+(skipped for now).
 
+- [ ] iPhone 5 (n42ap, S5L8950/A6, iOS 10.3.4/14G61): the device is in the app (skin, specs, "20 to 40 minutes"
+  preparation note), its catalog row is in `Portable/firmware/firmware-catalog.json`, and its preparer is the Rust
+  `firmwarekit` taken from LightTouch (`crates/`, built into the APK as `libfirmwarekit_a6.so`) because the Swift
+  kit has no N42 recipe. `Portable/src/Storage.cpp` boots it as upstream does (`thread=multi` TCG, the HSIC Wi-Fi,
+  `cell0`, the identity's MAC and IMEI). **Open: the engine.** The A6 machine is qemu-ios `hw/arm/s5l8950.c`
+  (compiled with `CONFIG_IPAD1`), and the engine ref the APK defaults to (`perf`) does not carry it, so the version
+  shows and does not prepare (see `docs/BUILDING.md`). Then a first run on a phone: upstream reached the Home screen
+  on 14G61 and prepared it on a Poco F3 in 1221 s, 8 GB peak (ours should be checked for space and time).
+- [ ] iPhone 5: the camera stays off in the app (`cameraWanted = false`), as on the other boards: the picture is
+  still wrong there. The engine's H4 ISP needs its A6 checks before it can be offered.
+- [ ] iPhone 5: Tiny Wings 2.3 installs at preparation but SpringBoard refuses to launch it (upstream, `n42ap-14G61`).
+- [ ] iPhone 5: the licence bundle. The APK's `assets/licenses/firmwarekit` is the Swift kit's; the Rust kit links
+  its own crates (rusqlite, ureq, zip, rsa, ...), and `crates/lighttouch-firmware/stage-notices.py` writes their
+  notices (`manifest.json` in the schema the licence screen reads). Until it is staged, one folder cannot describe
+  both binaries: decide whether to merge the two manifests or give the iPhone 5's kit a folder of its own.
+- [ ] iPhone 5 on desktop Mesa 25: one iOS 10 shader using `#extension GL_EXT_separate_shader_objects` fails the
+  GLSL 1.20 translation, so one program does not link; the Home screen still draws (upstream's report).
 - [ ] Bring up the iPhone 4 on 6.1.3: prepare on Linux and the Poco, `compat.py` and `services.py` to `clean`.
 - [ ] iPod touch 1G / original iPhone white screen: the S5L8900's iBoot never boots the kernel after preparation
   (upstream rechecked 2026-11-01). They now show **Doesn't start yet** in the app's device and version lists.

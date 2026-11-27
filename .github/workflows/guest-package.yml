@@ -122,6 +122,39 @@ jobs:
           test -s "$OUT/armv7.itpack"
           shasum -a 256 "$OUT/armv6.itpack" "$OUT/armv7.itpack" | tee "$OUT/SHA256SUMS"
 
+      # The iPhone 5's helpers the Rust firmwarekit's N42 recipe reads (it_initialize, it_mobilegestalt,
+      # launchd-cache-template, it_agent, httpget-armv7, libappsync.dylib), exported by the same script that writes
+      # the other devices' tools. An engine checkout without that script (older branches) skips them in words.
+      - name: Export the iPhone 5 tools
+        run: |
+          set -euo pipefail
+          if [ ! -f qemu-ios/contrib/export-guest-artifacts.sh ]; then
+            echo "::warning::this engine checkout has no contrib/export-guest-artifacts.sh; the APK will carry no iPhone 5 tools"
+            exit 0
+          fi
+          OUT="$RUNNER_TEMP/guest-export"
+          rm -rf "$OUT"
+          if ! ARMV6_SDK="$RUNNER_TEMP/guest-sdks/iPhoneOS3.1.3.sdk" IPAD_SDK="$RUNNER_TEMP/guest-sdks/iPhoneOS3.2.sdk" \
+               bash qemu-ios/contrib/export-guest-artifacts.sh "$OUT" > "$RUNNER_TEMP/guest-export.log" 2>&1; then
+            tail -200 "$RUNNER_TEMP/guest-export.log"
+            exit 1
+          fi
+          A6="$RUNNER_TEMP/guest-package/a6-tools"
+          rm -rf "$A6"; mkdir -p "$A6"
+          for tool in it_initialize it_mobilegestalt launchd-cache-template it_agent httpget-armv7 libappsync.dylib; do
+            if [ -s "$OUT/ipad-guest-tools/$tool" ]; then cp "$OUT/ipad-guest-tools/$tool" "$A6/"; fi
+          done
+          test -s "$A6/it_initialize"
+          ls -la "$A6"
+
+      - name: Upload the iPhone 5 tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: Un1box-guest-tools-a6
+          path: ${{ runner.temp }}/guest-package/a6-tools/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Upload only the guest packages
         uses: actions/upload-artifact@v4
         with:

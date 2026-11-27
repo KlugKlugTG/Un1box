@@ -526,6 +526,21 @@ jobs:
           install -m 0644 "$PACKAGE_DIR/armv7.itpack" ci/guest-tools/armv7.itpack
           echo "GUEST_PACKAGE_RUN_ID=$SELECTED_RUN" >> "$GITHUB_ENV"
           echo "Overlaid serial-42 armv6/armv7 itpacks from workflow run $SELECTED_RUN."
+          # The iPhone 5's helpers (it_initialize, it_mobilegestalt, launchd-cache-template, it_agent,
+          # httpget-armv7, libappsync.dylib), exported beside the other devices' tools. Without them the APK
+          # still prepares every older device; the iPhone 5's preparation then refuses, naming what it lacks.
+          TOOLS_A6="$RUNNER_TEMP/guest-tools-a6"
+          rm -rf "$TOOLS_A6"; mkdir -p "$TOOLS_A6"
+          if gh run download "$SELECTED_RUN" --repo "$GITHUB_REPOSITORY" --name Un1box-guest-tools-a6 --dir "$TOOLS_A6" 2>/dev/null; then
+            rm -rf ci/guest-tools-a6; mkdir -p ci/guest-tools-a6
+            cp -R "$TOOLS_A6"/. ci/guest-tools-a6/
+            for tool in it_initialize it_mobilegestalt launchd-cache-template it_agent httpget-armv7 libappsync.dylib; do
+              test -s "ci/guest-tools-a6/$tool" || { echo "::warning::the iPhone 5 tools lack $tool"; break; }
+            done
+            echo "Staged the iPhone 5's guest tools from workflow run $SELECTED_RUN."
+          else
+            echo "::warning::workflow run $SELECTED_RUN carries no Un1box-guest-tools-a6 artifact; the APK cannot prepare an iPhone 5."
+          fi
 
       - name: JDK 17
         uses: actions/setup-java@v4
@@ -555,6 +570,31 @@ jobs:
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
           ninja --version
           meson/bin/meson --version
+
+      # The iPhone 5's preparer: the Rust firmwarekit this repository now carries (crates/lighttouch-firmware,
+      # taken from LightTouch), where the N42 recipe, the A6 restore and its first boot live. It lands beside the
+      # Swift firmwarekit as firmwarekit-a6, and the Gradle build packages it as libfirmwarekit_a6.so, which
+      # FirmwareService runs only for n42ap. Every other device keeps the kit from the release APK above.
+      - name: Build the iPhone 5 preparer (Rust firmwarekit)
+        env:
+          NDK_BIN: ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin
+        run: |
+          set -euo pipefail
+          if ! command -v cargo >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          fi
+          . "$HOME/.cargo/env"
+          rustup target add aarch64-linux-android
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android29-clang"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+          # 16 KiB LOAD alignment, like every other executable the APK carries (Android/scripts/check-apk.py).
+          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+          cargo build --release --manifest-path Cargo.toml -p lighttouch-firmware --target aarch64-linux-android
+          mkdir -p ci/firmwarekit/android
+          install -m 0755 target/aarch64-linux-android/release/firmwarekit ci/firmwarekit/android/firmwarekit-a6
+          "$NDK_BIN/llvm-strip" ci/firmwarekit/android/firmwarekit-a6 || true
+          file ci/firmwarekit/android/firmwarekit-a6
 
       # firmwarekit's iPad 1 (k48) recipe shells out to iBoot32Patcher for the iBoot RSA/debug/boot-args
       # patches and looks for it next to its own executable (or at FIRMWAREKIT_IBOOT_PATCHER). On macOS it
@@ -665,6 +705,22 @@ jobs:
       - name: Patch the engine for Android
         run: |
           git -C qemu-ios apply "$GITHUB_WORKSPACE"/ci/engine-patches/*.patch
+          # An engine ref that carries the iPhone 5 machine (hw/arm/s5l8950.c, compiled with CONFIG_IPAD1) also
+          # needs the USB host controllers its device tree describes; the portable build selects both here rather
+          # than in a patch, which cannot apply to a ref without the machine. A ref without it builds as before.
+          if [ -f qemu-ios/hw/arm/s5l8950.c ] && ! grep -q CONFIG_USB_EHCI_SYSBUS qemu-ios/configs/devices/arm-softmmu/portable.mak; then
+            {
+              echo
+              echo "# The A6 machine's USB host: the Exynos EHCI controller and its OHCI companions, which the N42"
+              echo "# device tree describes and the guest's USB stack matches."
+              echo "CONFIG_USB=y"
+              echo "CONFIG_USB_EHCI=y"
+              echo "CONFIG_USB_EHCI_SYSBUS=y"
+              echo "CONFIG_USB_OHCI=y"
+              echo "CONFIG_USB_OHCI_SYSBUS=y"
+            } >> qemu-ios/configs/devices/arm-softmmu/portable.mak
+            echo "selected the A6 machine's USB host controllers in portable.mak"
+          fi
           git -C qemu-ios add -A
           GIT_AUTHOR_DATE=2001-01-01T00:00:00Z GIT_COMMITTER_DATE=2001-01-01T00:00:00Z \
             git -C qemu-ios -c user.name=ci -c user.email=ci@localhost \
@@ -1083,10 +1139,15 @@ jobs:
 
       - name: Build the APK
         working-directory: Android
+        env:
+          A6_TOOLS_ARG: ${{ hashFiles('ci/guest-tools-a6/it_initialize') != '' && format('{0}/ci/guest-tools-a6', github.workspace) || '' }}
         run: |
           # A selected ARM64 ANGLE provider is staged by the Gradle task from these five
           # properties; with none set the generated provider directory stays empty.
           angle_args=()
+          # The iPhone 5's own helpers, when the guest-package run exported them (ci/guest-tools-a6).
+          a6_args=()
+          if [ -n "${A6_TOOLS_ARG:-}" ]; then a6_args=(-PguestToolsA6Dir="$A6_TOOLS_ARG"); fi
           if [ -n "${ANGLE_ARM64_MANIFEST_SHA256:-}" ]; then
             angle_args=(-PangleArm64Libraries="$ANGLE_ARM64_LIBRARIES" \
               -PangleArm64Manifest="$ANGLE_ARM64_MANIFEST" \
@@ -1104,6 +1165,7 @@ jobs:
             -PengineRoot="$GITHUB_WORKSPACE/ci/engine" \
             -PfirmwareKitDir="$GITHUB_WORKSPACE/ci/firmwarekit/android" \
             -PguestToolsDir="$GITHUB_WORKSPACE/ci/guest-tools" \
+            "${a6_args[@]}" \
             -PmobileServicesArm64="$GITHUB_WORKSPACE/ci/mobile-services/arm64-v8a" \
             -PsourceRevision="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" \
             -PsourceReference="https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME}" \

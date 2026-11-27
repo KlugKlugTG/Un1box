@@ -9,11 +9,17 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * One preparation per process, independent of a running QEMU worker: firmwarekit (Packages/FirmwareKit, the
- * preparer every Un1box port shares) builds the device from its IPSW, with its build-time boots through
- * lighttouch-oneshot and the APK's engine, into a device folder that the device worker moves into its library.
- * Both ship as executables in nativeLibraryDir (libfirmwarekit.so, liblighttouch_oneshot.so), and so does
- * iBoot32Patcher (libiBoot32Patcher.so), which the iPad 1 recipe runs through firmwarekit.
+ * One preparation per process, independent of a running QEMU worker: firmwarekit builds the device from its
+ * IPSW, with its build-time boots through lighttouch-oneshot and the APK's engine, into a device folder that the
+ * device worker moves into its library.
+ *
+ * Two preparers ship. The devices Un1box has always prepared use the Swift one (Packages/FirmwareKit), and the
+ * iPhone 5 (n42ap, iOS 10.3.4) uses the Rust firmwarekit taken from LightTouch (crates/lighttouch-firmware), which
+ * is where the N42 recipe, the A6 restore and its guest assets live. Both read the same catalog and take the same
+ * arguments; only the binary differs (libfirmwarekit_a6.so against libfirmwarekit.so).
+ *
+ * Both run as executables in nativeLibraryDir, and so does iBoot32Patcher (libiBoot32Patcher.so), which the Swift
+ * iPad 1 recipe runs through firmwarekit (the Rust crate compiles its own copy in).
  */
 class FirmwareService : Service() {
     private val consumed = AtomicBoolean(false)
@@ -31,7 +37,7 @@ class FirmwareService : Service() {
 
     private val binder = object : IFirmware.Stub() {
         override fun supports(firmwareId: String): Boolean =
-            File(applicationInfo.nativeLibraryDir, "libfirmwarekit.so").canExecute() &&
+            kit(File(applicationInfo.nativeLibraryDir), firmwareId) != null &&
                 FirmwareCatalog.load(this@FirmwareService).any { it.id == firmwareId }
         override fun start(firmwareId: String, ipswPath: String, trustedToolsRoot: String, bootromPath: String): Bundle {
             check(consumed.compareAndSet(false, true)) { "A fresh firmware worker is required" }
@@ -65,6 +71,14 @@ class FirmwareService : Service() {
     }
 
     /**
+     * The preparer [firmwareId] needs: the iPhone 5's Rust firmwarekit, else the Swift one every other device uses.
+     * Null when this build carries neither.
+     */
+    private fun kit(libs: File, firmwareId: String): File? =
+        File(libs, if (firmwareId.startsWith("n42ap-")) "libfirmwarekit_a6.so" else "libfirmwarekit.so")
+            .takeIf { it.canExecute() }
+
+    /**
      * create into `destination`, the device folder the engine worker then moves into its library as it is
      * (adoptPrepared: no pack-base, no copy, no second hash). The IPSW is only read.
      */
@@ -74,13 +88,22 @@ class FirmwareService : Service() {
         val awake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Un1box:preparation")
         awake.acquire(60 * 60 * 1000L)
         val libs = File(applicationInfo.nativeLibraryDir)
+        val preparer = kit(libs, firmwareId) ?: run {
+            failure = "This build has no firmwarekit for $firmwareId"
+            state = "failed"; note("failed")
+            if (awake.isHeld) awake.release()
+            return
+        }
+        // The iPhone 5's helpers are the A6 set (it_initialize, it_mobilegestalt, launchd-cache-template, ...),
+        // which the APK carries beside the older devices' tools.
+        val guestTools = if (preparer.name == "libfirmwarekit_a6.so") GuestTools.firmwareToolsA6(this) ?: tools else tools
         val cache = File(cacheDir, "firmwarekit")
         val out = File(destination)
         try {
             val catalog = File(filesDir, "firmware-catalog.json")
             assets.open("firmware-catalog.json").use { input -> catalog.outputStream().use { input.copyTo(it) } }
-            run(libs, listOf("create", "--catalog", catalog.path, "--id", firmwareId, "--ipsw", ipsw, "--out", out.path,
-                "--helper", File(libs, "liblighttouch_oneshot.so").path, "--guest-tools", tools.path, "--cache", cache.path,
+            run(libs, preparer, listOf("create", "--catalog", catalog.path, "--id", firmwareId, "--ipsw", ipsw, "--out", out.path,
+                "--helper", File(libs, "liblighttouch_oneshot.so").path, "--guest-tools", guestTools.path, "--cache", cache.path,
                 "--language", Locale.getDefault().toLanguageTag(),
                 // iOS 5 and later start at the Home screen, not Setup Assistant (ignored before 5, which has none)
                 "--skip-setup") +
@@ -89,8 +112,9 @@ class FirmwareService : Service() {
                 // This build prepares every device jailbroken (afc2, Cydia and Substrate). The recipes that
                 // support it are the ones that go through SystemEdits.buildK48 -- the iPad, the iPod touches and
                 // the iPhone 4 -- and N72; N45's 1.x refuses the option itself, in words, rather than silently
-                // preparing a stock system.
-                (if (BuildConfig.JAILBREAK) listOf("--jailbreak") else emptyList()))
+                // preparing a stock system. The iPhone 5's N42 recipe has no jailbreak: the flag would only fetch
+                // the Cydia bootstrap for a system that stays stock.
+                (if (BuildConfig.JAILBREAK && preparer.name != "libfirmwarekit_a6.so") listOf("--jailbreak") else emptyList()))
             // create's own lease and boot logs; the device is the rest
             File(out, "work").let { writable(it); it.deleteRecursively() }
             done = total
@@ -98,7 +122,11 @@ class FirmwareService : Service() {
             note("complete")
             foreground("Your device is prepared. Open Un1box to add it.")
         } catch (e: Exception) {
-            if (cancelling) state = "cancelled" else { failure = listOf(e.message ?: "Firmware preparation failed", diagnosis(libs)).joinToString("\n"); state = "failed" }
+            if (cancelling) state = "cancelled" else {
+                val detail = if (preparer.name == "libfirmwarekit_a6.so") "" else diagnosis(libs)
+                failure = listOfNotNull(e.message ?: "Firmware preparation failed", detail.ifEmpty { null }).joinToString("\n")
+                state = "failed"
+            }
             writable(out); out.deleteRecursively()
             if (cancelling) PreparationNote.clear(this) else note("failed")
         } finally {
@@ -154,8 +182,8 @@ class FirmwareService : Service() {
      * One firmwarekit command. Its stdout is a line of JSON per event (begin: each step's expected seconds; step;
      * progress: the step's fraction and what it is doing; error), turned into this worker's stage and a weighted done/total.
      */
-    private fun run(libs: File, args: List<String>) {
-        val builder = ProcessBuilder(listOf(File(libs, "libfirmwarekit.so").path) + args)
+    private fun run(libs: File, kit: File, args: List<String>) {
+        val builder = ProcessBuilder(listOf(kit.path) + args)
             .redirectError(File(cacheDir, "firmwarekit.log").apply { parentFile?.mkdirs() })
         builder.environment().apply {
             put("LTM_QEMU_DYLIB", File(libs, "libqemu-arm.so").path)

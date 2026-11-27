@@ -167,8 +167,11 @@ class EngineService : Service() {
             }
             foreground()
             val libraryRoot = File(filesDir, "library").absolutePath
+            val record = Native.records(libraryRoot).firstOrNull { it[0] == recordId }
             // Before the engine starts: its USB controller dials the bridge when the guest brings the port up.
-            usbError = usbThread.submit<String?> { usb.start(recordId) }.get() ?: ""
+            // The iPhone 5 (n42ap) has the app service pair for it, and its preparation leaves a pairing to seed.
+            usbError = usbThread.submit<String?> { usb.start(recordId, appPairs = record?.getOrNull(2) == "n42ap",
+                pairingSeed = File(libraryRoot, "records/$recordId/base/pairing").takeIf { it.isDirectory }) }.get() ?: ""
             val reduceAppSwitchPauses = getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
                 .getBoolean("reduceAppSwitchPauses", true)
             val flushCodeCacheOnApp = if (reduceAppSwitchPauses) "off" else "on"

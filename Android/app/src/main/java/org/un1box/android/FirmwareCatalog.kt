@@ -29,6 +29,14 @@ internal data class CatalogFirmware(
         status == "available" || status == "experimental" -> Support.EXPERIMENTAL
         else -> Support.UNTESTED
     }
+
+    /** The prepare screen's line under the support label; the desktop's Firmware::support_detail says the same. */
+    val supportDetail get() = when {
+        // The iPhone 5 runs everything it was tried with, at a fraction of the other boards' speed.
+        support == Support.EXPERIMENTAL && board == "n42ap" ->
+            "Works in LightTouch, but runs much slower than the other devices for now."
+        else -> support.detail
+    }
 }
 
 /** How far a firmware has been tried: Un1box's own compatibility runs first, then the catalog's label. */
@@ -56,6 +64,12 @@ internal val testedFirmwares = setOf(
  * boots the kernel. Upstream LightTouch rechecked this on 2026-11-01; Un1box has not run them itself.
  */
 internal val doesntStartBoards = setOf("n45ap", "m68ap")  // iPod touch 1G, original iPhone
+
+/**
+ * Firmwares that work in LightTouch but stay Experimental (the iPhone 5): listed with the tested devices, as the
+ * desktop's WORKING set does. The preparation itself is documented in docs/COMPATIBILITY.md.
+ */
+internal val workingFirmwares = setOf("n42ap-14G61")
 
 /** The firmware to pick first: the fastest and most complete on phones. */
 internal const val recommendedFirmware = "n72ap-7E18"

@@ -115,6 +115,29 @@ providers.gradleProperty("guestToolsDir").orNull?.let { input ->
     tasks.named("preBuild").configure { dependsOn(stage) }
 }
 
+// The iPhone 5's guest tools (-PguestToolsA6Dir, scripts/build.sh exports them with qemu-ios's
+// contrib/export-guest-artifacts.sh): the A6 set the Rust firmwarekit's N42 recipe names -- it_initialize,
+// it_mobilegestalt, launchd-cache-template, it_agent, httpget-armv7 and libappsync.dylib. They ride in the APK
+// under assets/guest-tools-a6/, beside the other devices' tools, so preparing either kind of device uses the set
+// it was built against. Without them the APK still builds and prepares every older device; only the iPhone 5's
+// preparation refuses, in firmwarekit's own words.
+providers.gradleProperty("guestToolsA6Dir").orNull?.let { input ->
+    val packs = file(input)
+    val required = listOf("it_initialize", "it_mobilegestalt", "launchd-cache-template", "it_agent",
+        "httpget-armv7", "libappsync.dylib")
+    val missing = required.filterNot { packs.resolve(it).isFile }
+    require(missing.isEmpty()) {
+        "guestToolsA6Dir is missing ${missing.joinToString()} (qemu-ios contrib/export-guest-artifacts.sh exports them)"
+    }
+    val a6Assets = layout.buildDirectory.dir("generated/guestToolA6Assets")
+    val stageA6 = tasks.register<Copy>("prepareGuestToolsA6") {
+        from(packs)
+        into(a6Assets.map { it.dir("guest-tools-a6") })
+    }
+    android.sourceSets["main"].assets.srcDir(a6Assets)
+    tasks.named("preBuild").configure { dependsOn(stageA6) }
+}
+
 // Optional private usbmuxd-qemu daemon and IPA helper (Android/packaging/build-mobile-android.py OUTPUT/arm64-v8a).
 providers.gradleProperty("mobileServicesArm64").orNull?.let { input ->
     val executables = listOf("libusbmuxd_qemu.so", "liblt_appservice.so")
@@ -162,6 +185,10 @@ providers.gradleProperty("firmwareKitDir").orNull?.let { input ->
     val firmwareKitNotices = layout.buildDirectory.dir("generated/firmwareKitNotices")
     val stage = tasks.register<Copy>("prepareFirmwareKit") {
         from(kit) { include("firmwarekit"); rename { "libfirmwarekit.so" } }
+        // The iPhone 5's preparer (crates/lighttouch-firmware, built by scripts/build.sh firmwarekit-a6-android):
+        // same folder and arguments as the Swift kit, a binary of its own so every other device keeps the recipes
+        // it was prepared with. Absent in a build without Rust: the iPhone 5 then shows no versions to prepare.
+        from(kit) { include("firmwarekit-a6"); rename { "libfirmwarekit_a6.so" } }
         from(kit) { include("lighttouch-oneshot"); rename { "liblighttouch_oneshot.so" } }
         from(kit) { include("iBoot32Patcher"); rename { "libiBoot32Patcher.so" } }
         from(kit) { include("spawn-shim.so"); rename { "libspawnshim.so" } }

@@ -94,7 +94,7 @@ private fun ButtonBar(host: GuestHost, modifier: Modifier, onInteract: () -> Uni
     var fakeSms by remember { mutableStateOf(false) }
     var fakeBattery by remember { mutableStateOf(false) }
     // The cellular drives need a modem: the iPhone boards have one, the iPods and the iPad not.
-    val cellular = host.selected?.board in setOf("m68ap", "n82ap", "n88ap", "n90ap")
+    val cellular = host.selected?.board in setOf("m68ap", "n82ap", "n88ap", "n90ap", "n42ap")
     val enabled = host.running
     Row(modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
         // Volume on the left, like the device's left edge.

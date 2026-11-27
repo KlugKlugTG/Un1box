@@ -49,7 +49,8 @@ SCREENS = [
 KEEP_PATTERNS = [
     # product, chip and model names stay as the hardware world writes them
     r"^iPod touch.*", r"^iPhone.*", r"^iPad.*", r"^iPod\d,\d$", r"^iPhone\d,\d$", r"^iPad\d,\d$",
-    r"^Samsung S5L\d+$", r"^PowerVR.*", r"^ARM.*", r"^Apple A4$", r"^iOS .*", r"^firmwarekit .*",
+    r"^Samsung S5L\d+$", r"^PowerVR.*", r"^ARM.*", r"^Apple A\d+$", r"^iOS .*", r"^firmwarekit .*",
+    r"^\d+ × \d+ \(Retina\)$",
     # numbers, units and the punctuation a sentence is assembled from
     r"^\d+(\.\d+)? ?(KB|MB|GB|MiB)$", r"^%.*", r"^[0-9A-Za-z ,.:()/'×-]{0,2}$", r"^(ms|FPS)$",
     r"^≤.*ms$", r"^>.*ms$", r"^(of|and|or|else) ?$", r"^[)(]?\$", r"\$$",

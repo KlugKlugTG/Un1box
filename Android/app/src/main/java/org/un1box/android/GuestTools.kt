@@ -105,4 +105,25 @@ internal object GuestTools {
         return root
     }
 
+    /**
+     * The iPhone 5's preparation tools (assets/guest-tools-a6): the A6 set the Rust firmwarekit's N42 recipe reads
+     * (it_initialize, it_mobilegestalt, launchd-cache-template, it_agent, httpget-armv7, libappsync.dylib), which
+     * this APK carries beside the older devices' tools. Null when this build carries none, so the caller keeps the
+     * other devices' folder and the recipe says in words what it is missing.
+     */
+    fun firmwareToolsA6(context: Context): File? {
+        if ((context.assets.list("guest-tools-a6") ?: emptyArray()).isEmpty()) return null
+        val names = (context.assets.list("guest-tools-a6") ?: emptyArray()).filter { !it.endsWith(".json") }
+        if (names.isEmpty() || "it_initialize" !in names) return null
+        val root = File(context.filesDir, "firmware-tools-a6")
+        root.deleteRecursively()
+        check(root.mkdirs()) { "Could not create the iPhone 5's preparation tools folder" }
+        for (name in names) {
+            val target = File(root, name)
+            context.assets.open("guest-tools-a6/$name").use { input -> target.outputStream().use { input.copyTo(it) } }
+            if (!name.contains('.') || name.endsWith(".dylib")) target.setExecutable(true, false)
+        }
+        return root
+    }
+
 }

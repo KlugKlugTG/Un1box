@@ -1,0 +1,25 @@
+# The Rust firmwarekit the Android app prepares devices with, taken from LightTouch.
+#
+# Un1box's own preparer (Packages/FirmwareKit, Swift) still builds the desktop ports' firmwarekit and the
+# phones that shipped before the iPhone 5. This crate is what prepares the iPhone 5 (n42ap, iOS 10.3.4): its
+# N42 recipe, the A6 restore and first boot, and the guest assets only exist here.
+#
+#   cargo build --release            firmwarekit at target/release/firmwarekit
+#   scripts/build.sh firmwarekit-android   the same for the phone (arm64), into build/firmwarekit/android
+[workspace]
+resolver = "3"
+members = ["crates/lighttouch-firmware", "crates/lighttouch-catalog"]
+
+[workspace.package]
+version = "0.0.15"
+edition = "2024"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/KlugKlugTG/Un1box"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -65,7 +65,7 @@ internal class PrepareState {
 }
 
 /** Order devices appear in: iPods, iPhones, then the iPad, each oldest first. */
-private val deviceOrder = listOf("iPod1,1", "iPod2,1", "iPod3,1", "iPod4,1", "iPhone1,1", "iPhone1,2", "iPhone2,1", "iPhone3,1", "iPad1,1")
+private val deviceOrder = listOf("iPod1,1", "iPod2,1", "iPod3,1", "iPod4,1", "iPhone1,1", "iPhone1,2", "iPhone2,1", "iPhone3,1", "iPhone5,2", "iPad1,1")
 
 /** Version strings compared numerically: 3.1.10 after 3.1.3. */
 private val versionOrder = Comparator<CatalogFirmware> { a, b ->
@@ -78,9 +78,13 @@ private val versionOrder = Comparator<CatalogFirmware> { a, b ->
  * 12 s keybag boot); later systems also boot iOS twice (the data-protection keybag, then iOS's first-start setup):
  * iPod touch 4G 6.1.6 took 195 s.
  */
-private data class PreparationCost(val time: String, val space: String)
-private fun preparationCost(firmware: CatalogFirmware?) =
-    if (firmware?.board == "n72ap") PreparationCost("about a minute", "1.5 GB") else PreparationCost("a few minutes", "5 GB")
+private data class PreparationCost(val time: String, val space: String, val note: String = "")
+private fun preparationCost(firmware: CatalogFirmware?) = when (firmware?.board) {
+    "n72ap" -> PreparationCost("about a minute", "1.5 GB")
+    "n42ap" -> PreparationCost("20 to 40 minutes", "10 GB",
+        "The iPhone 5 is far heavier than the other devices: keep the phone plugged in and Un1box open.")
+    else -> PreparationCost("a few minutes", "5 GB")
+}
 
 /**
  * Builds a device on this phone from a stock IPSW: pick the device, then the iOS version, then get
@@ -177,26 +181,29 @@ private fun SupportBadge(support: Support) {
 private fun DeviceStep(state: PrepareState, onAdvanced: () -> Unit) {
     Heading("Choose a device", "Pick the device to emulate. You'll choose its iOS version next.")
     val devices = state.catalog.groupBy { it.productType }.entries.sortedBy { deviceOrder.indexOf(it.key).let { i -> if (i < 0) 99 else i } }
-    val (tested, others) = devices.partition { (_, firmwares) -> firmwares.any { it.support.tested } }
-    for ((product, firmwares) in tested.sortedBy { (_, firmwares) -> firmwares.minOf { it.support } }) {
+    val (tested, others) = devices.partition { (_, firmwares) -> firmwares.any { it.support.tested || it.id in workingFirmwares } }
+    for ((product, firmwares) in tested) {
         val versions = firmwares.filter { it.support.tested }.sortedWith(versionOrder).joinToString(", ") { "iOS ${it.label}" }
         val more = firmwares.count { !it.support.tested && it.prerelease.isEmpty() }
-        DeviceRow(state, product, "Tested: $versions" + if (more > 0) " · $more more to try" else "", firmwares.minOf { it.support })
+        DeviceRow(state, product, if (versions.isEmpty()) range(firmwares)
+            else "Tested: $versions" + if (more > 0) " · $more more to try" else "", firmwares.minOf { it.support })
     }
     if (others.isNotEmpty()) {
         SectionLabel("Not tested on Un1box yet")
         Text("These may not start, or may not work fully. Try them and see.", Modifier.padding(bottom = 6.dp),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        for ((product, firmwares) in others) {
-            val sorted = firmwares.filter { it.prerelease.isEmpty() }.sortedWith(versionOrder).ifEmpty { firmwares.sortedWith(versionOrder) }
-            val range = if (sorted.size == 1) "iOS ${sorted.first().label}" else "iOS ${sorted.first().version} to ${sorted.last().version}"
-            DeviceRow(state, product, range, firmwares.minOf { it.support })
-        }
+        for ((product, firmwares) in others) DeviceRow(state, product, range(firmwares), firmwares.minOf { it.support })
     }
     if (state.catalog.isEmpty()) Text("Loading the firmware list…", style = MaterialTheme.typography.bodyMedium)
     TextButton(onClick = onAdvanced, modifier = Modifier.padding(top = 12.dp).testTag("prepare_advanced")) {
         Text("I already have the device files")
     }
+}
+
+/** "iOS 1.0 to 3.1.3", or "iOS 10.3.4" for a device with one release. */
+private fun range(firmwares: List<CatalogFirmware>): String {
+    val sorted = firmwares.filter { it.prerelease.isEmpty() }.sortedWith(versionOrder).ifEmpty { firmwares.sortedWith(versionOrder) }
+    return if (sorted.size == 1) "iOS ${sorted.first().label}" else "iOS ${sorted.first().version} to ${sorted.last().version}"
 }
 
 @Composable
@@ -219,7 +226,7 @@ private fun VersionStep(state: PrepareState) {
         val group = shown.filter { it.support == support }
         if (group.isEmpty()) continue
         SectionLabel(support.label)
-        Text(support.detail, Modifier.padding(bottom = 6.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(group.first().supportDetail, Modifier.padding(bottom = 6.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         for (firmware in group.sortedBy { it.id != recommendedFirmware }) {
             val detail = (if (firmware.id == recommendedFirmware) "Recommended · " else "") + released(firmware) +
                 if (firmware.id in state.supported) "" else "\nPrepared on a computer, then added here"
@@ -243,7 +250,7 @@ private fun ColumnScope.PreparedCopyStep(state: PrepareState, busy: Boolean, onC
     val name = shortProductName(firmware.productType)
     val context = androidx.compose.ui.platform.LocalContext.current
     Heading("$name, iOS ${firmware.label}", "Un1box can't build this version on a phone yet. Prepare it on a computer, then add it here.")
-    if (firmware.support != Support.TESTED) Text("${firmware.support.label}: ${firmware.support.detail}", Modifier.padding(bottom = 12.dp),
+    if (firmware.support != Support.TESTED) Text("${firmware.support.label}: ${firmware.supportDetail}", Modifier.padding(bottom = 12.dp),
         style = MaterialTheme.typography.bodySmall, color = when (firmware.support) {
             Support.UNTESTED -> MaterialTheme.colorScheme.onSurfaceVariant
             Support.DOESNT_START -> MaterialTheme.colorScheme.error
@@ -337,6 +344,9 @@ private fun ColumnScope.FilesStep(state: PrepareState, busy: Boolean, onDownload
     Spacer(Modifier.height(12.dp))
     val cost = preparationCost(firmware)
     Text("Preparing runs on this phone, takes ${cost.time} and needs about ${cost.space} free. Un1box's guest tools are added for you.",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    // Its own line: the sentence above is translated as a whole, by rule.
+    if (cost.note.isNotEmpty()) Text(cost.note, Modifier.padding(top = 6.dp),
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Spacer(Modifier.height(20.dp))
     Button(onClick = onPrepare, enabled = !busy && state.ipswReady && state.romReady && state.ipswChecking.isEmpty(),
