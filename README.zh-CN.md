@@ -28,7 +28,7 @@ Telegram 频道：https://t.me/hyperhle
 ## 下载
 
 [Un1box 构建](https://github.com/KlugKlugTG/Un1box/releases) —— CI 每次提交都会构建。
-纯 LightTouch 版本（含桌面构建）在上游：[upstream](https://github.com/blake-lucas/LightTouch/releases/latest)，v0.0.13。
+纯 LightTouch 版本（含桌面构建）在上游：[upstream](https://github.com/blake-lucas/LightTouch/releases/latest)，v0.0.15。
 
 Un1box 仍处于早期，版本之间可能有变化。
 
@@ -51,6 +51,9 @@ Un1box 仍处于早期，版本之间可能有变化。
 | iPod touch 4G | 6.1.6 | **已验证**：在 Pixel 10 上，Infinity Blade 与 Infinity Blade II 全速运行，Epic Citadel 为 60 fps。其余多数游戏（Jetpack Joyride、Doodle Jump、Real Racing 等）在近期手机上为 60 fps 或接近 60 fps。 |
 | iPhone 3GS | 5.1.1 | **已验证，较慢** |
 | iPhone 4 | 4.2.1、4.3.5 | **已验证，较慢** |
+| iPhone 4 | 6.1.3 | **已验证** |
+| iPad | 5.1.1 | **已验证** |
+| iPhone 5 | 10.3.4 | **实验性**：可在 Un1box 上运行，但目前速度比其他设备慢得多；在手机上准备需要 20 到 40 分钟，约需 10 GB 可用空间。 |
 | iPod touch 1G、初代 iPhone | iPhone OS 1 | **尚无法启动**：配置完成后停在白屏。这是上游的结论，2026-11-01 复核；未在 Un1box 上运行。 |
 | [固件目录](Portable/firmware/firmware-catalog.json)中的其他设备 | iPhone OS 1 至 iOS 7 | 可以准备并尝试；尚未在 Un1box 上验证。[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) 记录了试过的结果。 |
 

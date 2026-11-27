@@ -17,7 +17,7 @@ Telegram channel: https://t.me/hyperhle
 
 ## Download
 
-[Un1box builds](https://github.com/KlugKlugTG/Un1box/releases) — CI builds every commit. The plain LightTouch release, including the desktop builds, is on [upstream](https://github.com/blake-lucas/LightTouch/releases/latest), v0.0.13.
+[Un1box builds](https://github.com/KlugKlugTG/Un1box/releases) — CI builds every commit. The plain LightTouch release, including the desktop builds, is on [upstream](https://github.com/blake-lucas/LightTouch/releases/latest), v0.0.15.
 
 Un1box is still early and things can change between versions.
 
@@ -40,6 +40,9 @@ Un1box is still early and things can change between versions.
 | iPod touch 4G | 6.1.6 | **Tested**: on a Pixel 10, Infinity Blade and Infinity Blade II run at full speed and Epic Citadel at 60 fps. Most other games, such as Jetpack Joyride, Doodle Jump and Real Racing, run at or near 60 fps on recent phones. |
 | iPhone 3GS | 5.1.1 | **Tested, slow** |
 | iPhone 4 | 4.2.1, 4.3.5 | **Tested, slow** |
+| iPhone 4 | 6.1.3 | **Tested** |
+| iPad | 5.1.1 | **Tested** |
+| iPhone 5 | 10.3.4 | **Experimental**: works on Un1box, but runs much slower than the other devices for now; preparing it on a phone takes 20 to 40 minutes and needs about 10 GB free. |
 | iPod touch 1G, original iPhone | iPhone OS 1 | **Doesn't start yet**: they stop at a white screen after they are set up. Upstream's finding, rechecked 2026-11-01; not run on Un1box. |
 | Others in the [firmware catalog](Portable/firmware/firmware-catalog.json) | iPhone OS 1 to iOS 7 | Can be prepared and tried; not yet checked on Un1box. [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) records what has been run. |
 
