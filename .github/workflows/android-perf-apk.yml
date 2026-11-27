@@ -6,7 +6,8 @@ name: Android perf APK
 #
 # What is rebuilt: the Kotlin/Compose app, the JNI/native frontend
 # (libun1box_jni.so) and the engine (libqemu-arm.so) from the requested
-# engine ref.
+# engine ref. The defaults pin the last perf revision compatible with this
+# patch stack; advancing perf requires rebasing the stack and the guest packages.
 #
 # The `variant` input picks what is assembled: `release` (the default) is the
 # shipped shape -- minified, no debug-env/QMP channels -- and `debug` keeps the
@@ -16,7 +17,7 @@ name: Android perf APK
 #
 # What is reused: firmwarekit (device preparation), its one-shot booter, the
 # USB bridge and it_seal are extracted from a published release APK. The two
-# guest itpacks are then replaced with a matching serial-42 artifact from the
+# guest itpacks are then replaced with a matching serial-49 artifact from the
 # guest-package workflow, so the host-side engine fix ships with its guest side.
 #
 # The APK is signed with a keystore generated on the first run and reused after
@@ -56,7 +57,7 @@ on:
       engine_ref:
         description: Engine branch, tag or commit to build
         required: true
-        default: perf
+        default: e6ab90f02c7fa4d4a81696da7d1204be5c259bac
       base_release_repository:
         description: Release whose APK supplies firmwarekit, USB bridge and guest tools
         required: true
@@ -134,7 +135,7 @@ on:
         default: KlugKlugTG/qemu-ios
       engine_ref:
         type: string
-        default: perf
+        default: e6ab90f02c7fa4d4a81696da7d1204be5c259bac
       base_release_repository:
         type: string
         default: blake-lucas/LightTouch
@@ -198,7 +199,7 @@ jobs:
       # the steps, so no ${{ }} can end up inside a shell expansion (a missing brace there swallows the script).
       LT_JOBS: ${{ inputs.jobs || '4' }}
       ENGINE_REPO: ${{ inputs.engine_repository || 'KlugKlugTG/qemu-ios' }}
-      ENGINE_REF: ${{ inputs.engine_ref || 'perf' }}
+      ENGINE_REF: ${{ inputs.engine_ref || 'e6ab90f02c7fa4d4a81696da7d1204be5c259bac' }}
       DECLARED_BASE_RELEASE_REPO: ${{ inputs.base_release_repository || 'blake-lucas/LightTouch' }}
       DECLARED_BASE_RELEASE_TAG: ${{ inputs.base_release_tag || 'v0.0.10' }}
       DECLARED_DEBUGGABLE: ${{ inputs.debuggable || 'true' }}
@@ -216,6 +217,9 @@ jobs:
     steps:
       - name: Check out this fork
         uses: actions/checkout@v4
+
+      - name: Check engine patch defaults
+        run: python3 tests/engine-patches/run.py
 
       - name: Check out the engine source
         uses: actions/checkout@v4
@@ -415,14 +419,14 @@ jobs:
           print(f'extracted firmwarekit, USB bridge and guest tools from {resolved_repo}@{resolved_tag} ({asset_name})')
           PY
 
-      - name: Overlay guest packages serial 42
+      - name: Overlay guest packages serial 49
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_RUN_ID: ${{ inputs.guest_package_run_id || '' }}
         run: |
           set -euo pipefail
           WORKFLOW_ID=400843872
-          CURRENT_PATCH_SHA="$(git hash-object ci/engine-patches/0001-engine-un1box-features.patch)"
+          CURRENT_PATCHES="$(for patch in ci/engine-patches/*.patch; do printf '%s %s\n' "${patch##*/}" "$(git hash-object "$patch")"; done | sort)"
           # Retention is storage policy, not a package-build input. Ignore those YAML lines so the
           # already-built package stays reusable when we extend its retention period.
           CURRENT_WORKFLOW_SHA="$(python3 - <<'PYHASH'
@@ -433,12 +437,13 @@ jobs:
           PYHASH
           )"
           SELECTED_RUN=""
+          PACKAGE_DIR="$RUNNER_TEMP/guest-packages-49"
 
           workflow_matches_source() {
-            local run_id="$1" package_sha package_patch package_workflow
+            local run_id="$1" package_sha package_patches package_workflow
             package_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.head_sha')" || return 1
-            package_patch="$(gh api "repos/$GITHUB_REPOSITORY/contents/ci/engine-patches/0001-engine-un1box-features.patch?ref=$package_sha" --jq '.sha')" || return 1
-            [ "$package_patch" = "$CURRENT_PATCH_SHA" ] || return 1
+            package_patches="$(gh api "repos/$GITHUB_REPOSITORY/contents/ci/engine-patches?ref=$package_sha" --jq '.[] | select(.type == "file" and (.name | endswith(".patch"))) | [.name, .sha] | join(" ")' | sort)" || return 1
+            [ "$package_patches" = "$CURRENT_PATCHES" ] || return 1
             package_workflow="$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/guest-package.yml?ref=$package_sha" --jq '.content' | base64 --decode | python3 -c 'import hashlib,re,sys; text=sys.stdin.read(); text=re.sub(r"(?m)^[ \t]*retention-days:[ \t]*[0-9]+[ \t]*\r?$", "", text); print(hashlib.sha256(text.encode()).hexdigest())')" || return 1
             [ "$package_workflow" = "$CURRENT_WORKFLOW_SHA" ]
           }
@@ -456,13 +461,20 @@ jobs:
             while IFS= read -r RUN_ID; do
               [ -n "$RUN_ID" ] || continue
               HAS_ARTIFACT="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
-                --jq '[.artifacts[] | select(.name == "Un1box-guest-packages-42" and .expired == false)] | length')"
+                --jq '[.artifacts[] | select(.name == "Un1box-guest-packages-49" and .expired == false)] | length')"
               [ "$HAS_ARTIFACT" -gt 0 ] || continue
               if workflow_matches_source "$RUN_ID"; then
-                SELECTED_RUN="$RUN_ID"
-                break
+                rm -rf "$PACKAGE_DIR"
+                mkdir -p "$PACKAGE_DIR"
+                if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+                    --name Un1box-guest-packages-49 --dir "$PACKAGE_DIR" &&
+                   [ -f "$PACKAGE_DIR/ENGINE_REVISION" ] &&
+                   [ "$(cat "$PACKAGE_DIR/ENGINE_REVISION")" = "$(git -C qemu-ios rev-parse HEAD)" ]; then
+                  SELECTED_RUN="$RUN_ID"
+                  break
+                fi
               fi
-              echo "Skipping guest-package run $RUN_ID: its GLES patch or package build recipe differs."
+              echo "Skipping guest-package run $RUN_ID: its engine revision, patch or package build recipe differs."
             done <<< "$CANDIDATES"
             [ -n "$SELECTED_RUN" ] && break
 
@@ -487,18 +499,14 @@ jobs:
               done <<< "$PENDING_RUNS"
               [ "$MATCHING_PENDING" -gt 0 ] || break
             fi
-            echo "Waiting for a matching serial-42 guest-package artifact ($attempt/30)..."
+            echo "Waiting for a matching serial-49 guest-package artifact ($attempt/30)..."
             sleep 20
           done
 
           [ -n "$SELECTED_RUN" ] || {
-            echo '::error::No unexpired serial-42 guest-package artifact with matching source was found across branches. Build/approve the guest-package workflow or provide guest_package_run_id.'
+            echo '::error::No unexpired serial-49 guest-package artifact with matching source was found across branches. Build/approve the guest-package workflow or provide guest_package_run_id.'
             exit 1
           }
-          PACKAGE_DIR="$RUNNER_TEMP/guest-packages-42"
-          mkdir -p "$PACKAGE_DIR"
-          gh run download "$SELECTED_RUN" --repo "$GITHUB_REPOSITORY" \
-            --name Un1box-guest-packages-42 --dir "$PACKAGE_DIR"
           test -s "$PACKAGE_DIR/armv6.itpack"
           test -s "$PACKAGE_DIR/armv7.itpack"
           python3 - "$PACKAGE_DIR" <<'PY'
@@ -525,7 +533,7 @@ jobs:
           install -m 0644 "$PACKAGE_DIR/armv6.itpack" ci/guest-tools/armv6.itpack
           install -m 0644 "$PACKAGE_DIR/armv7.itpack" ci/guest-tools/armv7.itpack
           echo "GUEST_PACKAGE_RUN_ID=$SELECTED_RUN" >> "$GITHUB_ENV"
-          echo "Overlaid serial-42 armv6/armv7 itpacks from workflow run $SELECTED_RUN."
+          echo "Overlaid serial-49 armv6/armv7 itpacks from workflow run $SELECTED_RUN."
 
       - name: JDK 17
         uses: actions/setup-java@v4
@@ -1194,7 +1202,7 @@ jobs:
             echo "- engine revision: $(git -C qemu-ios rev-parse HEAD) ($ENGINE_REPO $ENGINE_REF)"
             echo "- engine build: arm64-v8a, NDK $ANDROID_NDK_VERSION, --android-api 29, $LT_JOBS jobs"
             echo "- reused from ${BASE_RELEASE_RESOLVED:-$DECLARED_BASE_RELEASE_REPO $DECLARED_BASE_RELEASE_TAG}: firmwarekit, lighttouch-oneshot, USB bridge, it_seal"
-            echo "- guest itpacks: serial 42 from guest-package run ${GUEST_PACKAGE_RUN_ID}"
+            echo "- guest itpacks: serial 49 from guest-package run ${GUEST_PACKAGE_RUN_ID}"
             ANGLE_TAG="${ANGLE_BUNDLE_URL:-}"; ANGLE_TAG="${ANGLE_TAG%/*}"; ANGLE_TAG="${ANGLE_TAG##*/}"
             if [ -n "${ANGLE_ARM64_MANIFEST_SHA256:-}" ]; then
               echo "- ARM64 ANGLE provider: $ANGLE_TAG (${ANGLE_BUNDLE_URL##*/}), closure $ANGLE_ARM64_MANIFEST_SHA256, notices $ANGLE_ARM64_NOTICES_SHA256"
