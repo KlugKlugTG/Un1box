@@ -29,7 +29,7 @@ name: Jailbreak APK
 #                 version name reads "0.0.13-jailbreak", so a build can be told from the normal one by name
 #                 alone.
 #
-# Everything else is the normal workflow's: release variant, ARM64 ANGLE provider, the serial-42 guest
+# Everything else is the normal workflow's: release variant, ARM64 ANGLE provider, the serial-49 guest
 # itpacks, the reused firmwarekit, and the same build steps -- the jailbreak APK is signed with the
 # jailbreak keystore, which the workflow generates once and caches beside the normal one.
 on:
@@ -42,7 +42,7 @@ on:
       engine_ref:
         description: Engine branch, tag or commit to build
         required: true
-        default: perf
+        default: e6ab90f02c7fa4d4a81696da7d1204be5c259bac
       base_release_repository:
         description: Release whose APK supplies firmwarekit, the USB bridge and the guest tools
         required: true

@@ -48,12 +48,12 @@ index 4df4f89c11..fc2a3ddca4 100644
  #ifndef CONFIG_USER_ONLY
      CPUClass *cc = CPU_CLASS(object_class_by_name(target_cpu_type()));
 diff --git a/contrib/guest-package/VERSION b/contrib/guest-package/VERSION
-index 32a6323eed..19df808b2e 100644
+index 32a6323eed..6e36f2271e 100644
 --- a/contrib/guest-package/VERSION
 +++ b/contrib/guest-package/VERSION
 @@ -1,2 +1,2 @@
 -serial 36
-+serial 40
++serial 49
  version 1.1.34
 diff --git a/contrib/it-gles/mbxshim.c b/contrib/it-gles/mbxshim.c
 index 45e40d33c8..7f12831338 100644

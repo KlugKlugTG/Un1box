@@ -1,14 +1,16 @@
 name: Build iOS guest packages
 
 # This workflow builds only armv6.itpack and armv7.itpack. It does not build the Android APK or QEMU.
-# It runs for the guest GLES patch (or manually); the normal Android APK workflow stays Linux-only.
+# The default engine revision is pinned with the Android workflow: its patch stack
+# must be rebased before either default is advanced to a newer perf revision.
 
 on:
   pull_request:
     branches: [main]
     paths:
       - .github/workflows/guest-package.yml
-      - ci/engine-patches/0011-engine-gles-map-buffer.patch
+      - ci/engine-patches/**
+      - tests/engine-patches/**
   workflow_dispatch:
     inputs:
       engine_repository:
@@ -18,7 +20,7 @@ on:
       engine_ref:
         description: Engine branch, tag or commit
         required: true
-        default: perf
+        default: e6ab90f02c7fa4d4a81696da7d1204be5c259bac
 
 permissions:
   contents: read
@@ -48,13 +50,16 @@ jobs:
     timeout-minutes: 120
     env:
       ENGINE_REPO: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_repository || 'KlugKlugTG/qemu-ios' }}
-      ENGINE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_ref || 'perf' }}
+      ENGINE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_ref || 'e6ab90f02c7fa4d4a81696da7d1204be5c259bac' }}
       GH_TOKEN: ${{ github.token }}
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
 
     steps:
       - name: Check out Un1box and the patch series
         uses: actions/checkout@v4
+
+      - name: Check engine patch defaults
+        run: python3 tests/engine-patches/run.py
 
       - name: Check out the engine source
         uses: actions/checkout@v4
@@ -96,7 +101,7 @@ jobs:
           xcrun ld -v
           if ! command -v ldid >/dev/null; then brew install ldid; fi
 
-      - name: Build guest packages serial 42
+      - name: Build guest packages serial 49
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/guest-package"
@@ -117,7 +122,9 @@ jobs:
             echo '::error::guest package build emitted warnings; refusing to upload partial packages'
             exit 1
           fi
-          grep -E 'armv6 serial 42|armv7 serial 42|serial 42' "$RUNNER_TEMP/guest-package.log" || true
+          test "$(sed -n 's/^serial //p' qemu-ios/contrib/guest-package/VERSION)" = 49
+          grep -E 'armv6 serial 49|armv7 serial 49|serial 49' "$RUNNER_TEMP/guest-package.log"
+          git -C qemu-ios rev-parse HEAD > "$OUT/ENGINE_REVISION"
           test -s "$OUT/armv6.itpack"
           test -s "$OUT/armv7.itpack"
           shasum -a 256 "$OUT/armv6.itpack" "$OUT/armv7.itpack" | tee "$OUT/SHA256SUMS"
@@ -125,11 +132,12 @@ jobs:
       - name: Upload only the guest packages
         uses: actions/upload-artifact@v4
         with:
-          name: Un1box-guest-packages-42
+          name: Un1box-guest-packages-49
           path: |
             ${{ runner.temp }}/guest-package/armv6.itpack
             ${{ runner.temp }}/guest-package/armv7.itpack
             ${{ runner.temp }}/guest-package/SHA256SUMS
+            ${{ runner.temp }}/guest-package/ENGINE_REVISION
           if-no-files-found: error
           retention-days: 90
 
