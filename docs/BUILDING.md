@@ -46,8 +46,16 @@ Engine A/B switches are environment variables. On Android a debug APK reads them
 The Android engine is built with profile-guided optimization when `LT_ENGINE_PGO` (default
 `$LT_INPUTS/backend/pgo/engine-arm64.profdata`) exists: clang lays the engine's hot code out together,
 which gave Jetpack Joyride on the Poco F3 about 8% more frames (`docs/PERFORMANCE.md`). `LT_ENGINE_PGO=off`
-builds without it, and a different profile reconfigures the engine on the next build. The profile comes
-from gameplay on a phone:
+builds without it, and a different profile reconfigures the engine on the next build.
+
+CI APK builds (`.github/workflows/android-perf-apk.yml` and `.github/workflows/jailbreak-apk.yml`) enable
+PGO by default (`engine_pgo: "true"`), fetch the pinned gameplay profile archive (`pgo_bundle_url` /
+`pgo_bundle_sha256`, verified by SHA-256), and run `Android/scripts/prepare-engine-pgo.py` to align the
+profile's static-function source path prefixes (`../../../../engine/...` → `../../qemu-ios/...`) to match
+`ci/engine-build` before passing `-fprofile-use=...` and `-Wl,-z,keep-text-section-prefix` to
+`build-engine.py`. Local builds with `scripts/build.sh` invoke the same helper automatically when
+`llvm-profdata` is present, so either a `.profdata` or `.tar.gz` profile bundle works across directory
+layouts. Recording a new profile comes from gameplay on a phone:
 
 ```
 LT_ENGINE_VARIANT=pgogen LT_ENGINE_CFLAGS=-fprofile-generate LT_ENGINE_LDFLAGS=-fprofile-generate \

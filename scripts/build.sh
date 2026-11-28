@@ -118,10 +118,20 @@ build_android_engine() {
     PCLIBDIR="$LT_INPUTS/backend/crypto/arm64-v8a/prefix/lib/pkgconfig:$deps/lib/pkgconfig"
     # Profile-guided optimization from a gameplay profile (docs/BUILDING.md, "Engine profile"): clang lays the
     # engine's hot paths out together. A different profile (or none) reconfigures the engine.
-    local pgo="" stamp="none"
+    local pgo="" stamp="none" pgo_file="$LT_ENGINE_PGO"
     if [ "$LT_ENGINE_PGO" != off ] && [ -f "$LT_ENGINE_PGO" ] && [[ "${LT_ENGINE_CFLAGS:-}" != *-fprofile-generate* ]]; then
-        pgo="-fprofile-use=$LT_ENGINE_PGO -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-backend-plugin"
-        stamp=$(sha256sum "$LT_ENGINE_PGO" | cut -c1-16)
+        if [ -x "$NDK_BIN/llvm-profdata" ] && [ -d "$QEMU_IOS" ]; then
+            pgo_file="$OBJ/pgo/android-engine-arm64${LT_ENGINE_VARIANT:+-$LT_ENGINE_VARIANT}.profdata"
+            python3 "$REPO/Android/scripts/prepare-engine-pgo.py" \
+                --input "$LT_ENGINE_PGO" \
+                --output "$pgo_file" \
+                --llvm-profdata "$NDK_BIN/llvm-profdata" \
+                --source-dir "$QEMU_IOS" \
+                --build-dir "$dir" \
+                --allow-unmatched
+        fi
+        pgo="-fprofile-use=$pgo_file -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-backend-plugin"
+        stamp=$(sha256sum "$pgo_file" | cut -c1-16)
     fi
     if [ -f "$dir/build.ninja" ] && [ "$(cat "$dir/pgo-profile" 2>/dev/null || echo none)" != "$stamp" ]; then
         log "engine profile changed ($stamp): reconfiguring"
