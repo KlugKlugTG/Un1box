@@ -101,6 +101,21 @@ on:
         description: Expected SHA256 of that bundle
         required: true
         default: "c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1"
+      engine_pgo:
+        description: Build the ARM64 engine with profile-guided optimization (gameplay .profdata)
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
+      pgo_bundle_url:
+        description: Engine PGO profile bundle (.profdata tarball)
+        required: true
+        default: https://github.com/blake-lucas/LightTouch/releases/download/ci-inputs-2/engine-arm64-pgo-v2.tar.gz
+      pgo_bundle_sha256:
+        description: Expected SHA256 of the PGO profile bundle
+        required: true
+        default: "13a1a4a45fcc3927f76e294c08234114b6f3c3a735bb1948ad3f127ce812272f"
       variant:
         description: Gradle variant to assemble - release is the shipped shape, debug keeps debug-env and the QMP tools
         type: choice
@@ -154,6 +169,9 @@ on:
         type: string
         default: "true"
       angle_arm64:
+        type: string
+        default: "true"
+      engine_pgo:
         type: string
         default: "true"
       dependency_verification:
@@ -214,6 +232,9 @@ jobs:
       DECLARED_ANGLE_ARM64: ${{ inputs.angle_arm64 || 'true' }}
       ANGLE_BUNDLE_URL: ${{ inputs.angle_bundle_url || 'https://github.com/KlugKlugTG/Un1box/releases/download/angle-arm64-v8a-4a5ccd7/angle-lighttouch-arm64-v8a.tar.gz' }}
       ANGLE_BUNDLE_SHA256: ${{ inputs.angle_bundle_sha256 || 'c1fc24118f0251f334495a5357bf00e0904a9d70a2faec6ce9674c07c35537e1' }}
+      DECLARED_ENGINE_PGO: ${{ inputs.engine_pgo || 'true' }}
+      PGO_BUNDLE_URL: ${{ inputs.pgo_bundle_url || 'https://github.com/blake-lucas/LightTouch/releases/download/ci-inputs-2/engine-arm64-pgo-v2.tar.gz' }}
+      PGO_BUNDLE_SHA256: ${{ inputs.pgo_bundle_sha256 || '13a1a4a45fcc3927f76e294c08234114b6f3c3a735bb1948ad3f127ce812272f' }}
       DECLARED_DEPENDENCY_VERIFICATION: ${{ inputs.dependency_verification || 'strict' }}
       # The jailbreak build, when this run is the one jailbreak-apk.yml calls. Everything it changes is
       # gated on this: the Gradle property that carries --jailbreak and stages libjbBz2.so, the names below,
@@ -716,14 +737,49 @@ jobs:
             ci/crypto
           key: lt-deps-arm64-${{ steps.recipes.outputs.deps }}
 
+      - name: Cache the engine PGO profile
+        if: env.DECLARED_ENGINE_PGO != 'false'
+        uses: actions/cache@v4
+        with:
+          path: ci/pgo
+          key: lt-engine-pgo-v1-${{ env.PGO_BUNDLE_SHA256 }}
+
+      - name: Prepare the engine PGO profile
+        id: pgo
+        run: |
+          if [ "$DECLARED_ENGINE_PGO" = "false" ]; then
+            echo "key=off" >> "$GITHUB_OUTPUT"
+            echo "summary=disabled (engine_pgo=false)" >> "$GITHUB_OUTPUT"
+            echo "LT_ENGINE_PGO_PATH=" >> "$GITHUB_ENV"
+            echo "Android engine PGO: disabled"
+            exit 0
+          fi
+          LLVM_PROFDATA="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-profdata"
+          mkdir -p ci/pgo
+          python3 Android/scripts/prepare-engine-pgo.py \
+            --url "$PGO_BUNDLE_URL" \
+            --sha256 "$PGO_BUNDLE_SHA256" \
+            --output "$PWD/ci/pgo/engine-arm64.profdata" \
+            --metadata "$PWD/ci/pgo/metadata.json" \
+            --summary-file "$PWD/ci/pgo/summary.txt" \
+            --llvm-profdata "$LLVM_PROFDATA" \
+            --source-dir "$PWD/qemu-ios" \
+            --build-dir "$PWD/ci/engine-build"
+          PROF_SHA="$(sha256sum ci/pgo/engine-arm64.profdata | cut -c1-16)"
+          SUMMARY="$(cat ci/pgo/summary.txt)"
+          echo "key=$PROF_SHA" >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+          echo "LT_ENGINE_PGO_PATH=$PWD/ci/pgo/engine-arm64.profdata" >> "$GITHUB_ENV"
+          echo "Android engine PGO: $SUMMARY"
+
       - name: Cache the engine object tree
         uses: actions/cache@v4
         with:
           path: ci/engine-build
-          # One tree per engine revision; any tree of this recipe is a starting point.
-          key: lt-engine-${{ steps.recipes.outputs.deps }}-${{ steps.recipes.outputs.engine }}-j${{ env.LT_JOBS }}-${{ steps.engine.outputs.sha }}
+          # One tree per engine revision, recipe and PGO profile; any matching tree is a starting point.
+          key: lt-engine-${{ steps.recipes.outputs.deps }}-${{ steps.recipes.outputs.engine }}-pgo-${{ steps.pgo.outputs.key }}-j${{ env.LT_JOBS }}-${{ steps.engine.outputs.sha }}
           restore-keys: |
-            lt-engine-${{ steps.recipes.outputs.deps }}-${{ steps.recipes.outputs.engine }}-j${{ env.LT_JOBS }}-
+            lt-engine-${{ steps.recipes.outputs.deps }}-${{ steps.recipes.outputs.engine }}-pgo-${{ steps.pgo.outputs.key }}-j${{ env.LT_JOBS }}-
 
       - name: Cache the signing key
         uses: actions/cache@v4
@@ -1007,9 +1063,17 @@ jobs:
         run: |
           set -o pipefail
           engine() {
+            local pgo_args=()
+            if [ -n "${LT_ENGINE_PGO_PATH:-}" ]; then
+              pgo_args=(
+                --cflags "-fprofile-use=${LT_ENGINE_PGO_PATH} -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-backend-plugin"
+                --ldflags "-fprofile-use=${LT_ENGINE_PGO_PATH} -Wl,-z,keep-text-section-prefix"
+              )
+            fi
             python3 qemu-ios/contrib/portable/build-engine.py ci/engine-build \
               --abi arm64-v8a --ndk "$ANDROID_NDK_ROOT" --android-api 29 \
-              --prefix ci/deps/prefix --crypto-prefix ci/crypto/prefix "$@"
+              --prefix ci/deps/prefix --crypto-prefix ci/crypto/prefix \
+              "${pgo_args[@]}" "$@"
           }
           # Every line of the build is kept: a compile error used to leave nothing behind but
           # "exit code 1", and neither the step log nor an artifact could be fetched afterwards.
@@ -1057,6 +1121,14 @@ jobs:
           cp ci/engine-build/portable-manifest.json ci/engine/arm64-v8a/ 2>/dev/null || true
           ls -la ci/engine/arm64-v8a
           file ci/engine/arm64-v8a/libqemu-arm.so
+          READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          "$READELF" -S ci/engine/arm64-v8a/libqemu-arm.so | grep -E 'Name|\.text' || true
+          if [ -n "${LT_ENGINE_PGO_PATH:-}" ]; then
+            "$READELF" -S ci/engine/arm64-v8a/libqemu-arm.so | grep -qE '\.text\.(hot|unlikely)' || {
+              echo "::error::PGO was enabled ($LT_ENGINE_PGO_PATH) but libqemu-arm.so has no .text.hot/.text.unlikely sections"
+              exit 1
+            }
+          fi
 
       # The Jailbreak tab's own logic, where a wrong field or a wrong URL is invisible until an install
       # does nothing: the index parser, the source probing and the name a package is staged under
@@ -1155,6 +1227,7 @@ jobs:
             echo "- application revision: $(git rev-parse HEAD) ($GITHUB_REPOSITORY)"
             echo "- engine revision: $(git -C qemu-ios rev-parse HEAD) ($ENGINE_REPO $ENGINE_REF)"
             echo "- engine build: arm64-v8a, NDK $ANDROID_NDK_VERSION, --android-api 29, $LT_JOBS jobs"
+            echo "- engine PGO: ${{ steps.pgo.outputs.summary }}"
             echo "- firmwarekit: built from crates/lighttouch-firmware (Rust $RUST_VERSION aarch64-linux-android, activation + iBoot32Patcher compiled in-process)"
             echo "- USB / app-service helpers: built from Android/packaging/build-mobile-android.py + Android/native-services/lt_appservice.c"
             if [ "${GUEST_TOOLS_READY:-false}" = "true" ]; then

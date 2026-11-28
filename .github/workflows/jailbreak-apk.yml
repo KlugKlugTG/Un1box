@@ -94,6 +94,7 @@ jobs:
       variant: release
       debuggable: ${{ inputs.debuggable }}
       angle_arm64: "true"
+      engine_pgo: "true"
       dependency_verification: ${{ inputs.dependency_verification }}
       create_release: ${{ inputs.create_release }}
       jailbreak: "true"
